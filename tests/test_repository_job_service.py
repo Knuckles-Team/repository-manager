@@ -466,9 +466,7 @@ def test_reconcile_enqueues_idempotent_follow_up_without_inline_mutation() -> No
 
 
 def test_repair_mapping_is_accepted_by_the_merged_au_contract() -> None:
-    authority = pytest.importorskip(
-        "agent_connector_sdk.orchestration.repository_work_item"
-    )
+    authority = pytest.importorskip("scion_sdk.orchestration.repository_work_item")
     service, _ = _service()
     submitted = service.submit(_request(key="repair-contract"), auth=_auth(), now=NOW)
     preview = service.reconcile(
@@ -574,9 +572,7 @@ def test_production_adapter_normalizes_the_merged_au_view_shape() -> None:
 
 
 def test_production_adapter_accepts_the_actual_merged_au_view_model() -> None:
-    authority = pytest.importorskip(
-        "agent_connector_sdk.orchestration.repository_work_item"
-    )
+    authority = pytest.importorskip("scion_sdk.orchestration.repository_work_item")
     lease = authority.RepositoryLease(
         owner="worker-a",
         epoch=2,
@@ -939,9 +935,7 @@ def test_unexpected_port_error_is_normalized_to_internal_without_payload() -> No
 
 
 def test_production_page_seam_matches_the_merged_au_contract() -> None:
-    authority = pytest.importorskip(
-        "agent_connector_sdk.orchestration.repository_work_item"
-    )
+    authority = pytest.importorskip("scion_sdk.orchestration.repository_work_item")
     parameters = inspect.signature(authority._repository_rows).parameters
     assert {
         "engine",

@@ -19,8 +19,8 @@ pytestmark = pytest.mark.spec("CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R001")
 def _server():
     namespace: dict[str, Any] = {"__name__": PACKAGE + ".mcp_server", "ROOT": ROOT}
     exec(
-        "from agent_connector_sdk.mcp.content import ConnectorContent\n"
-        "from agent_connector_sdk.mcp.server import create_mcp_server\n"
+        "from scion_sdk.mcp.content import ConnectorContent\n"
+        "from scion_sdk.mcp.server import create_mcp_server\n"
         "result = create_mcp_server('repository-manager', version='0', command_args=[],"
         " content=ConnectorContent('repository-manager', ROOT, '0'))",
         namespace,

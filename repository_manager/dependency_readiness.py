@@ -4,13 +4,13 @@ CONCEPT:RM-DEP-READY
 
 The problem this closes, with a live instance. ``phased_push`` (CONCEPT:RM-PUSH)
 pushes the fleet in dependency order: e.g. phase 2 publishes ``epistemic-graph``,
-then a blind ``wait_minutes: 30`` sleep, then phase 3 pushes ``agent-connector-sdk``
+then a blind ``wait_minutes: 30`` sleep, then phase 3 pushes ``scion-sdk``
 (whose ``pyproject.toml`` declares ``epistemic-graph[full]>=2.23.2,<3.0.0``). The
 sleep is a **guess**: slow when the publish takes 4 minutes, and silently WRONG
 when the publish never lands — the wave marches on and pushes every dependent
 against a stale/unsatisfiable dependency. On 2026-08-12 that gap was not
 hypothetical: PyPI held only ``epistemic-graph==2.23.0`` while
-``agent-connector-sdk`` required ``>=2.23.2`` — an unsatisfiable constraint nothing
+``scion-sdk`` required ``>=2.23.2`` — an unsatisfiable constraint nothing
 in this fleet detected.
 
 This module is the ONE artifact-availability primitive both layers of the fix
@@ -125,7 +125,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 from urllib.parse import urlsplit
 
-import requests  # transitively pinned by agent-connector-sdk>=2.0.0 (requests>=2.34.2)
+import requests  # transitively pinned by scion-sdk>=2.0.0 (requests>=2.34.2)
 import yaml  # type: ignore[import-untyped]
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import SpecifierSet
@@ -1107,7 +1107,7 @@ def _constraint_from_requirement(
     if name not in fleet_packages or name == own_name:
         return None  # not a fleet package, or a repo gating on its own name
     specifier = str(req.specifier)
-    # The same requirement (e.g. "agent-connector-sdk>=2.0.0,<3.0.0")
+    # The same requirement (e.g. "scion-sdk>=2.0.0,<3.0.0")
     # routinely repeats verbatim across `dependencies` and several
     # `optional-dependencies` groups -- dedupe on (package, specifier) so
     # one real gap is reported once, not once per group it happens to
@@ -1254,7 +1254,7 @@ def _find_workspace_manifest(
 #   (reported, not blocking: there is nothing to scan).
 # * Package identity: a fleet package's canonical name is its repository name;
 #   its top-level import name is that name with ``-`` replaced by ``_``
-#   (``agent-connector-sdk`` -> ``agent_connector_sdk``). A repository's edges to its
+#   (``scion-sdk`` -> ``scion_sdk``). A repository's edges to its
 #   own package are ignored.
 # * Edge classes: ``runtime`` (``project.dependencies``), ``optional``
 #   (``project.optional-dependencies``), ``dependency-group`` (PEP 735
@@ -1286,7 +1286,7 @@ _TRUSTED_GIT = shutil.which("git") or "git"
 #: checkout, ...])`` inherits them silently and resolves against the WRONG
 #: repository regardless of ``-C`` (confirmed: ``GIT_DIR=real/.git git -C tmp
 #: config core.bare true`` mutates ``real``, not ``tmp``). Same defect class as
-#: ``agent-connector-sdk/scripts/_git_subprocess_env.py``'s
+#: ``scion-sdk/scripts/_git_subprocess_env.py``'s
 #: ``strip_inherited_git_repository_env``/``sanitized_git_env`` and this
 #: repo's own ``tests/conftest.py`` ``isolated_git_subprocess_env`` -- a
 #: parallel copy, not an import, because both of those live outside this

@@ -15,7 +15,7 @@ description: >-
 license: MIT
 tags: [repository-manager, git, worktree, concurrency, isolation, lane]
 metadata:
-  author: Genius
+  author: Knuckles-Team
   version: '1.0.0'
 ---
 # Repository Manager — Lane Lifecycle
@@ -52,15 +52,15 @@ written down, in prose, in front of the actor who broke it.
 
 Every shared resource belongs to exactly one class, and each class has exactly one
 mechanism. The classification is data, not code, in
-`agent_connector_sdk/governance/lane_resources.yaml` — adding a resource is a row,
-never a new mechanism. Read it with `agent-connector-sdk lane classify`.
+`scion_sdk/governance/lane_resources.yaml` — adding a resource is a row,
+never a new mechanism. Read it with `scion-sdk lane classify`.
 
 | Class | Rule | Mechanism |
 |---|---|---|
-| **PARTITION** | Stop sharing it — take your own instance. | `repository-manager --lane env` / `agent-connector-sdk lane env` |
+| **PARTITION** | Stop sharing it — take your own instance. | `repository-manager --lane env` / `scion-sdk lane env` |
 | **APPEND-ONLY** | Stop rewriting it — append to your own fragment; a reconciler folds fragments into one generated view. | `FragmentStore` / `scripts/deferred_registry.py open` |
-| **LEASE** | Announce, then **defer**. Exit **75** means another lane holds it. | `agent-connector-sdk lane lease` |
-| **READ-ONLY** | Do not mutate it at all. | `agent-connector-sdk lane guard` |
+| **LEASE** | Announce, then **defer**. Exit **75** means another lane holds it. | `scion-sdk lane lease` |
+| **READ-ONLY** | Do not mutate it at all. | `scion-sdk lane guard` |
 
 ## 1. Open the lane
 
@@ -110,7 +110,7 @@ rule in front of them. Two different needs hide behind the reflex:
 | What you actually want | Do this |
 |---|---|
 | Read the pristine file while yours is dirty (the common case) | `git show HEAD:<path>` — mutates nothing, works while dirty |
-| Actually park work | `git commit -m "wip: …"` on your own branch, or `agent-connector-sdk lane park` (uses `git stash create`, which writes **no** ref, plus your per-lane `refs/lane/<you>/stash`) |
+| Actually park work | `git commit -m "wip: …"` on your own branch, or `scion-sdk lane park` (uses `git stash create`, which writes **no** ref, plus your per-lane `refs/lane/<you>/stash`) |
 
 ### Never export a shared `CARGO_TARGET_DIR`
 A shared cargo target dir does not merely *serialize* concurrent worktree builds
@@ -120,7 +120,7 @@ A shared cargo target dir does not merely *serialize* concurrent worktree builds
 cargo build --target-dir ./target-isolated     # and prune it when you are done
 ```
 
-`agent-connector-sdk lane bind-cargo` writes `.cargo/config.toml` so the partition
+`scion-sdk lane bind-cargo` writes `.cargo/config.toml` so the partition
 **binds** structurally and needs no export at all.
 
 ### Always set your own `PRE_COMMIT_HOME`
@@ -148,7 +148,7 @@ It is LEASE-class: it can destroy unstaged work, and concurrent runs contend for
 the same caches.
 
 ```bash
-agent-connector-sdk lane lease --resource precommit-all-files --operation gate -- \
+scion-sdk lane lease --resource precommit-all-files --operation gate -- \
   pre-commit run --all-files
 ```
 
@@ -237,4 +237,4 @@ If it is rejected, the rejection names its evidence — take it to
 - Workspace-wide worktree sweeps → `repository-manager-fleet-scale-operations`
 - Raw worktree verbs → `repository-manager-worktree-orchestration`
 - Mechanism: `repository_manager/lane_doctor.py`,
-  `agent_connector_sdk/governance/lanes.py`, `lane_resources.yaml`
+  `scion_sdk/governance/lanes.py`, `lane_resources.yaml`

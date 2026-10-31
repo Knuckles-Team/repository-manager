@@ -17,7 +17,7 @@ description: >-
 license: MIT
 tags: [repository-manager, orchestration, subagents, merge-queue, worktrees, verification]
 metadata:
-  author: Genius
+  author: Knuckles-Team
   version: '1.0.0'
 ---
 

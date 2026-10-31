@@ -161,7 +161,7 @@
       ],
       "verified_by": [
         "tests/test_repository_manager.py:1188",
-        "tests/test_repository_manager.py:1234"
+        "tests/test_repository_manager.py:1236"
       ]
     },
     {

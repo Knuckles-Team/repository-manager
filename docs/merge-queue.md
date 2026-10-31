@@ -6,7 +6,7 @@
 
 ## Why it moved
 
-`agent_connector_sdk/governance/merge_queue.py` is mature and battle-tested, but it
+`scion_sdk/governance/merge_queue.py` is mature and battle-tested, but it
 can serve exactly one repository: its gates were pytest/ruff/contract-script
 specific by construction. The proof that this was mis-homed is empirical —
 **epistemic-graph has no merge queue at all**, so its lane had to hand-apply the
@@ -177,8 +177,8 @@ produced `OperationalError: database is locked` under concurrent lanes.
 Four rules, all enforced rather than documented:
 
 1. **Every lane gets its own `PRE_COMMIT_HOME`** — now a PARTITION-class resource
-   in agent-connector-sdk' `lane_resources.yaml`, resolved by `partitioned_paths()`
-   and exported by `agent-connector-sdk lane env`. One change fixes both hazards.
+   in scion-sdk' `lane_resources.yaml`, resolved by `partitioned_paths()`
+   and exported by `scion-sdk lane env`. One change fixes both hazards.
    This queue sets it for every gate run too (`run_fast_gates`).
 2. **Never run pre-commit against a tree holding someone else's uncommitted
    work.** `refuse_precommit_on_dirty_tree()` is called before any gate whose
@@ -196,7 +196,7 @@ Four rules, all enforced rather than documented:
 
 The queue used to run `git merge --ff-only <commit>` in the canonical checkout,
 which merges into whatever `HEAD` happens to be — **not** into the candidate's
-declared `base`. agent-connector-sdk' canonical checkout always sits on `main`, so
+declared `base`. scion-sdk' canonical checkout always sits on `main`, so
 "merge into HEAD" *coincidentally* equalled "land on base"; seven consecutive
 landings were audited and all were genuinely correct. **That is luck, not
 correctness**, and the coincidence breaks exactly where a cross-project driver
@@ -289,7 +289,7 @@ The lease, the candidate store and the scratch/basetemp partitions all resolve
 through `lane_scope(path)`, which is anchored on that repository's own
 `--git-common-dir`. So two repositories' queues are independent **by
 construction**, not by a `repo` key someone must remember to set, and draining
-agent-connector-sdk and epistemic-graph concurrently is safe. No new arbitration
+scion-sdk and epistemic-graph concurrently is safe. No new arbitration
 class was introduced.
 
 ## Migration — the live au queue must not break
@@ -299,11 +299,11 @@ strictly additive and reversible, and each step is independently valuable:
 
 | Step | Action | Risk |
 |---|---|---|
-| 1 ✅ | Ship the generic queue + presets + CLI + MCP here. `agent_connector_sdk.governance.merge_queue` is **untouched**. | none — no au code path changes |
-| 2 ✅ | Land the `PRE_COMMIT_HOME` PARTITION fix in agent-connector-sdk (additive: a new `PartitionedPaths` field, a new `lane_resources.yaml` row, a new `lane env` export). | none — nothing reads the field yet |
+| 1 ✅ | Ship the generic queue + presets + CLI + MCP here. `scion_sdk.governance.merge_queue` is **untouched**. | none — no au code path changes |
+| 2 ✅ | Land the `PRE_COMMIT_HOME` PARTITION fix in scion-sdk (additive: a new `PartitionedPaths` field, a new `lane_resources.yaml` row, a new `lane env` export). | none — nothing reads the field yet |
 | 3 | Adopt for **epistemic-graph first** — copy `mergequeue_presets/epistemic-graph.mergequeue.yaml` to its root and drive it. eg has **no queue today**, so there is nothing to break, and it is the honest first proof at production scale. | low |
-| 4 | Copy `mergequeue_presets/agent-connector-sdk.mergequeue.yaml` into agent-connector-sdk and run **both** queues against it in shadow: `--merge-queue config` and a `--queue-no-prune` drain on a scratch clone, comparing verdicts candidate by candidate. | low — read-mostly |
-| 5 | Cut over: `agent_connector_sdk.governance.merge_queue` becomes a thin shim delegating to `repository_manager.merge_queue` **when importable**, keeping its current implementation as the fallback. Note the dependency direction — repository-manager depends on agent-connector-sdk, so au importing repository-manager must stay optional (that asymmetry is exactly what D-ORC-21 recorded). | medium — do this only after step 4 agrees |
+| 4 | Copy `mergequeue_presets/scion-sdk.mergequeue.yaml` into scion-sdk and run **both** queues against it in shadow: `--merge-queue config` and a `--queue-no-prune` drain on a scratch clone, comparing verdicts candidate by candidate. | low — read-mostly |
+| 5 | Cut over: `scion_sdk.governance.merge_queue` becomes a thin shim delegating to `repository_manager.merge_queue` **when importable**, keeping its current implementation as the fallback. Note the dependency direction — repository-manager depends on scion-sdk, so au importing repository-manager must stay optional (that asymmetry is exactly what D-ORC-21 recorded). | medium — do this only after step 4 agrees |
 | 6 | Retire the au implementation once the shim has landed real batches, per *No Legacy* (migrate-and-remove, no deprecation window). | — |
 
 **Do not skip to step 5.** Placing `.mergequeue.yaml` in a repository is what
@@ -356,7 +356,7 @@ three of them were gaps a mount alone will not have closed:
 
 `get_mcp_instance()`'s import chain is still fragile: `repository_manager`'s own
 `mcp_server.py` never imports `fastmcp.server.extensions`, but
-`agent_connector_sdk/mcp/tasks_extension.py` does — *and* separately does
+`scion_sdk/mcp/tasks_extension.py` does — *and* separately does
 `from mcp.shared.exceptions import MCPError`, which the installed `mcp` spells
 `McpError`. A defensive-import fix that guards only the first symbol leaves the
 second live (D-ORC-38).

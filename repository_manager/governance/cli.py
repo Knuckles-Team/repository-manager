@@ -1,6 +1,6 @@
 """``repository-manager-governance`` — the lane and concept-ID command surface.
 
-Moved from ``agent-connector-sdk lane …`` / ``agent-connector-sdk concept …`` with the
+Moved from ``scion-sdk lane …`` / ``scion-sdk concept …`` with the
 modules it drives: lane arbitration
 (:mod:`repository_manager.governance.lanes`) and same-host concept-ID
 reservation (:mod:`repository_manager.governance.concept_allocator`). The verbs,

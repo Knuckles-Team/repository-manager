@@ -19,7 +19,7 @@
 
 ## Functional Requirements
 
-- **FR-001**: Minor update: agent-connector-sdk 0.2.40 (installed) -> 0.16.0
+- **FR-001**: Minor update: scion-sdk 0.2.40 (installed) -> 0.16.0
 - **FR-002**: Minor update: pytest-xdist 3.6.0 (constraint — not installed) -> 3.8.0
 - **FR-003**: Moderate avg cyclomatic complexity: 7.6
 - **FR-004**: 5 functions exceed 200 lines (actionable refactoring targets): validate_projects (453L), main (353L), phased_bumpversion (243L), to_directory_report (209L), phased_push (207L)
@@ -60,7 +60,7 @@
 - **FR-039**: Partial env var documentation: 50% coverage
 - **FR-040**: Undocumented env vars: AUTH_TYPE, EUNOMIA_POLICY_FILE, EUNOMIA_TYPE, GIT_OPERATIONSTOOL, LLM_API_KEY, LLM_BASE_URL, MISCTOOL, OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_PUBLIC_KEY, OTEL_EXPORTER_OTLP_SECRET_KEY
 - **FR-041**: 8 Python env vars not in .env.example: LLM_API_KEY, LLM_BASE_URL, MCP_URL, MODEL_ID, REPOSITORY_MANAGER_DEFAULT_BRANCH
-- **FR-042**: Analysis error: No module named 'agent_connector_sdk.knowledge_graph'
+- **FR-042**: Analysis error: No module named 'scion_sdk.knowledge_graph'
 
 ## Success Criteria
 

@@ -20,11 +20,11 @@ _FLEET_BOILERPLATE_PYTEST_ENTRY = (
     "bash -c 'repo=$(dirname \"$(git rev-parse --path-format=absolute "
     '--git-common-dir)"); if [ -n "$AGENT_UTILITIES_ROOT" ]; then '
     'root="$AGENT_UTILITIES_ROOT"; else au_d="$repo"; root=""; while '
-    '[ "$au_d" != "/" ]; do if [ -d "$au_d/agent-connector-sdk/scripts" ]; then '
-    'root="$au_d/agent-connector-sdk"; break; fi; au_d=$(dirname "$au_d"); done; '
+    '[ "$au_d" != "/" ]; do if [ -d "$au_d/scion-sdk/scripts" ]; then '
+    'root="$au_d/scion-sdk"; break; fi; au_d=$(dirname "$au_d"); done; '
     'fi; if [ -d "$root" ] && [ "$repo" != "$root" ]; then mkdir -p '
-    ".uv-workspace-siblings && ln -sfn \"$root\" "
-    '.uv-workspace-siblings/agent-connector-sdk; fi; test_target="tests"; for d '
+    '.uv-workspace-siblings && ln -sfn "$root" '
+    '.uv-workspace-siblings/scion-sdk; fi; test_target="tests"; for d '
     'in tests/unit test/unit tests test; do if [ -d "$d" ]; then '
     'test_target="$d"; break; fi; done; if [ -f uv.lock ]; then uv run '
     '--all-extras pytest "$test_target" -q --tb=short -m "not slow" '

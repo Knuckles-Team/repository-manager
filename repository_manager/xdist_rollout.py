@@ -2,9 +2,9 @@
 
 **The gap this closes.** ``pytest-xdist`` is a declared dev/test dependency in
 67 of this fleet's 75 repositories, and as of 2026-08-21 only
-``agent-connector-sdk`` itself actually passes ``-n`` at collection time — every
+``scion-sdk`` itself actually passes ``-n`` at collection time — every
 other repo pays the dependency's cost (resolve time, wheel download, lock-file
-size) for none of its payoff. ``agent-connector-sdk`` own ``pytest.ini`` records
+size) for none of its payoff. ``scion-sdk`` own ``pytest.ini`` records
 why that payoff matters: 17,974 tests ran in ONE process, which is why its
 pre-push gate exceeded 90 minutes and never returned a verdict before ``-n``
 was switched on there. This module is the plan-then-apply machinery for
@@ -40,7 +40,7 @@ cannot prove it understands.** Three gates, ALL required (see
 
 **The insertion itself, and an honest account of where it came from.** The
 flags applied are ``-n auto --dist loadfile -p no:randomly -rfE``.
-``agent-connector-sdk/pytest.ini`` was read on 2026-08-21 to source this from a
+``scion-sdk/pytest.ini`` was read on 2026-08-21 to source this from a
 proven setting rather than inventing one, and it DOES confirm two of the four
 pieces verbatim: ``-n auto`` and (materially) ``--dist loadfile`` — au's own
 comment there explains why loadfile and not bare ``-n auto``: the suite has
@@ -87,7 +87,7 @@ __all__ = [
     "dispatch",
 ]
 
-#: agent-connector-sdk' own proven setting (see module docstring for exactly
+#: scion-sdk' own proven setting (see module docstring for exactly
 #: which pieces its pytest.ini does and does not confirm as of 2026-08-21).
 XDIST_INSERTION: tuple[str, ...] = (
     "-n",
@@ -116,11 +116,11 @@ _BOILERPLATE_ENTRY = (
     "bash -c 'repo=$(dirname \"$(git rev-parse --path-format=absolute "
     '--git-common-dir)"); if [ -n "$AGENT_UTILITIES_ROOT" ]; then '
     'root="$AGENT_UTILITIES_ROOT"; else au_d="$repo"; root=""; while '
-    '[ "$au_d" != "/" ]; do if [ -d "$au_d/agent-connector-sdk/scripts" ]; then '
-    'root="$au_d/agent-connector-sdk"; break; fi; au_d=$(dirname "$au_d"); done; '
+    '[ "$au_d" != "/" ]; do if [ -d "$au_d/scion-sdk/scripts" ]; then '
+    'root="$au_d/scion-sdk"; break; fi; au_d=$(dirname "$au_d"); done; '
     'fi; if [ -d "$root" ] && [ "$repo" != "$root" ]; then mkdir -p '
     '.uv-workspace-siblings && ln -sfn "$root" '
-    '.uv-workspace-siblings/agent-connector-sdk; fi; test_target="tests"; for d '
+    '.uv-workspace-siblings/scion-sdk; fi; test_target="tests"; for d '
     'in tests/unit test/unit tests test; do if [ -d "$d" ]; then '
     'test_target="$d"; break; fi; done; if [ -f uv.lock ]; then uv run '
     f'--all-extras {_PYTEST_INVOCATION} -m "not slow" '

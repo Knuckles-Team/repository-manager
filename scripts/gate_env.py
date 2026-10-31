@@ -2,7 +2,7 @@
 """What a gate does when it cannot run here.
 
 A fresh clone may lack a tool (``docker``, ``cccc``), the locked project
-environment, or the pinned ``agent-connector-sdk`` sibling that
+environment, or the pinned ``scion-sdk`` sibling that
 ``scripts/bootstrap.sh`` provides. Such a gate has found nothing, so it must
 not report a pass -- but it must not block a contributor's commit either:
 

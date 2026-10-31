@@ -94,7 +94,7 @@ def _workspace(root: Path) -> None:
         "plans",
         "pipelines",
         "gitlab-pipelines",
-        "agent-packages/agent-connector-sdk",
+        "agent-packages/scion-sdk",
         "agent-packages/platform/epistemic-graph",
         "open-source-libraries/research-input",
     )
@@ -110,9 +110,7 @@ def _workspace(root: Path) -> None:
         ],
         "subdirectories": {
             "agent-packages": {
-                "repositories": [
-                    {"url": "https://example.invalid/agent-connector-sdk.git"}
-                ],
+                "repositories": [{"url": "https://example.invalid/scion-sdk.git"}],
                 "subdirectories": {
                     "platform": {
                         "repositories": [
@@ -209,7 +207,7 @@ def test_manifest_recurses_root_and_nested_repositories_but_excludes_research(
         "plans",
         "pipelines",
         "gitlab-pipelines",
-        "agent-packages/agent-connector-sdk",
+        "agent-packages/scion-sdk",
         "agent-packages/platform/epistemic-graph",
     ]
     assert all("open-source-libraries" not in item.identifier for item in repositories)
@@ -231,7 +229,7 @@ def test_discovery_folds_latest_record_and_ignores_canonical_stale_terminal(
         [_record("terminal", state="landed")],
     )
     _fragment(
-        tmp_path / "agent-packages/agent-connector-sdk",
+        tmp_path / "agent-packages/scion-sdk",
         CANONICAL_FRAGMENT,
         [_record("canonical-queued")],
     )

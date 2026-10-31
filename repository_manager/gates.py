@@ -88,7 +88,7 @@ _DURATION_LINE = re.compile(r"^-\s*duration:\s*([\d.]+)\s*s?\s*$", re.IGNORECASE
 
 # Per-tier wall-clock ceilings. The FAST tier is diff-scoped lint/format work and
 # genuinely should finish in minutes. The HEAVY tier runs a repo's full pytest /
-# cargo / lockfile suite, which for the larger repos (agent-connector-sdk,
+# cargo / lockfile suite, which for the larger repos (scion-sdk,
 # epistemic-graph) legitimately exceeds ten minutes -- a 600s ceiling there is not
 # a safety net, it is a guaranteed timeout that reports as a gate FAILURE and so
 # is indistinguishable from the gate actually finding a defect.

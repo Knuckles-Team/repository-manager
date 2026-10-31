@@ -10,7 +10,7 @@ description: >-
 license: MIT
 tags: [repository-manager, development, mcp, packaging, test, gates]
 metadata:
-  author: Genius
+  author: Knuckles-Team
   version: '1.0.0'
 ---
 # Repository Manager — Development
@@ -19,9 +19,9 @@ Repository Manager is the governed workspace and development adapter. Its
 Python CLI is implemented in `repository_manager/repository_manager.py`; the
 MCP server and its environment defaults live in `repository_manager/mcp_server.py`.
 The package exposes the `repository-manager-mcp` console script and the
-`agent_connector_sdk.skill_providers` entry point loads skills from
+`scion_sdk.skill_providers` entry point loads skills from
 `repository_manager.skills`. Connector contracts and transports belong to
-`agent-connector-sdk`; admission, serving, and durable graph state belong to
+`scion-sdk`; admission, serving, and durable graph state belong to
 their owning repositories.
 
 Read `AGENTS.md` and the owning specification before editing. Keep credentials,

@@ -70,7 +70,7 @@ def build_default_concept_authority() -> ConceptAuthorityPort | None:
     that construction raises for any reason — it never fabricates a
     fixture/local allocator as a substitute (repository-manager AGENTS.md
     "optional dependency" guardrail: ``try/except ImportError`` only, no
-    module-level import of ``agent_connector_sdk.governance.concept_reservation``
+    module-level import of ``scion_sdk.governance.concept_reservation``
     anywhere in this module). ``None`` is a legitimate, honest result: the
     caller (``concept_actions_for``) passes it straight through to
     ``ConceptCoordinationActions``, whose own ``resolve_default_authority()``
@@ -137,7 +137,7 @@ def dispatch(
     is never allowed to propagate as a bare traceback to either adapter.
     """
 
-    from agent_connector_sdk.mcp.action_dispatch import resolve_action
+    from scion_sdk.mcp.action_dispatch import resolve_action
 
     resolved = resolve_action(
         action, CONCEPT_ACTIONS, service="repository-manager-concepts"

@@ -42,10 +42,10 @@ branches = git.list_branches()  # name -> current branch
 
 # Bulk operations
 git.pull_projects()  # pull every managed repository
-git.clone_projects(["agent-connector-sdk"])  # clone selected projects
+git.clone_projects(["scion-sdk"])  # clone selected projects
 
 # Validation
-result = git.validate_single_project(project_map["agent-connector-sdk"])
+result = git.validate_single_project(project_map["scion-sdk"])
 ```
 
 Load a workspace from its declarative `workspace.yml`:
@@ -102,7 +102,7 @@ executable rather than a convention:
 ```bash
 # Open a lane: a worktree PLUS a partitioned cargo target dir, pytest basetemp,
 # TMPDIR and PRE_COMMIT_HOME -- and a preflight that proves the isolation.
-repository-manager --lane start --lane-repo agent-connector-sdk --lane-branch lane/my-change
+repository-manager --lane start --lane-repo scion-sdk --lane-branch lane/my-change
 
 # Adopt the environment in your shell.
 eval "$(repository-manager --lane env --lane-path . --lane-shell)"
@@ -262,7 +262,7 @@ profiles:
 selectors:
   core:
     include:
-      - agent-packages/agent-connector-sdk
+      - agent-packages/scion-sdk
       - agent-packages/agents/repository-manager
 ```
 

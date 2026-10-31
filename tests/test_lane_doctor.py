@@ -395,7 +395,7 @@ def test_a_clean_canonical_passes(worktree: Path) -> None:
 
 # ---------------------------------------------------------------------------
 # canonical-is-worktree — D-MQR-5/D-MQR-6: `core.bare=true` corrupted the
-# agent-connector-sdk canonical checkout's .git/config directly. Every git command
+# scion-sdk canonical checkout's .git/config directly. Every git command
 # run WITH CWD=canonical then failed ("this operation must be run in a work
 # tree"), which silently killed the repo's merge queue -- but `lane_scope()`
 # resolves fine from a LINKED WORKTREE even while the main tree is bare, so

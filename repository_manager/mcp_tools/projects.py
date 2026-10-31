@@ -5,9 +5,9 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from agent_connector_sdk.mcp.action_dispatch import resolve_action
 from fastmcp import Context, FastMCP
 from pydantic import Field
+from scion_sdk.mcp.action_dispatch import resolve_action
 
 from repository_manager.development.fleet_release_gate import (
     require_legacy_release_route,

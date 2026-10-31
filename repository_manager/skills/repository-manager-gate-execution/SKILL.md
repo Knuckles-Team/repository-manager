@@ -18,7 +18,7 @@ description: >-
 license: MIT
 tags: [repository-manager, gates, pre-commit, testing, ci, mcp]
 metadata:
-  author: Genius
+  author: Knuckles-Team
   version: '1.0.0'
 ---
 # Repository Manager — Gate Execution
@@ -96,7 +96,7 @@ rm_gates_run(stage="fast")
 ```
 Run the heavy gate against two repos:
 ```
-rm_gates_run(stage="heavy", repos="agent-connector-sdk,epistemic-graph")
+rm_gates_run(stage="heavy", repos="scion-sdk,epistemic-graph")
 ```
 After fixing what a wave reported failing, retest only that — narrows
 automatically, escalates to a full wave on an all-pass:
@@ -191,7 +191,7 @@ in one agent's memory:
   failures this way: exit code 0, but the "installed" package was never
   actually updated, so the gate ran against old code.
 - **Bare `python3`/`uv run pytest` can pick the wrong interpreter.** Use
-  `python scripts/run_agent_connector_sdk_gate.py --module pytest -- ...` (or
+  `python scripts/run_scion_sdk_gate.py --module pytest -- ...` (or
   this workspace's equivalent per-repo gate runner), and print
   `sys.executable` whenever a result looks suspicious.
 

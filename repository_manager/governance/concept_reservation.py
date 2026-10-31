@@ -39,7 +39,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol, Self
 
-from agent_connector_sdk.privacy_reference import persistence_reference
+from scion_sdk.privacy_reference import persistence_reference
 
 from repository_manager.governance.concept_hierarchy import (
     is_valid_domain,

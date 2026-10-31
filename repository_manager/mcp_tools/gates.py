@@ -31,9 +31,9 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from agent_connector_sdk.mcp.action_dispatch import resolve_action
 from fastmcp import Context, FastMCP
 from pydantic import Field
+from scion_sdk.mcp.action_dispatch import resolve_action
 
 from repository_manager import gate_runner
 from repository_manager.gate_ledger import default_gate_ledger

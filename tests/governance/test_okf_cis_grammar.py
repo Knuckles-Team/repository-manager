@@ -74,7 +74,7 @@ def test_domain_vocab_closed_and_covers_all_pillars() -> None:
 
 def test_slug_registry_unique_and_two_letter() -> None:
     reg = ch.load_slug_registry()
-    assert ch.slug_for_repo("agent-connector-sdk") == "AU"
+    assert ch.slug_for_repo("scion-sdk") == "AU"
     assert ch.slug_for_repo("epistemic-graph") == "EG"
     assert len(set(reg.values())) == len(reg)  # globally unique
     assert all(len(s) == 2 and s.isupper() for s in reg.values())

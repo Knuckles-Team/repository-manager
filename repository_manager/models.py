@@ -5,8 +5,8 @@ import os
 import re
 from collections.abc import Callable
 
-from agent_connector_sdk.privacy import sanitize_for_persistence
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from scion_sdk.privacy import sanitize_for_persistence
 
 logger = logging.getLogger("RepositoryManager")
 _MAX_MAINTENANCE_WAIT_MINUTES = 1440.0

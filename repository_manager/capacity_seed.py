@@ -64,12 +64,12 @@ def default_inventory_path() -> Path:
     """``~/.config/agent-connectors/inventory.yaml`` (or ``$CONNECTOR_CONFIG_DIR``).
 
     Mirrors ``find_workspace_manifest``-style resolution without importing
-    agent-connector-sdk' config module, so this stays a plain file read.
+    scion-sdk' config module, so this stays a plain file read.
     """
 
     config_dir = os.getenv(
         "CONNECTOR_CONFIG_DIR",
-        str(Path.home() / ".config" / "agent-connector-sdk"),
+        str(Path.home() / ".config" / "scion-sdk"),
     )
     return Path(config_dir) / "inventory.yaml"
 

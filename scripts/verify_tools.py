@@ -3,8 +3,8 @@ import json
 import logging
 import os
 
-from agent_connector_sdk.core.workspace import get_mcp_config_path
 from pydantic_ai.mcp import load_mcp_servers
+from scion_sdk.core.workspace import get_mcp_config_path
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

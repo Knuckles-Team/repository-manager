@@ -15,7 +15,7 @@ description: >-
 license: MIT
 tags: [repository-manager, git, merge-queue, conflict-resolution, gates, ci]
 metadata:
-  author: Genius
+  author: Knuckles-Team
   version: '1.0.0'
 ---
 # Repository Manager — Merge & Reconcile

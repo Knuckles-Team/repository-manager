@@ -1066,27 +1066,27 @@ class TestUpdateDependencyPropagation:
         f = tmp_path / "deps.txt"
         f.write_text(content)
         git = Git(path=str(tmp_path))
-        updated = git.update_dependency(str(f), "agent-connector-sdk", "0.39.0")
+        updated = git.update_dependency(str(f), "scion-sdk", "0.39.0")
         return updated, f.read_text()
 
     def test_pyproject_gte(self, tmp_path):
-        upd, out = self._run(tmp_path, 'deps = ["agent-connector-sdk>=0.38.0"]')
-        assert upd and "agent-connector-sdk>=0.39.0" in out
+        upd, out = self._run(tmp_path, 'deps = ["scion-sdk>=0.38.0"]')
+        assert upd and "scion-sdk>=0.39.0" in out
 
     def test_requirements_exact_pin(self, tmp_path):
-        upd, out = self._run(tmp_path, "agent-connector-sdk==0.16.0\n")
-        assert upd and "agent-connector-sdk==0.39.0" in out  # == preserved, not stale
+        upd, out = self._run(tmp_path, "scion-sdk==0.16.0\n")
+        assert upd and "scion-sdk==0.39.0" in out  # == preserved, not stale
 
     def test_extras_and_compatible(self, tmp_path):
-        upd, out = self._run(tmp_path, "agent-connector-sdk~=0.30.0\n")
-        assert upd and "agent-connector-sdk~=0.39.0" in out
+        upd, out = self._run(tmp_path, "scion-sdk~=0.30.0\n")
+        assert upd and "scion-sdk~=0.39.0" in out
 
     def test_transitive_comment_untouched(self, tmp_path):
-        upd, out = self._run(tmp_path, "    # via agent-connector-sdk\n")
-        assert upd is False and out.strip() == "# via agent-connector-sdk"
+        upd, out = self._run(tmp_path, "    # via scion-sdk\n")
+        assert upd is False and out.strip() == "# via scion-sdk"
 
     def test_unpinned_untouched(self, tmp_path):
-        upd, out = self._run(tmp_path, "agent-connector-sdk\n")
+        upd, out = self._run(tmp_path, "scion-sdk\n")
         assert upd is False
 
 
@@ -1228,7 +1228,9 @@ def test_managed_checkout_origin_is_sanitized_without_other_config_changes(
         line for line in after if not line.startswith("remote.origin.url=")
     ]
     assert "synthetic-pass" not in (checkout / ".git" / "config").read_text()
-    assert "synthetic-bare-token-value" not in (checkout / ".git" / "config").read_text()
+    assert (
+        "synthetic-bare-token-value" not in (checkout / ".git" / "config").read_text()
+    )
 
 
 @pytest.mark.spec("RM-GOVERNANCE-R004")
@@ -1259,7 +1261,9 @@ def test_managed_checkout_refuses_failed_origin_sanitization_without_secret_diag
         return original_run(command, **kwargs)
 
     monkeypatch.setattr(repository_manager_module.subprocess, "run", refuse_update)
-    with pytest.raises(ValueError, match="credential helper or SSH deploy key") as failure:
+    with pytest.raises(
+        ValueError, match="credential helper or SSH deploy key"
+    ) as failure:
         manager._validate_manifest_checkout_origins()
     assert "synthetic-user" not in str(failure.value) + caplog.text
     assert "synthetic-pass" not in str(failure.value) + caplog.text

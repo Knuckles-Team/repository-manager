@@ -1,7 +1,7 @@
 """Native epistemic-graph typed-node ingestion — SDK ingest facade coverage.
 
 Exercises the real ``ingest_entities`` / ``ingest_repositories`` / ``ingest_worktrees`` /
-``ingest_projects`` seams against a fake ``agent_connector_sdk.ingest`` transport (no engine
+``ingest_projects`` seams against a fake ``scion_sdk.ingest`` transport (no engine
 required), asserting the generated request's records/relationships and the record →
 :GitRepository / :Worktree / :Project mappings.
 CONCEPT:AU-KG.ingest.enterprise-source-extractor.
@@ -12,7 +12,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from agent_connector_sdk.ingest import IngestError, KnowledgeIngest
+from scion_sdk.ingest import IngestError, KnowledgeIngest
 
 from repository_manager.kg_ingest import (
     ingest_entities,
@@ -115,8 +115,8 @@ async def test_ingest_worktrees_maps_and_links_repo(ingest):
     res = await ingest_worktrees(
         [
             {
-                "repo": "agent-connector-sdk",
-                "path": "worktree://agent-connector-sdk/feat-x",
+                "repo": "scion-sdk",
+                "path": "worktree://scion-sdk/feat-x",
                 "branch": "feat/x",
                 "head": "abc1234567",
                 "class": "active",
@@ -132,21 +132,20 @@ async def test_ingest_worktrees_maps_and_links_repo(ingest):
     wt = next(
         r
         for r in request.records
-        if r.record_id == "repository:Worktree:worktree://agent-connector-sdk/feat-x"
+        if r.record_id == "repository:Worktree:worktree://scion-sdk/feat-x"
     )
     assert wt.payload["branchName"] == "feat/x"
     assert wt.payload["worktreeStatus"] == "active"
     assert wt.payload["dirty"] is True
     assert wt.payload["aheadCount"] == 3
     assert any(
-        r.record_id == "repository:GitRepository:agent-connector-sdk"
-        for r in request.records
+        r.record_id == "repository:GitRepository:scion-sdk" for r in request.records
     )
     assert request.relationships[0].source.record_id == (
-        "repository:Worktree:worktree://agent-connector-sdk/feat-x"
+        "repository:Worktree:worktree://scion-sdk/feat-x"
     )
     assert request.relationships[0].target.record_id == (
-        "repository:GitRepository:agent-connector-sdk"
+        "repository:GitRepository:scion-sdk"
     )
 
 

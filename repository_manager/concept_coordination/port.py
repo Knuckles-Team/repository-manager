@@ -1,11 +1,11 @@
 """The narrow authority boundary RMDD-17's action core depends on.
 
 Mirrors the public method surface of RMDD-16's
-``agent_connector_sdk.governance.concept_reservation.ConceptReservationAuthority``
+``scion_sdk.governance.concept_reservation.ConceptReservationAuthority``
 Protocol (``reserve``/``get``/``list``/``transition``) structurally — as a
-:class:`typing.Protocol` with no import of agent-connector-sdk — so
+:class:`typing.Protocol` with no import of scion-sdk — so
 repository-manager never takes a hard, load-bearing dependency on
-agent-connector-sdk internals. Any object exposing these four methods (the real
+scion-sdk internals. Any object exposing these four methods (the real
 native authority once injected by RMDD-20's entrypoint, an integration-test
 double, or a future arbora MCP adapter) satisfies this port.
 """

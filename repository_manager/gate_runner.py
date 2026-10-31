@@ -481,7 +481,7 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
     would change a contract to win a cosmetic point.
     """
 
-    from agent_connector_sdk.mcp.action_dispatch import resolve_action
+    from scion_sdk.mcp.action_dispatch import resolve_action
 
     resolved = resolve_action(
         action, GATE_RUNNER_ACTIONS, service="repository-manager-gates"
