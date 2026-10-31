@@ -3,6 +3,8 @@
 default_install_hook_types: [pre-commit, pre-push]
 default_language_version:
   python: python3
+  # Exact LTS: nodeenv cannot parse alpha entries (27.0.0-alpha) when resolving "latest".
+  node: 24.22.2
 exclude: 'dotnet|node_modules'
 ci:
   autofix_prs: true
