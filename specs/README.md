@@ -36,7 +36,7 @@ States are `SPECIFIED`, `LANDED`, and `VERIFIED`. The generator sets them. See t
 
 | Prefix | Repository specs | Responsibility |
 |---|---|---|
-| `EG` | [epistemic-graph](https://github.com/Knuckles-Team/epistemic-graph/tree/main/specs) | Rust database, graph compute, ontology, governed ingestion, durable records and clients |
+| `EG` | [medulla](https://github.com/Knuckles-Team/medulla/tree/main/specs) | Rust database, graph compute, ontology, governed ingestion, durable records and clients |
 | `SDK` | [agent-connector-sdk](https://github.com/Knuckles-Team/agent-connector-sdk/tree/main/specs) | connector control, transport, manifests, certification, governed effects |
 | `AU` | [agent-connector-sdk](https://github.com/Knuckles-Team/agent-connector-sdk/tree/main/specs) | agent orchestration and control workflows |
 | `GRAPHOS` | [arbora](https://github.com/Knuckles-Team/arbora/tree/main/specs) | serving composition, fleet, gateway, A2A, deployment operations |
@@ -62,3 +62,4 @@ bootstrap skill, together with the [SDD full lifecycle](https://github.com/Knuck
 - [`RM-GOVERNANCE`](development-governance/spec.md) — repository development governance.
 - [`RM-RELEASE`](fleet-release/spec.md) — dependency aware fleet release.
 - [`RM-SCM`](source-changesets/spec.md) — git import, export and mirror sync for engine changesets.
+- [`CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT`](connector-content/spec.md) — The connector serves its packaged content
