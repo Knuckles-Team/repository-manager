@@ -1,4 +1,4 @@
-"""Merge is not deploy — CONCEPT:AU-OS.governance.merge-deploy-decoupling.
+"""Merge is not deploy — CONCEPT:MERISTEM-OS.governance.merge-deploy-decoupling.
 
 Moved from scion-sdk' retired merge queue, where it was the
 ``merge-queue promotion`` verb; it is ``repository-manager-governance

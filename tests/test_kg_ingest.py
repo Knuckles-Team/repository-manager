@@ -4,7 +4,7 @@ Exercises the real ``ingest_entities`` / ``ingest_repositories`` / ``ingest_work
 ``ingest_projects`` seams against a fake ``scion_sdk.ingest`` transport (no engine
 required), asserting the generated request's records/relationships and the record →
 :GitRepository / :Worktree / :Project mappings.
-CONCEPT:AU-KG.ingest.enterprise-source-extractor.
+CONCEPT:MERISTEM-KG.ingest.enterprise-source-extractor.
 """
 
 from __future__ import annotations

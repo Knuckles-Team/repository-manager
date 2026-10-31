@@ -1,6 +1,6 @@
 """Canonical OKF-CIS concept hierarchy.
 
-CONCEPT:AU-OS.governance.concept-hierarchy-standardization — concept-hierarchy standardization (B5).
+CONCEPT:MERISTEM-OS.governance.concept-hierarchy-standardization — concept-hierarchy standardization (B5).
 
 This is the one place that parses concept IDs and derives their OKF path and
 RDF IRI. Registry generation, validation, allocation, and the CLI import this
@@ -38,7 +38,7 @@ _SEG = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 
 #: A bare OKF-CIS id (no ``CONCEPT:`` prefix), fully anchored.
 OKF_ID_RE = re.compile(
-    rf"^(?P<slug>[A-Z]{{2}})-(?P<pillar>{_PILLAR_ALT})(?P<segs>(?:\.{_SEG}){{2,}})$"
+    rf"^(?P<slug>[A-Z]{{2,}})-(?P<pillar>{_PILLAR_ALT})(?P<segs>(?:\.{_SEG}){{2,}})$"
 )
 #: Adjacent text that historical authors appended to a canonical id without a
 #: separator. It is metadata or a malformed suffix, never part of the id or its
@@ -50,7 +50,7 @@ _MARKER_TAIL = r"(?:[/_][A-Za-z0-9._/-]*|[A-Z][A-Za-z0-9._/-]*)"
 #: capture remains ``id`` so existing ``findall`` callers still receive strings.
 #: New scanners should use :func:`iter_okf_markers` for explicit tail semantics.
 OKF_MARKER_RE = re.compile(
-    rf"CONCEPT:(?P<id>[A-Z]{{2}}-(?:{_PILLAR_ALT})(?:\.{_SEG}){{2,}})"
+    rf"CONCEPT:(?P<id>[A-Z]{{2,}}-(?:{_PILLAR_ALT})(?:\.{_SEG}){{2,}})"
     rf"(?:{_MARKER_TAIL})?"
 )
 
@@ -117,7 +117,7 @@ class OkfConceptId:
 
     @property
     def path(self) -> str:
-        """OKF bundle path (dots -> slashes): ``AU/KG/ingest/entropy-dedup``."""
+        """OKF bundle path (dots -> slashes): ``MERISTEM/KG/ingest/entropy-dedup``."""
         return "/".join((self.slug, self.pillar, *self.segments))
 
     @property
@@ -153,7 +153,7 @@ def parse_okf_id(cid: str) -> OkfConceptId:
     """Parse an OKF-CIS id. Raises :class:`ValueError` if malformed.
 
     Enforces (beyond the regex) the ``>=2 segments`` rule: a 1-segment id
-    (``AU-KG.ingest``) is a domain node, not a concept.
+    (``MERISTEM-KG.ingest``) is a domain node, not a concept.
     """
     m = OKF_ID_RE.match(cid)
     if not m:
@@ -183,14 +183,14 @@ def concept_iri(cid: str | OkfConceptId) -> str:
 
 
 def okf_id_to_path(cid: str) -> str:
-    """OKF-CIS id -> OKF bundle path (``AU-KG.ingest.x`` -> ``AU/KG/ingest/x``)."""
+    """OKF-CIS id -> OKF bundle path (``MERISTEM-KG.ingest.x`` -> ``MERISTEM/KG/ingest/x``)."""
     return parse_okf_id(cid).path
 
 
 def path_to_okf_id(path: str) -> str:
     """OKF bundle path -> OKF-CIS id (inverse of :func:`okf_id_to_path`).
 
-    ``AU/KG/ingest/entropy-dedup`` -> ``AU-KG.ingest.entropy-dedup``. The ``.md``
+    ``MERISTEM/KG/ingest/entropy-dedup`` -> ``MERISTEM-KG.ingest.entropy-dedup``. The ``.md``
     suffix, if present, is stripped first.
     """
     p = path.strip("/")
@@ -249,7 +249,7 @@ SLUG_REGISTRY_PATH = Path(__file__).with_name("slug_registry.yaml")
 def load_slug_registry(path: str | None = None) -> dict[str, str]:
     """Load the ``{repo-name: SLUG}`` registry. Cached.
 
-    Validates that every SLUG is exactly two uppercase letters and globally
+    Validates that every SLUG is two or more uppercase letters and globally
     unique — a malformed/duplicated registry is a hard error, not silent.
     """
     import yaml
@@ -259,8 +259,10 @@ def load_slug_registry(path: str | None = None) -> dict[str, str]:
     slugs: dict[str, str] = dict(data.get("slugs", {}))
     seen: dict[str, str] = {}
     for repo, slug in slugs.items():
-        if not re.fullmatch(r"[A-Z]{2}", str(slug)):
-            raise ValueError(f"SLUG for {repo!r} must be 2 uppercase letters: {slug!r}")
+        if not re.fullmatch(r"[A-Z]{2,}", str(slug)):
+            raise ValueError(
+                f"SLUG for {repo!r} must be uppercase letters (2 or more): {slug!r}"
+            )
         if slug in seen:
             raise ValueError(f"duplicate SLUG {slug!r}: {seen[slug]!r} and {repo!r}")
         seen[slug] = repo

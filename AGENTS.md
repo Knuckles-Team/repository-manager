@@ -1156,7 +1156,7 @@ validated live against R82X during that same incident.
 Working in parallel with other sessions/worktrees? **Reserve a concept id before you write its `CONCEPT:` marker** so two sessions never collide:
 
 ```bash
-scion-sdk --json concept reserve --ns EG-KG.compute.backend   # or a package prefix, e.g. KEY
+scion-sdk --json concept reserve --ns MEDULLA-KG.compute.backend   # or a package prefix, e.g. KEY
 ```
 
 Full protocol (ledger, merge=union, reconcile, MCP/REST): <https://knuckles-team.github.io/agent-connector-sdk/concept_coordination/>

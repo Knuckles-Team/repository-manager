@@ -42,7 +42,7 @@ def repo(tmp_path: Path) -> Path:
 
 
 def request(
-    concept_id: str = "AU-OS.governance.authority-test",
+    concept_id: str = "MERISTEM-OS.governance.authority-test",
     *,
     tenant: str = "tenant-a",
     owner: str = "owner-a",
@@ -117,7 +117,7 @@ def native_authority(store: Any) -> NativeConceptReservationAuthority:
     return NativeConceptReservationAuthority(
         store,
         policies=(
-            ConceptNamespacePolicy("AU-OS.governance", policy_version="policy-1"),
+            ConceptNamespacePolicy("MERISTEM-OS.governance", policy_version="policy-1"),
         ),
     )
 
@@ -161,7 +161,7 @@ def test_namespace_policy_partitions_ranges() -> None:
     authority = FixtureConceptReservationAuthority(
         policies=(
             ConceptNamespacePolicy(
-                "AU-OS.governance",
+                "MERISTEM-OS.governance",
                 range_start=10,
                 range_end=20,
                 concept_prefixes=("claim",),
@@ -169,11 +169,13 @@ def test_namespace_policy_partitions_ranges() -> None:
         )
     )
     # The semantic grammar permits a numeric suffix, while policy decides its range.
-    authority.reserve(request("AU-OS.governance.claim-10"))
+    authority.reserve(request("MERISTEM-OS.governance.claim-10"))
     with pytest.raises(ValueError, match="outside the namespace/range policy"):
-        authority.reserve(request("AU-OS.governance.claim-21", key="outside"))
+        authority.reserve(request("MERISTEM-OS.governance.claim-21", key="outside"))
     with pytest.raises(ValueError, match="outside the namespace/range policy"):
-        authority.reserve(request("AU-OS.governance.other-10.extra", key="prefix"))
+        authority.reserve(
+            request("MERISTEM-OS.governance.other-10.extra", key="prefix")
+        )
 
 
 def test_fence_owner_and_terminal_visibility_are_enforced() -> None:
@@ -250,7 +252,7 @@ def test_native_create_if_absent_is_idempotent_and_policy_bound() -> None:
     with pytest.raises(ConceptReservationConflict, match="different immutable"):
         authority.reserve(request(purpose="changed native purpose"))
     with pytest.raises(ConceptReservationError, match="outside"):
-        authority.reserve(request("AU-OS.identity.not-in-policy", key="outside"))
+        authority.reserve(request("MERISTEM-OS.identity.not-in-policy", key="outside"))
 
 
 @pytest.mark.parametrize(
@@ -267,7 +269,7 @@ def test_request_key_idempotency_is_scoped_to_the_canonical_concept_node(
     )
     first = authority.reserve(request(key="same-key"))
     second = authority.reserve(
-        request("AU-OS.governance.other-concept", key="same-key")
+        request("MERISTEM-OS.governance.other-concept", key="same-key")
     )
     assert first.reservation_id != second.reservation_id
     assert authority.reserve(request(key="same-key")) == first
@@ -361,10 +363,10 @@ def test_native_filtered_pages_resume_after_last_scanned_node_without_loss() -> 
     expected_ids = []
     for index in range(40):
         if index % 3 == 0:
-            concept_id = f"AU-OS.governance.target-{index}"
+            concept_id = f"MERISTEM-OS.governance.target-{index}"
             expected_ids.append(concept_id)
         else:
-            concept_id = f"AU-OS.governance.noise-{index}"
+            concept_id = f"MERISTEM-OS.governance.noise-{index}"
         authority.reserve(request(concept_id, key=f"paged-{index}"))
     expected_ids.sort()
 
@@ -373,7 +375,7 @@ def test_native_filtered_pages_resume_after_last_scanned_node_without_loss() -> 
     while True:
         page, cursor = authority.list(
             tenant_ref=request().tenant_ref,
-            concept_prefix="AU-OS.governance.target",
+            concept_prefix="MERISTEM-OS.governance.target",
             limit=1,
             cursor=cursor,
         )
@@ -440,7 +442,9 @@ def test_materialized_and_landed_visibility_never_downgrade_external(
     assert materialized.visibility is ConceptReservationVisibility.EXTERNAL
     assert materialized.tombstoned_at is not None
 
-    landed_request = request("AU-OS.governance.authority-landed", key="landed-external")
+    landed_request = request(
+        "MERISTEM-OS.governance.authority-landed", key="landed-external"
+    )
     landed_reserved = authority.reserve(landed_request)
     landed_materialized = authority.transition(
         landed_reserved.reservation_id,
@@ -463,8 +467,8 @@ def test_materialized_and_landed_visibility_never_downgrade_external(
 
 def test_overlapping_policy_versions_are_rejected_not_lexically_selected() -> None:
     policies = (
-        ConceptNamespacePolicy("AU-OS.governance", policy_version="2"),
-        ConceptNamespacePolicy("AU-OS.governance", policy_version="10"),
+        ConceptNamespacePolicy("MERISTEM-OS.governance", policy_version="2"),
+        ConceptNamespacePolicy("MERISTEM-OS.governance", policy_version="10"),
     )
     with pytest.raises(ConceptReservationError, match="overlap"):
         NativeConceptReservationAuthority(NativeStore(), policies=policies)
@@ -478,7 +482,7 @@ def test_native_numeric_allocator_probes_bounded_candidates() -> None:
         store,
         policies=(
             ConceptNamespacePolicy(
-                "AU-OS.governance",
+                "MERISTEM-OS.governance",
                 range_start=1,
                 range_end=3,
                 concept_prefixes=("claim",),
@@ -486,24 +490,24 @@ def test_native_numeric_allocator_probes_bounded_candidates() -> None:
             ),
         ),
     )
-    authority.reserve(request("AU-OS.governance.claim-1", key="occupied-1"))
-    authority.reserve(request("AU-OS.governance.claim-2", key="occupied-2"))
+    authority.reserve(request("MERISTEM-OS.governance.claim-1", key="occupied-1"))
+    authority.reserve(request("MERISTEM-OS.governance.claim-2", key="occupied-2"))
     with pytest.raises(ConceptReservationConflict, match="policy"):
         authority.reserve(
             request(
-                "AU-OS.governance.claim-1",
+                "MERISTEM-OS.governance.claim-1",
                 key="occupied-1",
                 range_start=2,
             )
         )
     allocated = reserve_next_numeric(
         authority,
-        request("AU-OS.governance.placeholder", key="auto-claim"),
+        request("MERISTEM-OS.governance.placeholder", key="auto-claim"),
         concept_prefix="claim",
         range_start=1,
         range_end=3,
     )
-    assert allocated.concept_id == "AU-OS.governance.claim-3"
+    assert allocated.concept_id == "MERISTEM-OS.governance.claim-3"
     assert allocated.request.policy_version == "policy-2"
 
 

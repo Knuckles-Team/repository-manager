@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="compact JSON output")
     sub = p.add_subparsers(dest="command", required=True)
 
-    # CONCEPT:AU-OS.governance.atomic-concept-id-reservation — atomic concept-ID reservation (offline/worktree entry point).
+    # CONCEPT:MERISTEM-OS.governance.atomic-concept-id-reservation — atomic concept-ID reservation (offline/worktree entry point).
     cp = sub.add_parser("concept", help="reserve/list/release/reconcile concept ids")
     cp.add_argument(
         "concept_action",
@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--repo", default="", help="repo root (default: the current working tree)"
     )
 
-    # CONCEPT:AU-OS.governance.lane-arbitration-classes — concurrent-lane arbitration entry point.
+    # CONCEPT:MERISTEM-OS.governance.lane-arbitration-classes — concurrent-lane arbitration entry point.
     # Nested subparsers (not one positional choice) so `lease` can take a
     # REMAINDER command without swallowing the other actions' own flags.
     lp = sub.add_parser(
@@ -198,7 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _concept_resolve(args: argparse.Namespace) -> dict[str, Any]:
-    """CONCEPT:AU-OS.governance.concept-id-canonicalization — validate and project a canonical OKF-CIS id."""
+    """CONCEPT:MERISTEM-OS.governance.concept-id-canonicalization — validate and project a canonical OKF-CIS id."""
     from repository_manager.governance import concept_hierarchy as ch
 
     if not args.concept_id:

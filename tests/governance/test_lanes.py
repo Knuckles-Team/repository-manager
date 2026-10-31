@@ -617,7 +617,7 @@ def test_park_gives_a_clean_tree_without_touching_refs_stash(canonical: Path) ->
     """The affordance that makes `git stash` unnecessary rather than merely banned."""
     lane = _add_worktree(canonical, "lane-park")
     tracked = lane / "docs" / "concepts.yaml"
-    tracked.write_text("concepts: [{id: AU-KG.compute.wip}]\n", encoding="utf-8")
+    tracked.write_text("concepts: [{id: MERISTEM-KG.compute.wip}]\n", encoding="utf-8")
     assert lanes.tree_has_uncommitted_work(lane) is True
 
     parked = lanes.park_worktree(lane)
@@ -637,7 +637,7 @@ def test_park_gives_a_clean_tree_without_touching_refs_stash(canonical: Path) ->
     )
 
     lanes.unpark_worktree(lane)
-    assert "AU-KG.compute.wip" in tracked.read_text(encoding="utf-8")
+    assert "MERISTEM-KG.compute.wip" in tracked.read_text(encoding="utf-8")
     assert lanes.tree_has_uncommitted_work(lane) is True
 
 
@@ -702,7 +702,7 @@ def test_orphan_detector_discriminates_orphaned_from_restored(
     lane = _add_worktree(canonical, "lane-orphan")
     target = lane / "docs" / "concepts.yaml"
     target.write_text(
-        "concepts: [{id: AU-KG.compute.orphan-proof}]\n", encoding="utf-8"
+        "concepts: [{id: MERISTEM-KG.compute.orphan-proof}]\n", encoding="utf-8"
     )
 
     tree = _run(["git", "write-tree"], lane)
@@ -733,7 +733,7 @@ def test_orphan_detector_discriminates_orphaned_from_restored(
     # Simulate the crash window: pre-commit checked the change away and never
     # reached the `finally: git apply` that restores it.
     _run(["git", "checkout", "--", "."], lane)
-    assert "AU-KG.compute.orphan-proof" not in target.read_text(encoding="utf-8")
+    assert "MERISTEM-KG.compute.orphan-proof" not in target.read_text(encoding="utf-8")
 
     report = lanes.orphaned_precommit_patches(lane)
     assert len(report) == 1
@@ -745,7 +745,7 @@ def test_orphan_detector_discriminates_orphaned_from_restored(
 
     # Now actually replay it, exactly as the reported remedy says.
     _run(["git", "apply", str(patch_path)], lane)
-    assert "AU-KG.compute.orphan-proof" in target.read_text(encoding="utf-8")
+    assert "MERISTEM-KG.compute.orphan-proof" in target.read_text(encoding="utf-8")
 
     report_after = lanes.orphaned_precommit_patches(lane)
     assert len(report_after) == 1
@@ -850,10 +850,10 @@ def test_two_concurrent_reservations_in_two_worktrees_both_survive(
     queue = ctx.Queue()
     jobs = [
         ctx.Process(
-            target=_reserve_in, args=(str(one), "AU-KG.compute.lane-one", queue)
+            target=_reserve_in, args=(str(one), "MERISTEM-KG.compute.lane-one", queue)
         ),
         ctx.Process(
-            target=_reserve_in, args=(str(two), "AU-KG.compute.lane-two", queue)
+            target=_reserve_in, args=(str(two), "MERISTEM-KG.compute.lane-two", queue)
         ),
     ]
     for job in jobs:
@@ -863,8 +863,8 @@ def test_two_concurrent_reservations_in_two_worktrees_both_survive(
         assert job.exitcode == 0
     assert sorted(queue.get(timeout=5)[0] for _ in range(2)) == ["reserved", "reserved"]
     # Each lane wrote ONLY its own fragment, and each still holds its own claim.
-    assert [r["id"] for r in ca.read_ledger(one)] == ["AU-KG.compute.lane-one"]
-    assert [r["id"] for r in ca.read_ledger(two)] == ["AU-KG.compute.lane-two"]
+    assert [r["id"] for r in ca.read_ledger(one)] == ["MERISTEM-KG.compute.lane-one"]
+    assert [r["id"] for r in ca.read_ledger(two)] == ["MERISTEM-KG.compute.lane-two"]
     assert ca.fragment_dir(one).glob("*.yaml") is not None
     assert [p.name for p in sorted(ca.fragment_dir(one).glob("*.yaml"))] == [
         "lane-i.yaml"
@@ -882,7 +882,7 @@ def test_same_id_claimed_from_two_worktrees_has_exactly_one_winner(
     two = _add_worktree(canonical, "lane-l")
     ctx = mp.get_context("spawn")
     queue = ctx.Queue()
-    contended = "AU-KG.compute.contended"
+    contended = "MERISTEM-KG.compute.contended"
     jobs = [
         ctx.Process(target=_reserve_in, args=(str(path), contended, queue))
         for path in (one, two)
@@ -902,7 +902,9 @@ def test_reserving_from_a_worktree_never_writes_the_canonical_tree(
     before = (canonical / "docs" / "concept_reservations.yaml").read_text(
         encoding="utf-8"
     )
-    ca.reserve_concept_id("AU-KG.compute.isolated", session_id="lane", repo_root=lane)
+    ca.reserve_concept_id(
+        "MERISTEM-KG.compute.isolated", session_id="lane", repo_root=lane
+    )
     assert (canonical / "docs" / "concept_reservations.yaml").read_text(
         encoding="utf-8"
     ) == before
@@ -912,7 +914,7 @@ def test_reserving_from_a_worktree_never_writes_the_canonical_tree(
 def test_reconcile_sees_a_marker_that_landed_in_the_worktree(canonical: Path) -> None:
     """Evidence item 6: reconcile scanned canonical and refused to flip a branch claim."""
     lane = _add_worktree(canonical, "lane-n")
-    concept_id = "AU-KG.compute.branch-marker"
+    concept_id = "MERISTEM-KG.compute.branch-marker"
     ca.reserve_concept_id(concept_id, session_id="lane", repo_root=lane)
     (lane / "scion_sdk").mkdir(exist_ok=True)
     (lane / "scion_sdk" / "feature.py").write_text(
@@ -927,7 +929,7 @@ def test_reconcile_sees_a_marker_that_landed_in_the_worktree(canonical: Path) ->
 def test_a_lane_cannot_release_another_lanes_claim(canonical: Path) -> None:
     one = _add_worktree(canonical, "lane-o")
     two = _add_worktree(canonical, "lane-p")
-    concept_id = "AU-KG.compute.owned-elsewhere"
+    concept_id = "MERISTEM-KG.compute.owned-elsewhere"
     ca.reserve_concept_id(concept_id, session_id="lane", repo_root=one)
     # Make lane-p see lane-o's fragment (as a merge would) without granting it
     # permission to rewrite that fragment.
@@ -1563,7 +1565,9 @@ def test_gate_allows_a_lane_commit_and_a_canonical_merge(canonical: Path) -> Non
 def test_gate_refuses_a_hand_edited_generated_ledger_view(canonical: Path) -> None:
     guard = _guard_module()
     lane = _add_worktree(canonical, "lane-s")
-    ca.reserve_concept_id("AU-KG.compute.gated", session_id="lane", repo_root=lane)
+    ca.reserve_concept_id(
+        "MERISTEM-KG.compute.gated", session_id="lane", repo_root=lane
+    )
     view = lane / "docs" / "concept_reservations.yaml"
     assert guard._check_generated_view(lane, ["docs/concept_reservations.yaml"]) is None
     view.write_text(
@@ -1578,7 +1582,9 @@ def test_exported_gate_refuses_a_hand_edited_generated_view(tmp_path: Path) -> N
     """The manifest entry must preserve the generated-ledger refusal too."""
     foreign = _init_foreign_repo(tmp_path / "foreign-ledger")
     lane = _add_worktree(foreign, "exported-ledger-lane")
-    ca.reserve_concept_id("AU-KG.compute.gated", session_id="lane", repo_root=lane)
+    ca.reserve_concept_id(
+        "MERISTEM-KG.compute.gated", session_id="lane", repo_root=lane
+    )
     view = lane / "docs" / "concept_reservations.yaml"
     view.write_text(
         view.read_text(encoding="utf-8") + "# hand edit\n", encoding="utf-8"
@@ -1594,7 +1600,7 @@ def test_exported_gate_refuses_a_hand_edited_generated_view(tmp_path: Path) -> N
 def test_gate_allows_webui_to_stage_its_canonical_reservation_ledger(
     tmp_path: Path,
 ) -> None:
-    """The AU-only generated-view rule must not claim WebUI's same-named doc."""
+    """The Meristem-only generated-view rule must not claim WebUI's same-named doc."""
     webui = _init_foreign_repo(tmp_path / "agent-webui")
     (webui / "package.json").write_text('{"name":"agent-webui"}\n', encoding="utf-8")
     _run(["git", "add", "package.json"], webui)

@@ -1,4 +1,4 @@
-"""Repository Manager ontology contribution (CONCEPT:AU-KG.ontology.federation-provider-leg).
+"""Repository Manager ontology contribution (CONCEPT:MERISTEM-KG.ontology.federation-provider-leg).
 
 Data-only subpackage: it carries ``repository.ttl`` (the ``owl:Ontology``
 ``http://knuckles.team/kg/repository`` module) which the scion-sdk hub federates in via

@@ -1,4 +1,4 @@
-"""OKF-CIS grammar + vocab tests (CONCEPT:AU-OS.governance.concept-2).
+"""OKF-CIS grammar + vocab tests (CONCEPT:MERISTEM-OS.governance.concept-2).
 
 Covers id<->path<->IRI round-trip, the >=2-segment rule, strict rejection of
 malformed ids, the shared-pillar federation invariant, the
@@ -15,12 +15,12 @@ from repository_manager.governance import concept_hierarchy as ch
 @pytest.mark.parametrize(
     "cid,path",
     [
-        ("AU-KG.ingest.entropy-dedup", "AU/KG/ingest/entropy-dedup"),
-        ("EG-KG.storage.redb", "EG/KG/storage/redb"),
+        ("MERISTEM-KG.ingest.entropy-dedup", "MERISTEM/KG/ingest/entropy-dedup"),
+        ("MEDULLA-KG.storage.redb", "MEDULLA/KG/storage/redb"),
         ("DS-AHE.trainer.gpu-slot", "DS/AHE/trainer/gpu-slot"),
         (
-            "AU-OS.governance.concept-allocator.v2",
-            "AU/OS/governance/concept-allocator/v2",
+            "MERISTEM-OS.governance.concept-allocator.v2",
+            "MERISTEM/OS/governance/concept-allocator/v2",
         ),
     ],
 )
@@ -37,8 +37,8 @@ def test_id_path_iri_roundtrip(cid: str, path: str) -> None:
 
 def test_shared_pillar_federates_across_repos() -> None:
     # Two repos, same pillar -> the SAME pillar IRI (no slug): cross-repo linking.
-    au = ch.parse_okf_id("AU-KG.ingest.a")
-    eg = ch.parse_okf_id("EG-KG.storage.b")
+    au = ch.parse_okf_id("MERISTEM-KG.ingest.a")
+    eg = ch.parse_okf_id("MEDULLA-KG.storage.b")
     assert au.pillar_iri == eg.pillar_iri == f"{ch.PILLAR_IRI_BASE}/KG"
     assert au.scheme_iri != eg.scheme_iri  # but distinct owning schemes
 
@@ -46,13 +46,13 @@ def test_shared_pillar_federates_across_repos() -> None:
 @pytest.mark.parametrize(
     "bad",
     [
-        "AU-KG.ingest",  # only 1 segment -> a domain node, not a concept
+        "MERISTEM-KG.ingest",  # only 1 segment -> a domain node, not a concept
         "KG-2.101",
-        "AUX-KG.a.b",  # slug not 2 letters
-        "AU-XX.a.b",  # pillar not in the closed set
-        "AU-KG.A.b",  # uppercase segment
+        "A-KG.a.b",  # slug under 2 letters
+        "MERISTEM-XX.a.b",  # pillar not in the closed set
+        "MERISTEM-KG.A.b",  # uppercase segment
         "au-kg.a.b",  # lowercase slug/pillar
-        "AU-KG..b",  # empty segment
+        "MERISTEM-KG..b",  # empty segment
     ],
 )
 def test_rejects_malformed(bad: str) -> None:
@@ -69,21 +69,21 @@ def test_domain_vocab_closed_and_covers_all_pillars() -> None:
     # every listed domain is a valid concept-slug segment shape
     for pillar, domains in vocab.items():
         for dom in domains:
-            assert ch.is_okf_id(f"AU-{pillar}.{dom}.x"), (pillar, dom)
+            assert ch.is_okf_id(f"MERISTEM-{pillar}.{dom}.x"), (pillar, dom)
 
 
-def test_slug_registry_unique_and_two_letter() -> None:
+def test_slug_registry_unique_and_uppercase() -> None:
     reg = ch.load_slug_registry()
-    assert ch.slug_for_repo("scion-sdk") == "AU"
-    assert ch.slug_for_repo("epistemic-graph") == "EG"
+    assert ch.slug_for_repo("scion-sdk") == "SCION"
+    assert ch.slug_for_repo("epistemic-graph") == "MEDULLA"
     assert len(set(reg.values())) == len(reg)  # globally unique
-    assert all(len(s) == 2 and s.isupper() for s in reg.values())
+    assert all(len(s) >= 2 and s.isupper() for s in reg.values())
 
 
 def test_part_of_edges_chain_to_shared_pillar() -> None:
     parsed = [
-        ch.parse_okf_id("AU-KG.ingest.dedup"),
-        ch.parse_okf_id("EG-KG.storage.redb"),
+        ch.parse_okf_id("MERISTEM-KG.ingest.dedup"),
+        ch.parse_okf_id("MEDULLA-KG.storage.redb"),
     ]
     edges = dict(ch.okf_part_of_edges(parsed))
     # concept -> domain -> pillar; both repos' KG concepts reach one pillar node
@@ -101,17 +101,17 @@ def test_part_of_edges_chain_to_shared_pillar() -> None:
     ],
 )
 def test_marker_parser_preserves_adjacent_tail_semantics(tail: str) -> None:
-    text = f"CONCEPT:AU-KG.ingest.entropy-dedup{tail}) — Durable description"
+    text = f"CONCEPT:MERISTEM-KG.ingest.entropy-dedup{tail}) — Durable description"
 
     marker = next(ch.iter_okf_markers(text))
 
-    assert marker.id == "AU-KG.ingest.entropy-dedup"
+    assert marker.id == "MERISTEM-KG.ingest.entropy-dedup"
     assert marker.tail == tail
     assert marker.raw == f"CONCEPT:{marker.id}{tail}"
     assert text[marker.end :] == ") — Durable description"
 
 
 def test_marker_regex_findall_keeps_the_id_only_contract() -> None:
-    text = "CONCEPT:AU-KG.ingest.entropy-dedup/2.15"
+    text = "CONCEPT:MERISTEM-KG.ingest.entropy-dedup/2.15"
 
-    assert ch.OKF_MARKER_RE.findall(text) == ["AU-KG.ingest.entropy-dedup"]
+    assert ch.OKF_MARKER_RE.findall(text) == ["MERISTEM-KG.ingest.entropy-dedup"]

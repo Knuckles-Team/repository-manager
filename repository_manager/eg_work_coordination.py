@@ -10,7 +10,7 @@ that does not serve a method fails closed with :class:`EgWorkCoordinationUnavail
 
 The repository work-item projection (repository requests onto the generic
 WorkItem rows) is not served by EG yet, so :data:`repository_work_items` refuses
-every call until it is (handoff ``EG-WORK-COORDINATION``).
+every call until it is (handoff ``MEDULLA-WORK-COORDINATION``).
 """
 
 from __future__ import annotations

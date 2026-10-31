@@ -1,4 +1,4 @@
-# Shared-resource classification for concurrent lanes (CONCEPT:AU-OS.governance.lane-arbitration-classes).
+# Shared-resource classification for concurrent lanes (CONCEPT:MERISTEM-OS.governance.lane-arbitration-classes).
 #
 # Every resource that more than one lane can touch belongs to exactly ONE
 # arbitration class, and each class has exactly one mechanism

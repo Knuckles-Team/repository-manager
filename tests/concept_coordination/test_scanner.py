@@ -75,8 +75,8 @@ _LEGACY_NUMERIC_MARKER_2 = "CONCEPT:" + "ORCH-1.98"
         (_LEGACY_NUMERIC_MARKER, ("RM-1.2",)),
         (_LEGACY_NUMERIC_MARKER_2, ("ORCH-1.98",)),
         (
-            "CONCEPT:AU-OS.governance.cross-host-concept-reservation-authority",
-            ("AU-OS.governance.cross-host-concept-reservation-authority",),
+            "CONCEPT:MERISTEM-OS.governance.cross-host-concept-reservation-authority",
+            ("MERISTEM-OS.governance.cross-host-concept-reservation-authority",),
         ),
         ("no marker here", ()),
     ],
@@ -105,7 +105,7 @@ def test_diff_new_concept_ids_against_real_git_tree(repo: Path) -> None:
 def test_diff_new_concept_ids_flags_namespace_violations(repo: Path) -> None:
     base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
     (repo / "c.py").write_text(
-        '"""CONCEPT:AU-OS.governance.outside-namespace."""\n', encoding="utf-8"
+        '"""CONCEPT:MERISTEM-OS.governance.outside-namespace."""\n', encoding="utf-8"
     )
     _git(repo, "add", "c.py")
     _git(repo, "commit", "-q", "-m", "candidate")
@@ -117,7 +117,7 @@ def test_diff_new_concept_ids_flags_namespace_violations(repo: Path) -> None:
         candidate_sha=candidate_sha,
         allowed_namespaces=("RM-",),
     )
-    assert result.namespace_violations == ("AU-OS.governance.outside-namespace",)
+    assert result.namespace_violations == ("MERISTEM-OS.governance.outside-namespace",)
 
 
 def test_scan_tree_concept_markers_reports_real_locations(repo: Path) -> None:

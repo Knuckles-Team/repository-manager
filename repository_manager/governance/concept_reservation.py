@@ -1,6 +1,6 @@
 """Cross-host concept reservation authority.
 
-CONCEPT:AU-OS.governance.cross-host-concept-reservation-authority
+CONCEPT:MERISTEM-OS.governance.cross-host-concept-reservation-authority
 
 The repository-local allocator remains the compatibility projection for
 ``docs/concept_reservations.d``.  It is deliberately *not* the authority for
@@ -256,7 +256,7 @@ class ConceptNamespacePolicy:
     """Allowed namespace/range rules evaluated by the authority transaction.
 
     ``namespace`` is the exact OKF prefix below the pillar, for example
-    ``AU-OS.governance``.  Optional numeric bounds apply to a final ``-N``
+    ``MERISTEM-OS.governance``.  Optional numeric bounds apply to a final ``-N``
     suffix, allowing a deployment to partition an explicitly numeric range
     without imposing numeric identifiers on the existing semantic grammar.
     ``concept_prefixes`` can further partition a namespace by semantic prefix.
