@@ -45,8 +45,9 @@ def emulated(monkeypatch: pytest.MonkeyPatch) -> None:
 # -- user directories (XDG has a Windows equivalent) -------------------------
 
 
+@pytest.mark.usefixtures("windows")
 def test_state_home_prefers_xdg_then_localappdata(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, windows: None
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("XDG_STATE_HOME", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
@@ -55,16 +56,18 @@ def test_state_home_prefers_xdg_then_localappdata(
     assert pfs.state_home() == tmp_path / "xdg"
 
 
+@pytest.mark.usefixtures("windows")
 def test_config_home_uses_appdata_on_windows(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, windows: None
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setenv("APPDATA", str(tmp_path / "roaming"))
     assert pfs.config_home() == tmp_path / "roaming"
 
 
+@pytest.mark.usefixtures("windows")
 def test_home_falls_back_to_userprofile(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, windows: None
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     for name in ("HOME", "XDG_STATE_HOME", "LOCALAPPDATA"):
         monkeypatch.delenv(name, raising=False)
@@ -86,8 +89,9 @@ def test_posix_defaults_unchanged(
     assert pfs.cache_home() == tmp_path / ".cache"
 
 
+@pytest.mark.usefixtures("windows")
 def test_stores_resolve_default_path_through_state_home(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, windows: None
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from repository_manager.capacity_store import CapacityStore
     from repository_manager.gate_ledger import GateLedger
@@ -105,7 +109,8 @@ def test_stores_resolve_default_path_through_state_home(
 # -- descriptor-anchored operations without dir_fd ---------------------------
 
 
-def test_emulated_handles_read_write_and_nest(emulated: None, tmp_path: Path) -> None:
+@pytest.mark.usefixtures("emulated")
+def test_emulated_handles_read_write_and_nest(tmp_path: Path) -> None:
     with open_directory(tmp_path / "a" / "b", create=True) as handle:
         assert pfs.is_token(handle.fd)
         write_at(handle.fd, "note.txt", b"payload\r\n")
@@ -117,7 +122,8 @@ def test_emulated_handles_read_write_and_nest(emulated: None, tmp_path: Path) ->
     assert (tmp_path / "a" / "b" / "note.txt").read_bytes() == b"second"
 
 
-def test_emulated_handles_are_released_on_close(emulated: None, tmp_path: Path) -> None:
+@pytest.mark.usefixtures("emulated")
+def test_emulated_handles_are_released_on_close(tmp_path: Path) -> None:
     handle = open_directory(tmp_path)
     fds = handle.owned_fds
     assert fds and all(pfs.is_token(fd) for fd in fds)
@@ -125,9 +131,8 @@ def test_emulated_handles_are_released_on_close(emulated: None, tmp_path: Path) 
     assert not any(pfs.is_token(fd) for fd in fds)
 
 
-def test_emulated_open_rejects_symlink_component(
-    emulated: None, tmp_path: Path
-) -> None:
+@pytest.mark.usefixtures("emulated")
+def test_emulated_open_rejects_symlink_component(tmp_path: Path) -> None:
     real = tmp_path / "real"
     real.mkdir()
     link = tmp_path / "link"
@@ -139,9 +144,8 @@ def test_emulated_open_rejects_symlink_component(
         open_directory(link / "child")
 
 
-def test_emulated_pin_creation_and_children_pass_no_fds(
-    emulated: None, tmp_path: Path
-) -> None:
+@pytest.mark.usefixtures("emulated")
+def test_emulated_pin_creation_and_children_pass_no_fds(tmp_path: Path) -> None:
     with open_directory(tmp_path) as root:
         with pin_creation(root, tmp_path / "x" / "y") as parent:
             assert parent.pass_fds == ()
@@ -149,7 +153,8 @@ def test_emulated_pin_creation_and_children_pass_no_fds(
     assert (tmp_path / "x").is_dir()
 
 
-def test_emulated_cleanup_scandir_and_rmdir(emulated: None, tmp_path: Path) -> None:
+@pytest.mark.usefixtures("emulated")
+def test_emulated_cleanup_scandir_and_rmdir(tmp_path: Path) -> None:
     (tmp_path / "d").mkdir()
     (tmp_path / "d" / "f").write_text("x")
     with open_directory(tmp_path) as root:
@@ -165,7 +170,8 @@ def test_emulated_cleanup_scandir_and_rmdir(emulated: None, tmp_path: Path) -> N
     assert not (tmp_path / "d").exists()
 
 
-def test_open_root_is_the_anchor(emulated: None) -> None:
+@pytest.mark.usefixtures("emulated")
+def test_open_root_is_the_anchor() -> None:
     fd = pfs.open_root()
     try:
         assert pfs.fd_path(fd) == (Path(os.getcwd()).anchor or os.sep)
@@ -183,7 +189,8 @@ def test_posix_handles_are_real_descriptors(
         assert pfs.fd_path(handle.fd) == f"/proc/self/fd/{handle.fd}"
 
 
-def test_popen_fd_kwargs_empty_on_windows(windows: None) -> None:
+@pytest.mark.usefixtures("windows")
+def test_popen_fd_kwargs_empty_on_windows() -> None:
     assert pfs.popen_fd_kwargs((3, 4)) == {}
     assert "creationflags" in pfs.new_group_kwargs()
     assert "start_new_session" not in pfs.new_group_kwargs()
@@ -215,14 +222,16 @@ class _Proc:
         self.calls.append("kill")
 
 
-def test_windows_graceful_stop_terminates(windows: None) -> None:
+@pytest.mark.usefixtures("windows")
+def test_windows_graceful_stop_terminates() -> None:
     proc = _Proc()
     pfs.terminate_process_group(proc)  # type: ignore[arg-type]
     assert proc.calls == ["terminate"]
 
 
+@pytest.mark.usefixtures("windows")
 def test_windows_forced_stop_kills_tree_with_taskkill(
-    monkeypatch: pytest.MonkeyPatch, windows: None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: list[list[str]] = []
 
@@ -237,8 +246,9 @@ def test_windows_forced_stop_kills_tree_with_taskkill(
     assert proc.calls == []
 
 
+@pytest.mark.usefixtures("windows")
 def test_windows_forced_stop_falls_back_to_kill_when_taskkill_fails(
-    monkeypatch: pytest.MonkeyPatch, windows: None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         pfs.subprocess,
@@ -250,7 +260,8 @@ def test_windows_forced_stop_falls_back_to_kill_when_taskkill_fails(
     assert proc.calls == ["kill"]
 
 
-def test_windows_stop_of_exited_process_is_a_noop(windows: None) -> None:
+@pytest.mark.usefixtures("windows")
+def test_windows_stop_of_exited_process_is_a_noop() -> None:
     proc = _Proc(running=False)
     pfs.terminate_process_group(proc, force=True)  # type: ignore[arg-type]
     assert proc.calls == []
@@ -262,8 +273,9 @@ def test_force_signal_without_sigkill(monkeypatch: pytest.MonkeyPatch) -> None:
     assert value != signal.SIGTERM
 
 
+@pytest.mark.usefixtures("windows")
 def test_supervisor_spawn_and_signal_on_windows(
-    monkeypatch: pytest.MonkeyPatch, windows: None, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     captured: dict[str, object] = {}
 
@@ -323,8 +335,9 @@ def test_hostname_without_uname(monkeypatch: pytest.MonkeyPatch) -> None:
 # -- links -------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("windows")
 def test_dir_link_falls_back_to_junction_without_privilege(
-    monkeypatch: pytest.MonkeyPatch, windows: None, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     def denied(*_a: object, **_k: object) -> None:
         err = OSError("privilege not held")
@@ -341,8 +354,9 @@ def test_dir_link_falls_back_to_junction_without_privilege(
     assert made == [(str(tmp_path / "target"), str(tmp_path / "link"))]
 
 
+@pytest.mark.usefixtures("windows")
 def test_dir_link_other_errors_propagate(
-    monkeypatch: pytest.MonkeyPatch, windows: None, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     def broken(*_a: object, **_k: object) -> None:
         raise PermissionError("nope")
@@ -361,8 +375,9 @@ def test_dir_link_posix_creates_symlink(tmp_path: Path) -> None:
     assert pfs.read_link(link) == str(target)
 
 
+@pytest.mark.usefixtures("windows")
 def test_replace_link_on_windows_removes_existing_link_first(
-    monkeypatch: pytest.MonkeyPatch, windows: None, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     (tmp_path / "old").mkdir()
     (tmp_path / "new").mkdir()
@@ -388,9 +403,8 @@ def test_replace_link_on_windows_removes_existing_link_first(
     assert pfs.read_link(link) == str(tmp_path / "new")
 
 
-def test_read_link_strips_extended_prefix(
-    monkeypatch: pytest.MonkeyPatch, windows: None
-) -> None:
+@pytest.mark.usefixtures("windows")
+def test_read_link_strips_extended_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "readlink", lambda _p: "\\\\?\\C:\\work\\repo")
     assert pfs.read_link("x") == "C:\\work\\repo"
     monkeypatch.setattr(os, "readlink", lambda _p: "\\\\?\\UNC\\host\\share")
@@ -405,8 +419,9 @@ def test_file_flags_adds_binary_where_defined(monkeypatch: pytest.MonkeyPatch) -
     assert pfs.file_flags(os.O_RDONLY) & 0x8000
 
 
+@pytest.mark.usefixtures("windows")
 def test_directory_fsync_is_noop_on_windows(
-    monkeypatch: pytest.MonkeyPatch, windows: None, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     def forbidden(*_a: object, **_k: object) -> int:
         raise AssertionError("a directory must not be opened on Windows")
@@ -424,9 +439,8 @@ def test_directory_fsync_flushes_on_posix(tmp_path: Path) -> None:
         pfs.fsync_directory_path(tmp_path / "absent")
 
 
-def test_no_follow_flag_windows_has_none(
-    monkeypatch: pytest.MonkeyPatch, windows: None
-) -> None:
+@pytest.mark.usefixtures("windows")
+def test_no_follow_flag_windows_has_none(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
     assert lanes._no_follow_flag("x") == 0
     assert lanes._lease_publication_flags() & os.O_EXCL
@@ -463,8 +477,9 @@ def test_path_containment_is_case_sensitive_on_posix() -> None:
         assert not mcp_server._is_within("/A/b", "/a/b")
 
 
+@pytest.mark.usefixtures("windows")
 def test_stage_command_uses_comspec_on_windows(
-    monkeypatch: pytest.MonkeyPatch, windows: None, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("COMSPEC", "C:\\Windows\\System32\\cmd.exe")
     argv = job_outcome._stage_argv(
