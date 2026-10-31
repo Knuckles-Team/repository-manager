@@ -26,6 +26,7 @@ import signal
 import stat
 import subprocess  # nosec B404 - taskkill with a fixed argv
 import threading
+from typing import Any
 from pathlib import Path
 
 _TOKEN_BASE = 1 << 30
@@ -222,7 +223,7 @@ def child_pass_fds(fds: tuple[int, ...]) -> tuple[int, ...]:
     return tuple(fd for fd in fds if not is_token(fd))
 
 
-def popen_fd_kwargs(fds: tuple[int, ...]) -> dict[str, object]:
+def popen_fd_kwargs(fds: tuple[int, ...]) -> dict[str, Any]:
     """``Popen`` kwargs that inherit real descriptors; empty on Windows."""
     real = child_pass_fds(fds)
     if is_windows() or not real:
@@ -239,7 +240,9 @@ _ERROR_PRIVILEGE_NOT_HELD = 1314
 
 def is_link(path: str | os.PathLike[str]) -> bool:
     """True for a symlink, or a directory junction on Windows."""
-    return os.path.islink(path) or os.path.isjunction(path)
+    return os.path.islink(path) or getattr(os.path, "isjunction", lambda _p: False)(
+        path
+    )
 
 
 def read_link(path: str | os.PathLike[str]) -> str:
@@ -272,7 +275,7 @@ def create_dir_link(
             raise
         import _winapi  # Windows-only stdlib module
 
-        _winapi.CreateJunction(os.fspath(target), os.fspath(link))
+        _winapi.CreateJunction(os.fspath(target), os.fspath(link))  # type: ignore[attr-defined]
 
 
 def replace_link(staged: str | os.PathLike[str], link: str | os.PathLike[str]) -> None:
@@ -335,7 +338,7 @@ def cache_home() -> Path:
 
 
 #: ``Popen`` kwargs that put a child in its own group/session.
-def new_group_kwargs() -> dict[str, object]:
+def new_group_kwargs() -> dict[str, Any]:
     if is_windows():
         return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
     return {"start_new_session": True}
