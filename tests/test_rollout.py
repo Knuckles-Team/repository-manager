@@ -183,7 +183,7 @@ class FakeForge:
         if sub == "config":
             return Completed(
                 0,
-                {"user.name": "Audel Rouhi\n", "user.email": "a@example.com\n"}[
+                {"user.name": "Example Maintainer\n", "user.email": "a@example.com\n"}[
                     argv[2]
                 ],
             )
