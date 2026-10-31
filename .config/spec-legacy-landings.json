@@ -1,0 +1,127 @@
+{
+  "RM-CONNECTOR-R001": [
+    "68211dcdc4a0",
+    "c4cd54f6527a",
+    "d00c0834551e"
+  ],
+  "RM-CONNECTOR-R002": [
+    "c7068e31825a"
+  ],
+  "RM-CONNECTOR-R003": [
+    "d00c0834551e",
+    "f6407b9f45af"
+  ],
+  "RM-CONNECTOR-R004": [
+    "269c661d12fa"
+  ],
+  "RM-CONNECTOR-R005": [
+    "a47346f9c0f0",
+    "d00c0834551e",
+    "dcb852f23680"
+  ],
+  "RM-CONNECTOR-R006": [
+    "68211dcdc4a0",
+    "c4cd54f6527a",
+    "d00c0834551e"
+  ],
+  "RM-GOVERNANCE-R001": [
+    "3af7957a7a03",
+    "63c543e980dc",
+    "d00c0834551e",
+    "f6407b9f45af"
+  ],
+  "RM-GOVERNANCE-R004": [
+    "127a8384c249"
+  ],
+  "RM-GOVERNANCE-R012": [
+    "127a8384c249",
+    "8a96a9e0cfeb"
+  ],
+  "RM-GOVERNANCE-R013": [
+    "127a8384c249",
+    "8a96a9e0cfeb"
+  ],
+  "RM-GOVERNANCE-R017": [
+    "127a8384c249",
+    "8a96a9e0cfeb"
+  ],
+  "RM-GOVERNANCE-R018": [
+    "3af7957a7a03",
+    "d00c0834551e",
+    "ff21c02187b0"
+  ],
+  "RM-GOVERNANCE-R019": [
+    "127a8384c249",
+    "8a96a9e0cfeb"
+  ],
+  "RM-GOVERNANCE-R024": [
+    "d84cc3923887"
+  ],
+  "RM-GOVERNANCE-R025": [
+    "78c6baf04778"
+  ],
+  "RM-GOVERNANCE-R026": [
+    "0454cd888aac"
+  ],
+  "RM-GOVERNANCE-R027": [
+    "0454cd888aac",
+    "127a8384c249",
+    "3af7957a7a03",
+    "8a96a9e0cfeb"
+  ],
+  "RM-GOVERNANCE-R028": [
+    "269c661d12fa"
+  ],
+  "RM-GOVERNANCE-R029": [
+    "e20bbf7b4ff5"
+  ],
+  "RM-GOVERNANCE-R030": [
+    "0454cd888aac",
+    "63c543e980dc"
+  ],
+  "RM-IDENTITY-R001": [
+    "8ee2778dcc35"
+  ],
+  "RM-IDENTITY-R002": [
+    "8ee2778dcc35"
+  ],
+  "RM-IDENTITY-R003": [
+    "8ee2778dcc35",
+    "9a933f61ad22"
+  ],
+  "RM-IDENTITY-R004": [
+    "8ee2778dcc35",
+    "9a933f61ad22"
+  ],
+  "RM-IDENTITY-R005": [
+    "8ee2778dcc35",
+    "9a933f61ad22"
+  ],
+  "RM-IDENTITY-R006": [
+    "8ee2778dcc35"
+  ],
+  "RM-MATERIALIZE-R002": [
+    "c52511ddd596"
+  ],
+  "RM-RELEASE-R001": [
+    "c930dfd5c01a"
+  ],
+  "RM-RELEASE-R002": [
+    "c930dfd5c01a"
+  ],
+  "RM-RELEASE-R003": [
+    "c930dfd5c01a"
+  ],
+  "RM-RELEASE-R004": [
+    "c930dfd5c01a"
+  ],
+  "RM-RELEASE-R005": [
+    "c930dfd5c01a"
+  ],
+  "RM-RELEASE-R006": [
+    "d418380165cf"
+  ],
+  "RM-RELEASE-R007": [
+    "c930dfd5c01a"
+  ]
+}
