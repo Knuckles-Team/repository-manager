@@ -13,6 +13,7 @@
         "DEVELOPMENT_SURFACESTOOL": "True",
         "DOCS_READINESSTOOL": "True",
         "GATESTOOL": "True",
+        "ROLLOUTTOOL": "True",
         "GH_TOKEN": "your_github_token_here",
         "GITHUB_TOKEN": "your_github_token_here",
         "GITLAB_HOST": "https://gitlab.com",

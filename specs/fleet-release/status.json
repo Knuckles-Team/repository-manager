@@ -2,7 +2,7 @@
   "schema_version": 2,
   "spec_id": "RM-RELEASE",
   "owner_repo": "repository-manager",
-  "delivery_state": "LANDED",
+  "delivery_state": "SPECIFIED",
   "requirement_ids": [
     "RM-RELEASE-R001",
     "RM-RELEASE-R002",
@@ -11,7 +11,8 @@
     "RM-RELEASE-R005",
     "RM-RELEASE-R006",
     "RM-RELEASE-R007",
-    "RM-RELEASE-R008"
+    "RM-RELEASE-R008",
+    "RM-RELEASE-R009"
   ],
   "requirements": [
     {
@@ -59,11 +60,11 @@
         "c930dfd5c01a"
       ],
       "verified_by": [
-        "tests/test_dependency_readiness.py:1006",
-        "tests/test_dependency_readiness.py:1017",
-        "tests/test_dependency_readiness.py:1024",
-        "tests/test_dependency_readiness.py:1042",
-        "tests/test_dependency_readiness.py:1051"
+        "tests/test_dependency_readiness.py:648",
+        "tests/test_dependency_readiness.py:667",
+        "tests/test_dependency_readiness.py:687",
+        "tests/test_dependency_readiness.py:736",
+        "tests/test_dependency_readiness.py:751"
       ]
     },
     {
@@ -94,6 +95,13 @@
       "verified_by": [
         "tests/test_package_publication_workflow.py:9"
       ]
+    },
+    {
+      "id": "RM-RELEASE-R009",
+      "title": "Deterministic, resumable dependency-floor rollout through PRs",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
     }
   ]
 }

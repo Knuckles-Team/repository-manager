@@ -2,17 +2,15 @@
 
 ``run`` (CCN 82) is a CLI dispatcher: argparse construction followed by a long
 chain of ``if args.X:`` verb dispatches with a few sequential dependencies
-(``has_errors`` flows from the gate dispatch into --bump/--maintain/--push;
-``--validate`` resets ``args.bump``/``args.push`` so those verbs do not also
-fire). These tests pin exactly the branches this lane's pure extract-method
+(``has_errors`` flows from the gate dispatch into --validate). These tests pin exactly the branches this lane's pure extract-method
 refactor touches: the priority order of the immediate-exit verbs, the
 manifest gate's validation/early-return/exit-1 paths, the missing-workspace-
 file exit path, the repositories filter, --commit's missing-message guard,
-the --gate / --gate-retest dispatch (including failure counting), and the
---validate -> --bump/--maintain/--push has_errors + reset chain.
+the --gate / --gate-retest dispatch (including failure counting), and
+--validate, plus the refusal of the retired phased bump/push flags.
 
 The existing ``tests/test_repository_manager_cli.py`` already covers
---maintain/--clone/--install through the packaged ``main()`` entrypoint and
+--clone/--install through the packaged ``main()`` entrypoint and
 is reused as-is; this file exercises the branches it does not reach, calling
 ``run(runtime)`` directly against a constructed ``CliRuntime`` so each test
 can inject a mock git object without going through the real ``Git`` factory.
@@ -266,7 +264,7 @@ def test_gate_clean_status_warns_and_does_not_set_has_errors(runtime_and_factory
     )
 
 
-def test_gate_failure_count_marks_has_errors_and_skips_push(runtime_and_factory, git):
+def test_gate_failure_count_marks_has_errors(runtime_and_factory, git):
     runtime, _ = runtime_and_factory
 
     def fake_dispatch(action, **kwargs):
@@ -277,7 +275,7 @@ def test_gate_failure_count_marks_has_errors_and_skips_push(runtime_and_factory,
     with (
         patch("repository_manager.gate_runner.dispatch", side_effect=fake_dispatch),
         patch("repository_manager.gate_runner.LocalJobStore") as MockStore,
-        _argv("--gate", "fast", "--push"),
+        _argv("--gate", "fast"),
     ):
         store = MockStore.return_value
         store.submit_job.return_value = "job-1"
@@ -287,10 +285,6 @@ def test_gate_failure_count_marks_has_errors_and_skips_push(runtime_and_factory,
         run(runtime)
     assert any(
         "gate failed" in str(call.args[0])
-        for call in runtime.logger.error.call_args_list
-    )
-    assert any(
-        "Skipping push" in str(call.args[0])
         for call in runtime.logger.error.call_args_list
     )
 
@@ -316,122 +310,31 @@ def test_gate_retest_reports_nothing_to_retest_for_missing_job_id(
 
 
 # --------------------------------------------------------------------------
-# --validate resets --bump/--push and has_errors gates them
+# --validate, and the retired phased bump/push flags
 # --------------------------------------------------------------------------
 
 
-def test_validate_failure_prevents_bump_and_push(runtime_and_factory, git):
+def test_validate_failure_is_reported(runtime_and_factory, git):
     runtime, _ = runtime_and_factory
     git.validate_and_release.return_value = {"passed": False}
-    with _argv("--validate", "--bump", "patch", "--push"):
-        run(runtime)
+    with _argv("--validate"):
+        assert run(runtime) == 1
     runtime.logger.error.assert_any_call("Validation failed with errors.")
-    # --validate resets args.bump/args.push to None/False, so bump_version
-    # and phased_push must never be called even though has_errors alone
-    # would also have blocked them.
-    git.bump_version.assert_not_called()
-    git.phased_push.assert_not_called()
+    git.validate_and_release.assert_called_once()
 
 
-def test_validate_success_still_clears_bump_and_push_flags(runtime_and_factory, git):
+def test_validate_success_logs_success(runtime_and_factory, git):
     runtime, _ = runtime_and_factory
     git.validate_and_release.return_value = {"passed": True}
-    with _argv("--validate", "--bump", "patch", "--push"):
+    with _argv("--validate"):
         run(runtime)
     runtime.logger.info.assert_any_call(
         "Validation and subsequent operations completed successfully."
     )
-    git.bump_version.assert_not_called()
-    git.phased_push.assert_not_called()
 
 
-def test_standalone_bump_uses_the_phased_selector(runtime_and_factory, git):
+def test_retired_phased_flags_are_rejected(runtime_and_factory):
     runtime, _ = runtime_and_factory
-    git._resolve_maintenance_config.return_value = {"phases": []}
-    git.phased_bumpversion.return_value = []
-    with _argv("--bump", "patch"):
-        run(runtime)
-    git.bump_version.assert_not_called()
-    git.phased_bumpversion.assert_called_once_with(
-        part="patch",
-        start_phase=1,
-        dry_run=False,
-        config={"phases": []},
-        single_phase=False,
-        project_filter=None,
-        auto_start=True,
-    )
-
-
-def test_standalone_bump_invalid_maintenance_config_exits_nonzero(
-    runtime_and_factory, git
-):
-    runtime, _ = runtime_and_factory
-    git._resolve_maintenance_config.return_value = None
-    with _argv("--bump", "patch"):
-        assert run(runtime) == 1
-    git.phased_bumpversion.assert_not_called()
-
-
-def test_standalone_bump_non_object_json_config_exits_1(runtime_and_factory, tmp_path):
-    runtime, _ = runtime_and_factory
-    bad_config = tmp_path / "bad-shape.json"
-    bad_config.write_text("[]")
-    with (
-        _argv("--bump", "patch", "--config", str(bad_config)),
-        pytest.raises(SystemExit) as exc,
-    ):
-        run(runtime)
-    assert exc.value.code == 1
-
-
-def test_standalone_bump_result_error_is_nonzero(runtime_and_factory, git):
-    runtime, _ = runtime_and_factory
-    git._resolve_maintenance_config.return_value = {"phases": []}
-    git.phased_bumpversion.return_value = [MagicMock(status="error")]
-    with _argv("--bump", "patch"):
-        assert run(runtime) == 1
-
-
-def test_maintain_config_load_failure_exits_1(runtime_and_factory, tmp_path):
-    runtime, _ = runtime_and_factory
-    bad_config = tmp_path / "bad.json"
-    bad_config.write_text("{not json")
-    with (
-        _argv("--maintain", "--config", str(bad_config)),
-        pytest.raises(SystemExit) as exc,
-    ):
-        run(runtime)
-    assert exc.value.code == 1
-
-
-def test_push_config_load_failure_exits_1(runtime_and_factory, tmp_path):
-    runtime, _ = runtime_and_factory
-    bad_config = tmp_path / "bad.json"
-    bad_config.write_text("{not json")
-    with (
-        _argv("--push", "--config", str(bad_config)),
-        pytest.raises(SystemExit) as exc,
-    ):
-        run(runtime)
-    assert exc.value.code == 1
-
-
-def test_push_result_error_is_reported_as_nonzero_cli_status(runtime_and_factory, git):
-    runtime, _ = runtime_and_factory
-    git.phased_push.return_value = [MagicMock(status="error")]
-    with _argv("--push"):
-        assert run(runtime) == 1
-    git.phased_push.assert_called_once()
-
-
-def test_push_skipped_when_has_errors_from_failed_maintain(runtime_and_factory, git):
-    runtime, _ = runtime_and_factory
-    err = MagicMock(status="error")
-    git.phased_bumpversion.return_value = [err]
-    with _argv("--maintain", "--push"):
-        run(runtime)
-    git.phased_push.assert_not_called()
-    runtime.logger.error.assert_any_call(
-        "Skipping push due to preceding validation or bump errors."
-    )
+    for flag in ("--maintain", "--push", "--phase"):
+        with _argv(flag), pytest.raises(SystemExit):
+            run(runtime)

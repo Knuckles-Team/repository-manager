@@ -2,7 +2,7 @@
 
 ## Existing wiring to reuse
 
-`repository_manager/workspace_manifest.py` validates and selects portable repository entries. `repository_manager/dependency_readiness.py::check_phase_direction` already checks manifest phase direction. `repository_manager/development/workspace_release.py` defines `DependencyGraph`, `WorkspaceReleasePlan`, and digest rules; `workspace_release_plan.py::build_frozen_release_plan` builds the decision artifact. `repository_manager/merge_queue_runner.py::run_phased_push` and `repository_manager/mcp_tools/git.py` are execution entry points. Extend those seams; do not add a second planner or hidden release order.
+`repository_manager/workspace_manifest.py` validates and selects portable repository entries. `repository_manager/dependency_readiness.py::check_phase_direction` already checks manifest phase direction. `repository_manager/development/workspace_release.py` defines `DependencyGraph`, `WorkspaceReleasePlan`, and digest rules; `workspace_release_plan.py::build_frozen_release_plan` builds the decision artifact. `repository_manager/rollout.py` (CLI `repository-manager rollout`, MCP `rm_rollout`) is the fleet dependency-floor execution entry point. Extend those seams; do not add a second planner or hidden release order.
 
 ## Data flow and authority
 
@@ -18,7 +18,7 @@
 
 ## Contributor setup
 
-Clone this public repository, install Python from `pyproject.toml` with `uv sync --extra test`, and run `uv run pytest tests/test_workspace_release_dag.py tests/test_workspace_release_plan.py tests/test_phase_direction.py tests/test_phased_push.py`. The fixtures under `tests/fixtures/workspace_release/` provide a small independent fleet. Inspect `repository_manager/workspace.yml` as a portable seed example; replace its repository URLs and selectors for personal deployments. No running graph service or configured forge token is needed for fixture tests.
+Clone this public repository, install Python from `pyproject.toml` with `uv sync --extra test`, and run `uv run pytest tests/test_workspace_release_dag.py tests/test_workspace_release_plan.py tests/test_phase_direction.py tests/test_rollout.py`. The fixtures under `tests/fixtures/workspace_release/` provide a small independent fleet. Inspect `repository_manager/workspace.yml` as a portable seed example; replace its repository URLs and selectors for personal deployments. No running graph service or configured forge token is needed for fixture tests.
 
 ## Compatibility and security
 
@@ -27,3 +27,5 @@ Existing manifest selectors remain readable during migration. Reject traversal, 
 ## Amendments
 
 2026-10-22: RM-RELEASE-R008 narrows package publication to bump2version-generated v-prefixed tags. Reuse the canonical Python pipeline with require-tag enabled; do not duplicate or bypass its frozen-source/conflicting-tag guard. Source CI remains independent. The next release uses the normal bumper and publishes its matching commit/tag together after validation; existing release tags remain immutable.
+
+2026-10-30: RM-RELEASE-R009 retires phased bump/push. Root cause: `phased_bumpversion`/`phased_push` committed and pushed straight to `main`, but connectors now land only through PRs with auto-merge, required CI and owner-only merges; its `maintenance.phases` still named pre-rename packages (Epistemic Graph, agent-connector-sdk); and it bumped versions without ever raising a dependency floor or relocking, so it could not roll a dependency at all. `repository_manager/rollout.py` replaces it: forge-read planning, an XDG-state JSONL ledger keyed by (dependency, floor, repo) for resume, per-repo worktrees off `origin/<default>`, a verified relock, the repository's bumpversion config, `pipelines-hook spec-status --write` so the PR carries the current status schema, PRs with `--auto --rebase`, and a separate idempotent tag step. All process calls go through an injectable runner; only pathlib/subprocess/threading are used, so it runs on Windows.

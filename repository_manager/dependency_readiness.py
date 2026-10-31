@@ -2,38 +2,16 @@
 
 CONCEPT:RM-DEP-READY
 
-The problem this closes, with a live instance. ``phased_push`` (CONCEPT:RM-PUSH)
-pushes the fleet in dependency order: e.g. phase 2 publishes ``epistemic-graph``,
-then a blind ``wait_minutes: 30`` sleep, then phase 3 pushes ``scion-sdk``
-(whose ``pyproject.toml`` declares ``epistemic-graph[full]>=2.23.2,<3.0.0``). The
-sleep is a **guess**: slow when the publish takes 4 minutes, and silently WRONG
-when the publish never lands — the wave marches on and pushes every dependent
-against a stale/unsatisfiable dependency. On 2026-08-12 that gap was not
-hypothetical: PyPI held only ``epistemic-graph==2.23.0`` while
-``scion-sdk`` required ``>=2.23.2`` — an unsatisfiable constraint nothing
+The problem this closes: an intra-fleet dependency constraint that no published
+version satisfies (on 2026-08-12 PyPI held only ``epistemic-graph==2.23.0`` while
+``agent-connector-sdk`` required ``>=2.23.2``) — an unsatisfiable constraint nothing
 in this fleet detected.
 
-This module is the ONE artifact-availability primitive both layers of the fix
-share (never two parallel implementations of "is this constraint satisfiable"):
-
-* **Layer 1 — repo-level manual release hook.** ``check_tree`` reads *one repo's own*
-  declared dependencies (``pyproject.toml``), keeps only the ones naming another
-  fleet package, and checks each declared constraint against the configured
-  index. Wired into ``.pre-commit-config.yaml`` at the ``manual`` stage and
-  run explicitly during a release wave. Routine pushes do not query an
-  external package index.
-* **Layer 2 — the ``phased_push`` wave barrier.** :func:`await_gate_readiness`
-  decides a phase transition by RUNNING each downstream repo's manual release
-  gate (:func:`repository_manager.gates.run_gate_stage`) with retry/backoff up to a
-  ``wait_minutes`` ceiling — never a second, parallel "ask the index myself"
-  implementation. Layer 1's hook already fails closed on an unsatisfiable
-  constraint; Layer 2's only job is retry/backoff/deadline orchestration
-  around calling it, so there is exactly one mechanism that decides both
-  "is this phase transition ready" while ordinary pushes remain local.
-  Supersedes an earlier poll-the-index-directly
-  ``await_constraints`` design (removed): that duplicated Layer 1's own check
-  in a second implementation, and could report "ready" while the actual gate
-  a push would run still failed for a reason the poll didn't know about.
+``check_tree`` reads *one repo's own* declared dependencies (``pyproject.toml``),
+keeps only the ones naming another fleet package, and checks each declared
+constraint against the configured index. It is wired into
+``.pre-commit-config.yaml`` at the ``manual`` stage and run explicitly during a
+release. Routine pushes do not query an external package index.
 
 Design (CONCEPT:RM-DEP-READY pluggable-backend). ``IndexBackend`` is a two-method
 protocol; :class:`PyPISimpleIndexBackend` is the default implementation over the
@@ -42,7 +20,7 @@ against, so it works unmodified against pypi.org, a GitLab PyPI package-registry
 proxy, devpi, or any other PEP 503-compliant private index without any
 ``pypi.org``-specific code. A container-registry or GitLab generic-package
 backend for other artifact kinds is a second class implementing the same
-protocol — nothing else here or in ``phased_push`` changes.
+protocol — nothing else here changes.
 
 Fail-closed, with one loud, audited escape hatch (never a silent skip). An
 index that cannot be reached is reported distinctly from a package the index
@@ -55,22 +33,8 @@ and appended to an audit log (:func:`_record_override`) every time it fires, so
 pushing a fix to a repo whose own dependency is temporarily unpublished is never
 permanently blocked, and the bypass is never invisible.
 
-Three further gaps, all closed in Layer 2 (:func:`await_gate_readiness`), the
-owner reports as still causing later phases to fail because they install an
-earlier phase's package before it is actually on PyPI:
+Wheel availability:
 
-* **Targets cross-check** (:func:`cross_check_targets`). The barrier only
-  gate-checks the ``targets`` its caller computed — normally a narrowed slice
-  (e.g. ``phased_push``'s ``later_phases``). If that narrowing misses a repo
-  that genuinely names the just-published package, the phase "succeeds"
-  because *nothing the barrier was told about* declared a constraint — not
-  because nothing actually depends on it. :func:`cross_check_targets`
-  independently rescans a caller-supplied ``candidate_repos`` universe (never
-  reusing the caller's own narrowed list) for every repo whose OWN
-  ``pyproject.toml`` names one of the published packages, and reports any
-  that ``targets`` omitted. A hit there is a hard abort with a distinct
-  ``TARGETS_INCOMPLETE`` reason — "something did depend on it and the barrier
-  didn't know" is the real failure "nothing declared a constraint" was hiding.
 * **The wheel rule** (pipelines ``PIPE-RELEASE-R008``; :class:`AvailableVersions`,
   :data:`CheckStatus`). Consumers install wheels only, so a version counts as
   available when the index holds a wheel compatible with the target
@@ -85,17 +49,6 @@ earlier phase's package before it is actually on PyPI:
   forge cannot say, the version is judged by the rule above. This replaces
   an earlier rule that treated any version lacking either a wheel or an sdist
   as mid-publish; a wheel-only release then failed forever.
-* **CI-run barrier** (:mod:`repository_manager.forge_status`). Before
-  retrying a downstream repo's gate at all, :func:`await_gate_readiness` can
-  ask the publishing repo's own forge (GitHub Actions / GitLab CI, via
-  :func:`repository_manager.forge_status.backend_for_remote`) whether the
-  release run for the published tag already concluded. A run that concluded
-  with a non-success ``conclusion`` aborts immediately, with the run's own
-  URL, instead of burning the full ``wait_minutes`` retry ceiling polling an
-  index for an artifact a failed CI run already proved is never coming. An
-  ``"unknown"`` forge status (no client installed, forge unreachable, ref
-  never ran) degrades to today's behavior — proceed straight to index-polling
-  — never blocks on a signal this module could not actually obtain.
 
 Also: when yanked versions were excluded from a match that WOULD otherwise
 have satisfied the specifier, :func:`check_constraint` reports them in
@@ -108,7 +61,6 @@ from __future__ import annotations
 import ast
 import json
 import logging
-import math
 import os
 import re
 import shutil
@@ -160,8 +112,6 @@ __all__ = [
     "ConstraintCheck",
     "InvalidDependencyMetadata",
     "ReadinessReport",
-    "GateCheckFailure",
-    "GateReadinessOutcome",
     "IndexBackend",
     "IndexQueryError",
     "IndexUnreachableError",
@@ -185,8 +135,6 @@ __all__ = [
     "check_phase_direction_here",
     "check_constraint",
     "check_tree",
-    "cross_check_targets",
-    "await_gate_readiness",
     "dispatch",
     "main",
 ]
@@ -204,8 +152,7 @@ OVERRIDE_ENV_VAR = "RM_DEPENDENCY_READINESS_OVERRIDE_REASON"
 
 #: The pre-commit hook id Layer 1 registers itself under (see
 #: ``.pre-commit-config.yaml`` and ``scripts/sweep_dependency_readiness_hook.py``).
-#: Layer 2 (:func:`await_gate_readiness`) scopes its ``run_gate_stage`` calls to
-#: exactly this id, and :func:`hook_declared` probes for it, so the hook's own
+#: :func:`hook_declared` probes for it, so the hook's own
 #: identity is declared in exactly one place.
 HOOK_ID = "dependency-readiness"
 
@@ -607,12 +554,7 @@ def resolve_index_urls(repo_path: str | Path) -> list[str]:
 #: third-party ``langfuse`` SDK) from being mistaken for a fleet-published
 #: package this gate should hold to a version constraint.
 #:
-#: Public (not a leading-underscore private) because a second call site reuses
-#: it for the exact same distinction: ``Git.phased_push``'s ``bulk_push``
-#: phases (CONCEPT:RM-PUSH) resolve against the WHOLE workspace manifest's
-#: project map, which also contains every ``images/``/``services/`` repo —
-#: this is the one shared definition of "package tree vs. infra tree" both
-#: call sites reuse rather than each guessing its own.
+#: This is the one shared definition of "package tree vs. infra tree".
 NON_PACKAGE_SUBDIRECTORY_KEYS = frozenset({"images", "services"})
 
 
@@ -934,9 +876,7 @@ def fleet_package_names(workspace_yml_path: str | Path) -> set[str]:
     host/path prefix), so this works unmodified inside a pre-push git hook's
     minimal environment, which need not have ``ARBORA_REPO_ORIGIN`` or
     similar set. Also folds in ``maintenance.phases[].project(s)`` names, which
-    is how ``phased_push`` itself names what each phase publishes — those are
-    always trusted regardless of which subdirectory they live under, since
-    being in the phased publish plan is itself proof of Python-package-ness.
+    are always trusted regardless of which subdirectory they live under.
 
     Skips :data:`NON_PACKAGE_SUBDIRECTORY_KEYS` (``images``/``services``) when
     walking ``subdirectories`` so an infra/deploy repo never collides with an
@@ -1192,10 +1132,9 @@ def hook_declared(repo_path: str | Path) -> bool:
     ``scripts/sweep_dependency_readiness_hook.py`` already uses to decide
     whether a repo needs the hook injected, reused here rather than a second
     YAML-parsing implementation. Fleet rollout of the hook is gradual (that
-    script's own docstring), so :func:`await_gate_readiness` (Layer 2) must be
-    able to tell "this repo declares a fleet constraint but can't be
-    gate-verified yet" apart from "this repo's gate genuinely failed" — this
-    is that check.
+    script's own docstring), so a caller must be able to tell "this repo
+    declares a fleet constraint but can't be gate-verified yet" apart from
+    "this repo's gate genuinely failed" — this is that check.
     """
     config_path = Path(repo_path) / ".pre-commit-config.yaml"
     if not config_path.exists():
@@ -1233,8 +1172,8 @@ def _find_workspace_manifest(
 # --------------------------------------------------------------------------- #
 # Phase direction — no repository may depend on a LATER maintenance phase.
 #
-# RF-ADR-009 §3/§8 (CONCEPT:RM-DEP-READY). ``maintenance.phases`` is the order
-# ``phased_push`` publishes in; a repository in phase N that declares or imports
+# RF-ADR-009 §3/§8 (CONCEPT:RM-DEP-READY). ``maintenance.phases`` is the declared
+# dependency order of the fleet; a repository in phase N that declares or imports
 # a fleet package owned by phase M > N inverts that order (its push would have
 # to wait for something published AFTER it). The rule is one comparison over
 # the SAME manifest walker and the SAME pyproject validators the readiness gate
@@ -2874,508 +2813,6 @@ def check_tree(
         overridden=overridden,
         override_reason=override_reason or None,
         override_log=override_log,
-    )
-
-
-# --------------------------------------------------------------------------- #
-# Layer 2 — the phased_push wave barrier: run the real gate, retry-with-backoff
-# up to a ceiling, abort loudly (never silently advance).
-# --------------------------------------------------------------------------- #
-
-
-#: Structured failure reasons a :class:`GateCheckFailure` can carry, beyond
-#: "the hook ran and failed" (``reason=""``, the original/default shape).
-#: Each is also embedded as a ``REASON:`` prefix in ``detail`` so a plain
-#: log line stays self-explanatory without needing this field.
-GateFailureReason = Literal["", "TARGETS_INCOMPLETE", "CI_RUN_FAILED"]
-
-
-@dataclass
-class GateCheckFailure:
-    """One downstream repo whose pre-push gate did not confirm readiness this
-    attempt — either the hook itself failed (an unsatisfiable intra-fleet
-    constraint, or any other declared HEAVY-gate failure — see
-    :func:`await_gate_readiness`), or the repo has not adopted the hook yet so
-    its readiness cannot be gate-verified at all. Either way this phase
-    transition cannot honestly call the repo ready, so it counts as a block.
-
-    ``reason`` distinguishes the two hard-abort-before-any-retry conditions
-    :func:`await_gate_readiness` can now report (:data:`GateFailureReason`)
-    from the default gate-failed-this-attempt shape (``reason=""``).
-    """
-
-    repo_name: str
-    repo_path: str
-    detail: str
-    reason: GateFailureReason = ""
-
-    def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass
-class GateReadinessOutcome:
-    """The verdict :meth:`Git.phased_push` acts on for one phase boundary:
-    proceed immediately, or abort the wave."""
-
-    ok: bool
-    waited_s: float
-    attempts: int = 0
-    targets_checked: list[str] = field(default_factory=list)
-    failures: list[GateCheckFailure] = field(default_factory=list)
-    overridden: bool = False
-    override_reason: str | None = None
-    override_log: str | None = None
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "ok": self.ok,
-            "waited_s": self.waited_s,
-            "attempts": self.attempts,
-            "targets_checked": self.targets_checked,
-            "failures": [f.as_dict() for f in self.failures],
-            "overridden": self.overridden,
-            "override_reason": self.override_reason,
-            "override_log": self.override_log,
-        }
-
-
-def _default_run_gate(repo_path: str) -> Any:
-    # Imported lazily (not at module top) purely to keep this module importable
-    # standalone (e.g. from inside the pre-commit hook's own minimal
-    # environment) without paying for `repository_manager.gates`' import graph
-    # unless the gate-driven barrier is actually used.
-    from repository_manager.gates import run_gate_stage
-
-    return run_gate_stage(repo_path, "manual", hook_ids=[HOOK_ID])
-
-
-def _hook_failure_lines(hook_failures: list[Any]) -> str:
-    lines = [
-        ln.strip() for h in hook_failures for ln in h.output.splitlines() if ln.strip()
-    ]
-    return "; ".join(lines) if lines else f"{HOOK_ID} hook failed (no captured output)"
-
-
-def _gate_failure_detail(repo_name: str, result: Any) -> str | None:
-    """``None`` when ``result`` shows the hook passed; otherwise the most
-    actionable one-line detail available: the failing hook's own captured
-    output (which, for :data:`HOOK_ID`, is exactly Layer 1's
-    ``[UNSATISFIED]``/``[INDEX_UNREACHABLE]``/... detail line — see
-    :func:`main`), falling back to the run's own ``error`` (e.g. pre-commit's
-    "No hook with ID `dependency-readiness`" when the repo hasn't adopted the
-    hook)."""
-    hook_failures = [h for h in result.hooks if h.hook_id == HOOK_ID and not h.passed]
-    if not hook_failures and result.success:
-        return None
-    if hook_failures:
-        return _hook_failure_lines(hook_failures)
-    # NOTE (found during CX decomposition, not fixed — out of scope per
-    # WD7-RM-03 brief): this branch is unreachable. If hook_failures is
-    # empty and reached this point, the first `if` above already proved
-    # `result.success` is False, so `result.success` can never be True here.
-    if result.success:
-        return None
-    return (
-        result.error
-        or f"pre-push gate failed for {repo_name} (exit {result.exit_code})"
-    )
-
-
-def cross_check_targets(
-    targets: Sequence[tuple[str, str]],
-    *,
-    published_packages: set[str],
-    candidate_repos: Sequence[tuple[str, str]],
-) -> list[tuple[str, str]]:
-    """Independently recompute — from ``candidate_repos``, NEVER by reusing
-    whatever narrowing the caller already applied to produce ``targets`` —
-    every repo whose own ``pyproject.toml`` NAMES one of ``published_packages``
-    (regardless of whether the declared specifier is satisfiable; that is
-    :func:`check_constraint`'s job, not this one's), and return the
-    ``(repo_name, repo_path)`` pairs present in that independently-computed
-    set but ABSENT from ``targets``.
-
-    Closes "the phase succeeded because nothing downstream declared a
-    constraint": :func:`await_gate_readiness` only ever gate-checks the
-    ``targets`` its caller computed (normally a narrowed slice, e.g.
-    ``phased_push``'s ``later_phases``). If that narrowing missed a repo that
-    genuinely depends on what was just published — outside the slice scanned,
-    added to the fleet after the slice was built, whatever the reason — the
-    barrier would report "ready" having never looked at it. A repo returned
-    here is a hard-abort condition (CONCEPT:RM-DEP-READY targets-cross-check):
-    the real failure was never "nothing declared a constraint", it was
-    "something did depend on it and the barrier didn't know".
-
-    Matched by normalized ``repo_path`` (never by name alone — two different
-    checkouts of the same repo name is exactly the kind of ambiguity a
-    path-based comparison avoids).
-    """
-    target_paths = {str(Path(path)) for _, path in targets}
-    missing: list[tuple[str, str]] = []
-    seen_paths: set[str] = set()
-    for name, path in candidate_repos:
-        norm_path = str(Path(path))
-        if norm_path in target_paths or norm_path in seen_paths:
-            continue
-        constraints = declared_fleet_constraints(
-            path, fleet_packages=set(published_packages)
-        )
-        if constraints:
-            missing.append((name, path))
-            seen_paths.add(norm_path)
-    return missing
-
-
-@dataclass(frozen=True)
-class _GateReadinessConfig:
-    poll_interval_s: float
-    max_interval_s: float
-    sleep: Any
-    now: Any
-
-
-@dataclass(frozen=True)
-class _ForgeRunTarget:
-    backend: forge_status.ForgeBackend | None
-    owner: str | None
-    repo: str | None
-    ref: str | None
-
-
-def _cross_check_failure(
-    targets: Sequence[tuple[str, str]],
-    targets_checked: list[str],
-    published_packages: set[str] | None,
-    candidate_repos: Sequence[tuple[str, str]] | None,
-) -> GateReadinessOutcome | None:
-    if not (published_packages and candidate_repos is not None):
-        return None
-    missing = cross_check_targets(
-        targets,
-        published_packages=published_packages,
-        candidate_repos=candidate_repos,
-    )
-    if not missing:
-        return None
-    return GateReadinessOutcome(
-        ok=False,
-        waited_s=0.0,
-        attempts=0,
-        targets_checked=targets_checked,
-        failures=[
-            GateCheckFailure(
-                repo_name=name,
-                repo_path=path,
-                reason="TARGETS_INCOMPLETE",
-                detail=(
-                    f"TARGETS_INCOMPLETE: {name} ({path}) declares a "
-                    f"constraint on {sorted(published_packages)} but was "
-                    "excluded from the computed downstream target set -- "
-                    "aborting rather than silently advancing past a repo "
-                    "that actually depends on what was just published."
-                ),
-            )
-            for name, path in missing
-        ],
-    )
-
-
-def _validate_readiness_timing(
-    *, wait_minutes: float, poll_interval_s: float, max_interval_s: float
-) -> tuple[float, float, float]:
-    """Validate direct API timing inputs before any gate or sleep call."""
-    values = {
-        "wait_minutes": wait_minutes,
-        "poll_interval_s": poll_interval_s,
-        "max_interval_s": max_interval_s,
-    }
-    for name, value in values.items():
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(f"{name} must be a finite number")
-        if not math.isfinite(float(value)):
-            raise ValueError(f"{name} must be finite")
-    wait = float(wait_minutes)
-    poll = float(poll_interval_s)
-    maximum = float(max_interval_s)
-    if wait < 0:
-        raise ValueError("wait_minutes must be non-negative")
-    if wait > _MAX_GATE_WAIT_MINUTES:
-        raise ValueError(f"wait_minutes must be <= {_MAX_GATE_WAIT_MINUTES:g}")
-    if poll <= 0:
-        raise ValueError("poll_interval_s must be strictly positive")
-    if maximum <= 0:
-        raise ValueError("max_interval_s must be strictly positive")
-    return wait, poll, maximum
-
-
-def _ci_run_failed_outcome(
-    forge: _ForgeRunTarget, run_status: Any, targets_checked: list[str], waited_s: float
-) -> GateReadinessOutcome:
-    # Guaranteed by _await_ci_run's own guard before it ever calls this
-    # helper (it returns None early otherwise); asserted here so mypy can
-    # narrow the Optional dataclass fields, matching the narrowing the
-    # inline version got for free from the caller's own `if` in main.
-    assert forge.owner and forge.repo and forge.ref
-    ci_failure_detail = (
-        f"CI_RUN_FAILED: the publish run for "
-        f"{forge.owner}/{forge.repo}@{forge.ref} concluded "
-        f"{run_status.conclusion!r}"
-        + (f" ({run_status.url})" if run_status.url else "")
-        + " -- aborting immediately instead of burning the "
-        "retry ceiling polling an index for an artifact that "
-        "is never coming."
-    )
-    return GateReadinessOutcome(
-        ok=False,
-        waited_s=waited_s,
-        attempts=0,
-        targets_checked=targets_checked,
-        failures=[
-            GateCheckFailure(
-                repo_name=forge.repo,
-                repo_path=f"{forge.owner}/{forge.repo}",
-                reason="CI_RUN_FAILED",
-                detail=ci_failure_detail,
-            )
-        ],
-    )
-
-
-def _await_ci_run(
-    forge: _ForgeRunTarget,
-    config: _GateReadinessConfig,
-    deadline: float,
-    started: float,
-    targets_checked: list[str],
-) -> GateReadinessOutcome | None:
-    """Wait for the publish tag's CI run to conclude, sharing the caller's
-    deadline/sleep/now. Returns an early-abort outcome on CI_RUN_FAILED, or
-    ``None`` to fall through to index-polling (unknown status, concluded
-    success, or ran out of budget waiting on CI -- the main loop below also
-    sees ``remaining<=0`` and reports a normal timeout).
-    """
-    if forge.backend is None or not (forge.owner and forge.repo and forge.ref):
-        return None
-    ci_attempt = 0
-    while True:
-        ci_attempt += 1
-        run_status = forge.backend.latest_run_for_ref(
-            forge.owner, forge.repo, forge.ref
-        )
-        if run_status.state == "unknown":
-            return None  # forge status unavailable -- degrade to index-polling
-        if run_status.state == "completed":
-            if run_status.conclusion not in (None, "success"):
-                return _ci_run_failed_outcome(
-                    forge, run_status, targets_checked, config.now() - started
-                )
-            return None  # concluded success -- fall through to index-polling
-        remaining = deadline - config.now()
-        if remaining <= 0:
-            return None
-        backoff = min(
-            config.poll_interval_s * (2 ** (ci_attempt - 1)),
-            config.max_interval_s,
-            remaining,
-        )
-        config.sleep(backoff)
-
-
-def _check_all_targets(
-    targets: Sequence[tuple[str, str]], run_gate: Any
-) -> list[GateCheckFailure]:
-    failures: list[GateCheckFailure] = []
-    for repo_name, repo_path in targets:
-        if not hook_declared(repo_path):
-            failures.append(
-                GateCheckFailure(
-                    repo_name=repo_name,
-                    repo_path=repo_path,
-                    detail=(
-                        f"{repo_name} has not adopted the {HOOK_ID!r} pre-push "
-                        "hook yet, so its readiness cannot be gate-verified "
-                        "(run scripts/sweep_dependency_readiness_hook.py --apply "
-                        "for it)"
-                    ),
-                )
-            )
-            continue
-        result = run_gate(repo_path)
-        detail = _gate_failure_detail(repo_name, result)
-        if detail is not None:
-            failures.append(
-                GateCheckFailure(
-                    repo_name=repo_name, repo_path=repo_path, detail=detail
-                )
-            )
-    return failures
-
-
-def _apply_override_if_set(
-    audit_repo_path: str | Path,
-    failures: list[GateCheckFailure],
-    targets_checked: list[str],
-    attempt: int,
-    waited_s: float,
-) -> GateReadinessOutcome | None:
-    override_reason = os.environ.get(OVERRIDE_ENV_VAR, "").strip()
-    if not override_reason:
-        return None
-    log_path = _record_override(
-        reason=override_reason, repo_path=audit_repo_path, failures=failures
-    )
-    _print_override_banner(reason=override_reason, failures=failures, log_path=log_path)
-    return GateReadinessOutcome(
-        ok=True,
-        waited_s=waited_s,
-        attempts=attempt,
-        targets_checked=targets_checked,
-        failures=failures,
-        overridden=True,
-        override_reason=override_reason,
-        override_log=str(log_path),
-    )
-
-
-def await_gate_readiness(
-    targets: Sequence[tuple[str, str]],
-    *,
-    wait_minutes: float,
-    poll_interval_s: float = 30.0,
-    max_interval_s: float = 300.0,
-    run_gate: Any = None,
-    sleep: Any = time.sleep,
-    now: Any = time.monotonic,
-    audit_repo_path: str | Path = ".",
-    published_packages: set[str] | None = None,
-    candidate_repos: Sequence[tuple[str, str]] | None = None,
-    forge_backend: forge_status.ForgeBackend | None = None,
-    forge_owner: str | None = None,
-    forge_repo: str | None = None,
-    forge_ref: str | None = None,
-) -> GateReadinessOutcome:
-    """Decide a ``phased_push`` phase transition by RUNNING each ``targets``
-    repo's own pre-push gate — never a second, parallel index-polling
-    implementation (CONCEPT:RM-DEP-READY gate-barrier, supersedes the removed
-    ``await_constraints``).
-
-    ``targets`` is ``(repo_name, repo_path)`` for every downstream repo that
-    declares a fleet constraint on what the phase just published (the caller,
-    ``Git._await_phase_dependency_readiness``, computes this). Each target is
-    checked via ``run_gate`` (default: :func:`repository_manager.gates.run_gate_stage`
-    scoped to just :data:`HOOK_ID` — the SAME call ``Git._gate_before_push``
-    makes before that repo's own real push, just narrowed to the one hook this
-    barrier cares about so a retry loop reruns a fast network check, not a
-    repo's entire heavy suite). A target that has not adopted the hook
-    (:func:`hook_declared` is ``False``) is an unverifiable — and therefore
-    blocking, never silently passing — target.
-
-    Retries every ``poll_interval_s`` doubling up to ``max_interval_s`` (bounded
-    exponential backoff — absorbs the publish-propagation window without
-    hammering every target's gate every 30s) until every target's gate passes
-    or ``wait_minutes`` elapses. Returns the instant every target passes
-    (never waits out the rest of the budget). Never advances past an unmet
-    precondition: when the deadline passes with any target still failing,
-    ``ok`` is ``False`` and the caller must abort the wave — unless
-    :data:`OVERRIDE_ENV_VAR` is set, in which case the bypass is loud and
-    audit-logged exactly like the pre-push hook's (never a silent stand-down).
-    ``run_gate``/``sleep``/``now`` are injectable so tests exercise a
-    30-minute ceiling and repeated retries without a real wait or a real
-    pre-commit invocation.
-
-    Two further, optional preconditions, both backward compatible (every
-    parameter below defaults to skipping the check entirely, so an existing
-    caller that does not pass them observes no behavior change):
-
-    * Pass BOTH ``published_packages`` and ``candidate_repos`` to run
-      :func:`cross_check_targets` before anything else — a repo it finds that
-      ``targets`` omitted is an immediate hard abort (``ok=False``,
-      ``attempts=0``, ``waited_s=0.0``) with a ``reason="TARGETS_INCOMPLETE"``
-      failure, never entering the retry loop at all.
-    * Pass ``forge_backend`` (e.g. built via
-      :func:`repository_manager.forge_status.backend_for_remote`) with
-      ``forge_owner``/``forge_repo``/``forge_ref`` to wait for the published
-      tag's CI run to reach a conclusion BEFORE polling any target's gate. A
-      run that concludes with anything other than success aborts immediately
-      with a ``reason="CI_RUN_FAILED"`` failure naming the run's own URL,
-      instead of burning the retry ceiling on an index that will never see
-      the artifact. This wait shares the SAME ``deadline``/``sleep``/``now``
-      as the main retry loop below (never a second, separate budget) — an
-      ``"unknown"`` forge status (no client, forge unreachable, ref never
-      ran) breaks out of the wait immediately and falls through to today's
-      index-polling behavior.
-    """
-    wait_minutes, poll_interval_s, max_interval_s = _validate_readiness_timing(
-        wait_minutes=wait_minutes,
-        poll_interval_s=poll_interval_s,
-        max_interval_s=max_interval_s,
-    )
-    targets_checked = [name for name, _ in targets]
-
-    cross_check_outcome = _cross_check_failure(
-        targets, targets_checked, published_packages, candidate_repos
-    )
-    if cross_check_outcome is not None:
-        return cross_check_outcome
-
-    if not targets:
-        return GateReadinessOutcome(ok=True, waited_s=0.0, attempts=0)
-
-    run_gate = run_gate or _default_run_gate
-    config = _GateReadinessConfig(
-        poll_interval_s=poll_interval_s,
-        max_interval_s=max_interval_s,
-        sleep=sleep,
-        now=now,
-    )
-    started = now()
-    deadline = started + wait_minutes * 60
-    attempt = 0
-    failures: list[GateCheckFailure] = []
-
-    ci_outcome = _await_ci_run(
-        _ForgeRunTarget(
-            backend=forge_backend, owner=forge_owner, repo=forge_repo, ref=forge_ref
-        ),
-        config,
-        deadline,
-        started,
-        targets_checked,
-    )
-    if ci_outcome is not None:
-        return ci_outcome
-
-    while True:
-        attempt += 1
-        failures = _check_all_targets(targets, run_gate)
-
-        if not failures:
-            return GateReadinessOutcome(
-                ok=True,
-                waited_s=now() - started,
-                attempts=attempt,
-                targets_checked=targets_checked,
-            )
-
-        remaining = deadline - now()
-        if remaining <= 0:
-            break
-        backoff = min(poll_interval_s * (2 ** (attempt - 1)), max_interval_s, remaining)
-        sleep(backoff)
-
-    override_outcome = _apply_override_if_set(
-        audit_repo_path, failures, targets_checked, attempt, now() - started
-    )
-    if override_outcome is not None:
-        return override_outcome
-
-    return GateReadinessOutcome(
-        ok=False,
-        waited_s=now() - started,
-        attempts=attempt,
-        targets_checked=targets_checked,
-        failures=failures,
     )
 
 

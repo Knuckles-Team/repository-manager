@@ -1,8 +1,8 @@
 # repository-manager
 
 Manage the operator's git projects across a workspace — a **CLI, API, MCP server, and A2A
-agent** for bulk Git operations, phased multi-repository releases, and
-cross-repository graph intelligence in the scion-sdk ecosystem.
+agent** for bulk Git operations, resumable fleet dependency rollouts, and
+cross-repository graph intelligence in the agent-connector-sdk ecosystem.
 
 !!! info "Official documentation"
     This site is the canonical reference for `repository-manager`, maintained
@@ -17,11 +17,11 @@ cross-repository graph intelligence in the scion-sdk ecosystem.
 
 `repository-manager` operates a whole workspace of Git repositories as one unit. It
 wraps bulk Git operations — clone, pull, push — with typed, deterministic interfaces,
-and adds an autonomous release harness for **phased**, dependency-ordered version
-bumps and pushes across the ecosystem. It provides:
+and adds a deterministic, resumable dependency rollout that lands a raised
+dependency floor in every repository through pull requests, then tags it. It provides:
 
 - **`Git`** — a workspace-aware client (`repository_manager.repository_manager`) for
-  cloning, pulling, branch enumeration, validation, and phased maintenance.
+  cloning, pulling, branch enumeration, validation, and dependency rollouts.
 - **Action-routed MCP tools** — consolidated, togglable tool modules
   (`git_operations`, `workspace_management`, `project_management`, `misc`) that keep
   the LLM context small while exposing the full surface.
@@ -38,8 +38,7 @@ bumps and pushes across the ecosystem. It provides:
 - :material-server-network: **[Deployment](deployment.md)** — run the MCP server, Docker Compose, Caddy + Technitium.
 - :material-console: **[Usage](usage.md)** — the MCP tools, the `Git` Python client, and the CLI.
 - :material-sitemap: **[Overview](overview.md)** — ecosystem role, enterprise readiness, and architecture.
-- :material-source-branch: **[Phased Maintenance](phased_maintenance.md)** — dependency-ordered workspace updates.
-- :material-source-pull: **[Phased Push](phased_push.md)** — parallel, phase-gated multi-repository releases.
+- :material-source-pull: **[Dependency rollout](rollout.md)** — roll a dependency floor across the fleet through PRs.
 - :material-tag-multiple: **[Concepts](concepts.md)** — the `CONCEPT:RM-*` registry.
 
 </div>

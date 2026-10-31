@@ -3,30 +3,15 @@ running, or did it already conclude (success or failure)?
 
 CONCEPT:RM-DEP-READY ci-run-barrier
 
-The gap this closes. ``dependency_readiness.await_gate_readiness`` (Layer 2 of
-CONCEPT:RM-DEP-READY) decides a ``phased_push`` phase transition by retrying a
-downstream repo's own pre-push gate — which, underneath, polls the package
-index (PyPI Simple API) for the just-published version. That is the right
-oracle for "is it installable right now", but it is blind to *why* a version
-never shows up: a publish workflow that is still running looks identical, from
-the index's point of view, to one that already failed outright — both report
-"not there yet", so the barrier burns its entire ``wait_minutes`` retry
-ceiling on both, even when the CI run that would have produced the artifact
-already failed minutes ago and nothing further is coming. On 2026-08-12 that
-same blind-sleep failure mode (a different gap in the same barrier — see
-``dependency_readiness``'s own module docstring) let phase 3 push against an
-unsatisfiable ``epistemic-graph`` constraint nothing detected; a CI run that
-concludes failed is the earliest, cheapest signal available that the same
-"wait and hope" pattern is about to happen again.
+The package index can say a version is "not there yet" but not *why*: a
+publish workflow still running looks identical to one that already failed.
+The dependency-readiness check (``dependency_readiness.forge_release_run_probe``)
+asks the forge instead, so a ``partial_publish`` verdict is reported only while
+the release run is genuinely queued or in progress.
 
 This module is the ONE thing that answers "what is the tag's release run
 doing right now" — never duplicated per forge. ``ForgeBackend`` is a
-one-method Protocol; :func:`await_gate_readiness` (Layer 2) calls it, when
-given one, BEFORE it starts retrying each downstream repo's gate: a
-``completed`` run with a non-success ``conclusion`` aborts immediately with
-the run's own URL, instead of retrying an artifact that is never coming. A
-``queued``/``in_progress`` run is polled (bounded by the SAME retry ceiling
-Layer 2 already enforces — no second, parallel deadline). An ``unknown``
+one-method Protocol. An ``unknown``
 status — no client installed, the forge unreachable, the ref never ran,
 anything this module cannot positively resolve — degrades to today's
 behavior (proceed straight to index-polling) rather than blocking a push on

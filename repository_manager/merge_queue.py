@@ -848,8 +848,8 @@ def enqueue(
             "store automatically (~every 5 minutes, across agent-packages/, "
             "services/, images/, and the infra roots): it gates the candidate "
             "DIFFERENTIALLY against the base and fast-lands it. The timer does "
-            "not run the heavy pre-push gate or publish; the separate "
-            "`phased-push-runner.timer` owns publication. You do not need to "
+            "not run the heavy pre-push gate or publish; publication is a "
+            "separate, explicit push. You do not need to "
             "run anything yourself — "
             "watch it with `repository-manager --merge-queue status "
             "--repo-path .`. Do NOT hand-drain with `--merge-queue run`: "
@@ -2645,8 +2645,7 @@ def _deferred_push_result() -> dict[str, Any]:
         "pushed": False,
         "push_error": (
             "push deferred by the merge-queue scheduler; the fast drain "
-            "lands locally and the dedicated phased-push scheduler owns "
-            "publication"
+            "lands locally and publication is a separate, explicit push"
         ),
     }
 
@@ -2676,19 +2675,13 @@ def _push_landed_base_now(
     some other branch — a bisect, an operator poking around, a merge in
     progress), pushing through that checkout would push the WRONG branch, so
     the push is deliberately DEFERRED rather than guessed at: ``pushed: False``
-    with a reason, never silent, never a guess. A later ``phased_push`` (or a
-    manual push once the canonical is back on ``base``) picks it up.
+    with a reason, never silent, never a guess. A later push once the canonical is
+    back on ``base`` picks it up.
 
     Sync, not batched: this pushes the ONE repo :func:`land` just fast-forwarded,
-    immediately, inline with the landing call. ``phased_push``'s phase ordering
-    exists for the fleet-wide *release* workflow (coordinated version-bump
-    pushes across interdependent packages, where a downstream repo's pin must
-    not reach a remote before the upstream version it names does) — a plain
-    merge-queue landing publishes a branch's own commits, not a version bump, so
-    there is no cross-repo pin for immediate publication to violate. Should the
-    queue ever land version-bump commits, that is the moment to route through
-    ``phased_push`` instead; forcing every landing through fleet-wide phase
-    bookkeeping today would be scope the defect never asked for.
+    immediately, inline with the landing call. A plain merge-queue landing
+    publishes a branch's own commits, not a fleet-wide dependency-floor raise
+    (that lands through pull requests via ``repository-manager rollout``).
 
     A push failure never fails the landing — the local ref genuinely did
     fast-forward, and reporting that as a failure too would misrepresent what
@@ -2704,7 +2697,7 @@ def _push_landed_base_now(
             "push_error": (
                 f"canonical checkout is not on {base} (landed via compare-and-swap "
                 "update-ref); push deferred to avoid pushing whichever branch that "
-                "checkout has checked out -- push_project/phased_push against the "
+                "checkout has checked out -- push_project against the "
                 f"canonical checkout once it is back on {base}"
             ),
         }
@@ -3727,7 +3720,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--no-push",
         action="store_true",
-        help="land through fast gates but defer publication to phased push",
+        help="land through fast gates but defer publication to a separate push",
     )
     p.add_argument("--lease-ttl-seconds", type=int, default=None)
     args = p.parse_args(argv)

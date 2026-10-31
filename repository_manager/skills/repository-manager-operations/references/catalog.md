@@ -19,13 +19,13 @@ this catalog only points to them — skill discovery itself walks the package fo
 - [repository-manager-candidate-certification](../../repository-manager-candidate-certification/SKILL.md): The Candidate/Generation certification vocabulary and the `rm_concepts_*` marker-verification actions, before trusting a merge-queue outcome as landable.
 
 ## Git and build
-- [repository-manager-bulk-git-operations](../../repository-manager-bulk-git-operations/WORKFLOW.md): Bulk, parallel git operations across a whole workspace of repositories — clone, pull, push, add, commit, pre-commit, phased push, and enumerate every repo across a GitLab instance / GitHub org into an ingest manifest. Raw host git commands are permanently retired and always refused.
+- [repository-manager-bulk-git-operations](../../repository-manager-bulk-git-operations/WORKFLOW.md): Bulk, parallel git operations across a whole workspace of repositories — clone, pull, push, add, commit, pre-commit, and enumerate every repo across a GitLab instance / GitHub org into an ingest manifest. Raw host git commands are permanently retired and always refused.
 - [repository-manager-build-coordination](../../repository-manager-build-coordination/SKILL.md): Content-addressed build/cache coordination for any repository — dedup-or-build requests, cache-key status, published artifacts, why a key missed cache, and bounded cache reclamation.
 
 ## Validation and release
 - [repository-manager-gate-execution](../../repository-manager-gate-execution/SKILL.md): Run and inspect the two-tier (fast/heavy) pre-commit gate via `rm_gates_*` — `run` to populate the durable gate ledger, `retest` to narrow a re-run to only what the ledger last recorded failing (auto-escalating to a full wave on an all-pass), `profile` to find the slow hooks. Use this instead of re-running a whole heavy wave to validate one fix.
-- [repository-manager-workspace-validation](../../repository-manager-workspace-validation/WORKFLOW.md): Install, build, validate, and version-maintain the managed projects of a workspace — pre-commit + pytest validation per project, install/build ecosystems, phased version bumps and maintenance.
-- [repository-manager-workspace-release](../../repository-manager-workspace-release/SKILL.md): Preview the topologically-phased version-bump plan, drive validation with an explicitly consented chain into version bump and phased push, and manage the `workspace.yml` manifest.
+- [repository-manager-workspace-validation](../../repository-manager-workspace-validation/WORKFLOW.md): Install, build, and validate the managed projects of a workspace — pre-commit + pytest validation per project, install/build ecosystems.
+- [repository-manager-workspace-release](../../repository-manager-workspace-release/SKILL.md): Roll a dependency floor across the fleet deterministically (`rm_rollout` / `repository-manager rollout`: plan, apply through PRs with auto-merge, status, tag after merge) and manage the `workspace.yml` manifest.
 
 ## Concepts and remote workers
 - [repository-manager-concept-coordination](../../repository-manager-concept-coordination/SKILL.md): Reserve, inspect, release, and materialize a CONCEPT:ID claim, and verify a candidate's/generation's introduced concept markers. ⚠ Every mutating action refuses today (`ConceptAuthorityUnavailable`) — read before assuming this allocates anything.
