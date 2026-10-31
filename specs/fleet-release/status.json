@@ -101,8 +101,8 @@
       "title": "Deterministic, resumable dependency-floor rollout through PRs",
       "delivery_state": "LANDED",
       "landed_in": [
-        "27c01603666a",
-        "dad934ed0c81"
+        "5e86c8df0f39",
+        "75da0d671adf"
       ],
       "verified_by": []
     }
