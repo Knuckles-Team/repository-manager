@@ -129,7 +129,9 @@ class _DestinationSnapshot:
 def default_runtime_manifest_path() -> Path:
     """Return the exact XDG runtime manifest path without creating directories."""
 
-    return pfs.config_home() / "scion-sdk" / "workspace.yml"
+    override = os.environ.get("ARBORA_CONFIG_DIR")
+    base = Path(override).expanduser() if override else pfs.config_home() / "arbora"
+    return base / "workspace.yml"
 
 
 def default_packaged_seed_path() -> Path:

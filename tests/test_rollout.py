@@ -73,6 +73,9 @@ class FakeForge:
         self.remote_branches: set[str] = set()
         self.calls: list[list[str]] = []
         self.checks: dict[str, list[dict]] = {}
+        self.hook_files: list[str] = []
+        self.cwds: list[str] = []
+        self.bumped_before: list[bool] = []
 
     def _repo(self, cwd: Path | None) -> str:
         assert cwd is not None
@@ -84,6 +87,10 @@ class FakeForge:
     def __call__(self, argv, *, cwd=None, timeout=None):  # noqa: C901
         argv = list(argv)
         self.calls.append(argv)
+        self.cwds.append(str(cwd))
+        pp = Path(cwd) / "pyproject.toml" if cwd else None
+        text = pp.read_text() if pp and pp.is_file() else ""
+        self.bumped_before.append('version = "1.2.4"' in text or 'version = "2.0.1"' in text)
         ok = Completed(0)
         if argv[:3] == ["gh", "repo", "list"]:
             return Completed(0, "alpha-mcp\nbeta-mcp\nnodep-mcp\n")
@@ -162,6 +169,7 @@ class FakeForge:
             (wt / "CHANGELOG.md").write_text(
                 "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - x\n", encoding="utf-8"
             )
+            (wt / ".pre-commit-config.yaml").write_text("repos: []\n", encoding="utf-8")
             (wt / "specs" / "x").mkdir(parents=True)
             (wt / "specs" / "x" / "status.json").write_text(
                 '{"schema_version": 2}\n', encoding="utf-8"
@@ -178,7 +186,13 @@ class FakeForge:
                 else "",
             )
         if sub == "status":
-            files = ["CHANGELOG.md", "pyproject.toml", "specs/x/status.json", "uv.lock"]
+            files = [
+                "CHANGELOG.md",
+                "pyproject.toml",
+                "specs/x/status.json",
+                "uv.lock",
+                *self.hook_files,
+            ]
             return Completed(0, "".join(f" M {f}\n" for f in files))
         if sub == "config":
             return Completed(
@@ -272,7 +286,7 @@ def test_resume_is_idempotent_no_duplicate_pr_or_double_bump(env):
     after = len([c for c in forge.calls if c[:3] == ["gh", "pr", "create"]])
     assert before == after == 2
     assert {r["state"] for r in rows} == {"pr_open"}
-    assert len([c for c in forge.calls if c[0] == "uv"]) == 2
+    assert len([c for c in forge.calls if c[0] == "uv"]) == 4  # lock + post-bump relock, once per repo
 
 
 def test_existing_open_pr_is_adopted_not_duplicated(env):
@@ -376,3 +390,38 @@ def test_refuses_claude_identity(env):
     forge._git = git
     rows = engine(env, only=("alpha-mcp",)).apply(MANIFEST)
     assert rows[0]["state"] == "failed" and "identity" in rows[0]["error"]
+
+
+def test_relock_happens_after_the_version_bump(env):
+    forge, _, _ = env
+    engine(env).apply(MANIFEST)
+    for repo in ("alpha-mcp", "beta-mcp"):
+        locks = [
+            i
+            for i, c in enumerate(forge.calls)
+            if c[:2] == ["uv", "lock"] and repo in forge.cwds[i]
+        ]
+        assert len(locks) == 2
+        assert "--upgrade-package" in forge.calls[locks[0]]
+        assert forge.calls[locks[1]] == ["uv", "lock"]
+        assert not forge.bumped_before[locks[0]]
+        assert forge.bumped_before[locks[1]]  # relock sees the bumped pyproject
+
+
+def test_hook_modified_files_are_staged(env):
+    forge, _, _ = env
+    forge.hook_files = ["repository_manager/formatted.py"]
+    engine(env).apply(MANIFEST)
+    adds = [c for c in forge.calls if c[:2] == ["git", "add"]]
+    assert adds and all("repository_manager/formatted.py" in c for c in adds)
+    assert any(c[:1] == ["pre-commit"] and "--all-files" in c for c in forge.calls)
+
+
+def test_default_manifest_path_is_arbora(monkeypatch, tmp_path):
+    from repository_manager.workspace_manifest import default_runtime_manifest_path
+
+    monkeypatch.delenv("ARBORA_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert default_runtime_manifest_path() == tmp_path / "arbora" / "workspace.yml"
+    monkeypatch.setenv("ARBORA_CONFIG_DIR", str(tmp_path / "x"))
+    assert default_runtime_manifest_path() == tmp_path / "x" / "workspace.yml"
