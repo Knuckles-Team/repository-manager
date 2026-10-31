@@ -38,15 +38,7 @@ class _WorkspaceActionRequest:
     yml_path: str | None
     install: bool
     config_dict: dict[str, Any] | None
-    part: str
-    phase: int
-    auto_start: bool
-    dry_run: bool
-    projects: str | None
-    force: bool
     use_default: bool
-    job_id: str | None
-    summary: bool
     fleet_evidence_json: str | None = None
 
 
@@ -101,41 +93,6 @@ async def _save_workspace_action(
             data="",
             error=GitError(message="Repository operation failed", code=1),
         )
-
-
-def _maintain_workspace_action(
-    git: Any, adapter_context: McpToolContext, request: _WorkspaceActionRequest
-) -> dict[str, Any]:
-    require_legacy_release_route("maintain")
-    progress = {
-        "current_phase": "Initializing Bumps",
-        "progress": 0,
-        "phases": {},
-    }
-    return adapter_context.submit_job(
-        "maintain",
-        git.maintain_projects,
-        part=request.part,
-        start_phase=request.phase,
-        auto_start=request.auto_start,
-        dry_run=request.dry_run,
-        project_filter=request.projects or None,
-        force=request.force,
-        progress=progress,
-        _extra_job_data={"progress_detail": progress},
-    )
-
-
-def _maintain_status_workspace_action(
-    adapter_context: McpToolContext, request: _WorkspaceActionRequest
-) -> GitResult | Any:
-    if not request.job_id:
-        return GitResult(
-            status="error",
-            data="",
-            error=GitError(message="job_id required for 'maintain_status'", code=1),
-        )
-    return adapter_context.get_job_status(request.job_id, summary=request.summary)
 
 
 async def _run_workspace_action(
@@ -195,10 +152,6 @@ async def _run_non_fleet_workspace_action(
         return await _template_workspace_action(git, request)
     if action == "save":
         return await _save_workspace_action(git, request)
-    if action == "maintain":
-        return _maintain_workspace_action(git, adapter_context, request)
-    if action == "maintain_status":
-        return _maintain_status_workspace_action(adapter_context, request)
     return f"Error: Unknown action '{action}'"
 
 
@@ -214,7 +167,7 @@ def register_workspace_management_tools(
         action: str = Field(
             description=(
                 "Action: 'list', 'list_branches', 'setup', 'template', 'save', "
-                "'maintain', 'maintain_status', 'fleet_evidence_check'"
+                "'fleet_evidence_check'"
             )
         ),
         yml_path: str | None = Field(
@@ -238,57 +191,9 @@ def register_workspace_management_tools(
             default=None,
             description="Dictionary representation of WorkspaceConfig (for 'save').",
         ),
-        part: str = Field(
-            default="patch",
-            description="Version part to bump for 'maintain' (major, minor, patch).",
-        ),
-        phase: int = Field(
-            default=1, description="Starting phase number for 'maintain'."
-        ),
-        auto_start: bool = Field(
-            default=True,
-            description=(
-                "For 'maintain': begin at the lowest phase with repository changes "
-                "instead of always 'phase', cascading to every later phase and "
-                "skipping unchanged upstream phases. Default True; set False to "
-                "start at 'phase'. Ignored when 'projects' or 'force' is set."
-            ),
-        ),
-        dry_run: bool = Field(
-            default=False, description="Perform a dry run for 'maintain'."
-        ),
-        projects: str | None = Field(
-            default=None,
-            description=(
-                "For 'maintain': comma-separated repo names to bump ONLY those "
-                "(e.g. re-bump repos a prior run skipped) instead of the whole "
-                "topological set. Restricts the bulk phase to these names."
-            ),
-        ),
-        force: bool = Field(
-            default=False,
-            description=(
-                "For 'maintain': bump even when no code changes are detected, and "
-                "override an orphan local 'next-version' tag (delete it and "
-                "re-bump) — only if that tag is NOT on the remote."
-            ),
-        ),
         use_default: bool = Field(
             default=True,
             description="Use the pre-filled package template for 'template'.",
-        ),
-        job_id: str | None = Field(
-            default=None,
-            description="Job ID to check status for 'maintain_status' action.",
-        ),
-        summary: bool = Field(
-            default=True,
-            description=(
-                "For 'maintain_status': return a COMPACT roll-up (per-phase "
-                "counts + failed set + active names + remaining count) instead of "
-                "the full per-repo phase dump. Keeps the response inline at 200+ "
-                "repos. Set False for the full per-repo detail."
-            ),
         ),
         fleet_evidence_json: str | None = Field(
             default=None,
@@ -298,14 +203,7 @@ def register_workspace_management_tools(
             description="MCP context for progress reporting", default=None
         ),
     ) -> list[str] | str | GitResult | dict[str, Any]:
-        """Core workspace organization, configuration, and maintenance."""
-        if not isinstance(summary, bool):
-            summary = True
-        if not isinstance(force, bool):
-            force = False
-        if not isinstance(auto_start, bool):
-            auto_start = True
-
+        """Core workspace organization and configuration."""
         resolved = resolve_action(
             action, RM_WORKSPACE_ACTIONS, service="repository-manager"
         )
@@ -322,15 +220,7 @@ def register_workspace_management_tools(
                 yml_path=yml_path,
                 install=install,
                 config_dict=config_dict,
-                part=part,
-                phase=phase,
-                auto_start=auto_start,
-                dry_run=dry_run,
-                projects=projects,
-                force=force,
                 use_default=use_default,
-                job_id=job_id,
-                summary=summary,
                 fleet_evidence_json=fleet_evidence_json,
             ),
         )

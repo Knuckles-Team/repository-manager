@@ -101,7 +101,7 @@ _HEAVY_GATE_MAX_WORKERS = 2
 # A CPU quota only throttles the work after they have spawned it; it does not
 # stop one pre-push hook from creating a pytest process pool, a Cargo compile
 # pool, and a native-math thread pool at the same time.  Keep the policy at the
-# one pre-commit subprocess chokepoint so CLI, MCP, phased-push, and merge-queue
+# one pre-commit subprocess chokepoint so CLI, MCP, and merge-queue
 # push callers cannot drift.
 _WORKER_LIMIT_ENV_VARS = (
     "PYTEST_XDIST_AUTO_NUM_WORKERS",
@@ -699,9 +699,7 @@ def run_gate_stage(
     This is the single execution primitive behind the ``rm_gates`` MCP tool,
     ``rm_projects action=validate`` (via ``Git.validate_single_project``), the
     pre-push gate ``Git.push_project`` runs automatically before every push
-    (via ``Git._gate_before_push``), and ``Git.phased_push``'s gate-driven
-    phase-transition barrier (via ``dependency_readiness.await_gate_readiness``
-    -- CONCEPT:RM-DEP-READY). ``stage="fast"`` passes ``--hook-stage
+    (via ``Git._gate_before_push``). ``stage="fast"`` passes ``--hook-stage
     pre-commit``; ``stage="heavy"`` passes ``--hook-stage pre-push``;
     ``stage="manual"`` runs explicitly selected release hooks only.
 

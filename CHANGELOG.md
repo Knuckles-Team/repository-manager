@@ -162,6 +162,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Command failed" on every unmerged worktree (`ahead==0` is exactly the is-ancestor result; `merged`
   stays False when the count call fails, which is safer).
 
+## [3.5.5] - 2026-10-30
+
+### Added
+- `repository-manager rollout` (MCP `rm_rollout`, RM-RELEASE-R009): a deterministic,
+  resumable dependency-floor rollout. Selects the workspace group ∩ non-archived repos ∩
+  repos declaring the dependency, plans into an XDG-state JSONL ledger, and per repository
+  (fresh worktree off origin/main, bounded parallelism) sets `>=X,<next-minor`, relocks and
+  verifies the lock, patch-bumps, adds a CHANGELOG entry, regenerates spec status, runs
+  pre-commit, commits with the repo identity, opens a PR and arms `--auto --rebase`.
+  `rollout status` reports merged/failing/pending; `rollout release` tags after merge.
+
+### Removed
+- Phased bump/push (`--maintain`, `--push`, `--bump`, `--phase`, MCP `phased_push`,
+  `rm_projects` auto_bump/auto_push, the phased-push runner timer) and its docs. It pushed
+  straight to main, named pre-rename packages and never raised a floor or relocked.
+
 ## [1.3.55] - 2026-04-29
 
 ### Added

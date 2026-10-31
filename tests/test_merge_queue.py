@@ -1743,7 +1743,7 @@ def test_landing_still_works_when_canonical_IS_on_the_base(shell_repo: Path) -> 
     assert _run("git rev-parse HEAD", shell_repo) == outcome["to"]
 
 
-def test_queue_fast_drain_can_defer_publication_without_invoking_heavy_push(
+def test_queue_fast_drain_can_defer_publication_without_pushing(
     shell_repo: Path,
 ) -> None:
     """The timer's no-push mode lands locally and leaves publication visible."""
@@ -1761,7 +1761,7 @@ def test_queue_fast_drain_can_defer_publication_without_invoking_heavy_push(
 
     assert outcome["landed"] is True
     assert outcome["pushed"] is False
-    assert "dedicated phased-push scheduler" in outcome["push_error"]
+    assert "publication is a separate, explicit push" in outcome["push_error"]
     push_project.assert_not_called()
 
 

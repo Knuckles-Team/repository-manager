@@ -15,14 +15,12 @@ from repository_manager.merge_queue_runner import (
     CANONICAL_FRAGMENT,
     DeclaredRepository,
     MergeQueueRunnerError,
-    _phased_push_command,
     _runner_command,
     _runner_settings,
     build_parser,
     declared_repositories,
     discover_queued_repositories,
     drain_repository,
-    run_phased_push,
 )
 
 NOW = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
@@ -137,65 +135,6 @@ def test_default_child_command_is_a_direct_python_module(
     assert command[:3] == [sys.executable, "-m", "repository_manager"]
     assert "/snap/bin/uv" not in command
     assert command[-2:] == ["--queue-lease-ttl-seconds", "1200"]
-
-
-def test_heavy_child_command_is_direct_single_lane_and_not_snap_wrapped(
-    tmp_path: Path,
-) -> None:
-    command = _phased_push_command(tmp_path, tmp_path / "workspace.yml")
-    assert command[:3] == [sys.executable, "-m", "repository_manager"]
-    assert command[-3:] == [
-        "--threads",
-        "1",
-        "--push",
-    ]
-    assert command[-1] == "--push"
-    assert "/snap/bin/uv" not in command
-
-
-def test_heavy_lane_uses_validated_projection_without_research_inputs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Publication inherits canonical discovery without pushing reference repos."""
-
-    _workspace(tmp_path)
-    import repository_manager.merge_queue_runner as runner
-
-    captured: dict[str, object] = {}
-
-    def fake_launch(command, repository, *, env=None):
-        del repository, env
-        captured["command"] = command
-        return object()
-
-    def fake_run(process, repository, expected_cgroup, deadline_seconds):
-        del process, repository, expected_cgroup, deadline_seconds
-        command = captured["command"]
-        assert isinstance(command, list)
-        projected_path = Path(command[command.index("--file") + 1])
-        captured["projected_path"] = projected_path
-        data = yaml.safe_load(projected_path.read_text(encoding="utf-8"))
-        identifiers, _, _ = runner.select_repositories(data)
-        captured["identifiers"] = identifiers
-        return "", 0, []
-
-    monkeypatch.setattr(runner, "_launch_process", fake_launch)
-    monkeypatch.setattr(runner, "_run_monitored_process", fake_run)
-    monkeypatch.setattr(runner, "_process_cgroup", lambda pid: "/unit.scope")
-
-    assert run_phased_push(tmp_path) == 0
-    command = captured["command"]
-    assert isinstance(command, list)
-    assert command[:3] == [sys.executable, "-m", "repository_manager"]
-    assert command[-3:] == ["--threads", "1", "--push"]
-    identifiers = captured["identifiers"]
-    assert isinstance(identifiers, tuple)
-    assert "plans" in identifiers
-    assert "agent-packages/platform/epistemic-graph" in identifiers
-    assert all("open-source-libraries" not in identifier for identifier in identifiers)
-    projected_path = captured["projected_path"]
-    assert isinstance(projected_path, Path)
-    assert not projected_path.exists()
 
 
 def test_manifest_recurses_root_and_nested_repositories_but_excludes_research(

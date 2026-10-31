@@ -16,8 +16,6 @@ from repository_manager import portable_fs as pfs
 from repository_manager.merge_queue_runner import (
     DEFAULT_DRAIN_DEADLINE_SECONDS,
     DEFAULT_GLOBAL_DRAIN_DEADLINE_SECONDS,
-    DEFAULT_HEAVY_GATE_TIMEOUT_SECONDS,
-    DEFAULT_HEAVY_TIMEOUT_SECONDS,
     DEFAULT_MAX_QUEUE_AGE_SECONDS,
     SYSTEMD_TIMEOUT_MARGIN_SECONDS,
 )
@@ -25,8 +23,6 @@ from repository_manager.merge_queue_runner import (
 DEFAULT_RUNNER_NAME = "repository-manager-merge-queue-runner"
 SERVICE_NAME = "merge-queue-runner.service"
 TIMER_NAME = "merge-queue-runner.timer"
-HEAVY_SERVICE_NAME = "phased-push-runner.service"
-HEAVY_TIMER_NAME = "phased-push-runner.timer"
 _TEMPLATE_MARKERS = (
     "@PYTHON_EXECUTABLE@",
     "@RUNNER_PATH@",
@@ -36,8 +32,6 @@ _TEMPLATE_MARKERS = (
     "@DRAIN_DEADLINE_SECONDS@",
     "@GLOBAL_DRAIN_DEADLINE_SECONDS@",
     "@SERVICE_TIMEOUT_SECONDS@",
-    "@HEAVY_TIMEOUT_SECONDS@",
-    "@HEAVY_GATE_TIMEOUT_SECONDS@",
 )
 
 
@@ -60,8 +54,6 @@ class _InstallPaths:
     runner_source: Path
     service_source: Path
     timer_source: Path
-    heavy_service_source: Path
-    heavy_timer_source: Path
     runner_target: Path
     units: Path
     python_executable: Path
@@ -198,10 +190,8 @@ def _validated_unit_settings(
     drain_deadline_seconds: int,
     global_deadline_seconds: int,
     service_timeout_seconds: int | None,
-    heavy_timeout_seconds: int,
-    heavy_gate_timeout_seconds: int,
 ) -> int:
-    """Validate independent queue/heavy budgets and return the unit timeout."""
+    """Validate the queue budgets and return the unit timeout."""
 
     if any(
         value <= 0
@@ -209,8 +199,6 @@ def _validated_unit_settings(
             max_age_seconds,
             drain_deadline_seconds,
             global_deadline_seconds,
-            heavy_timeout_seconds,
-            heavy_gate_timeout_seconds,
         )
     ):
         raise MergeQueueRunnerInstallError("runner settings must be positive integers")
@@ -240,8 +228,6 @@ def render_unit(
     drain_deadline_seconds: int = DEFAULT_DRAIN_DEADLINE_SECONDS,
     global_deadline_seconds: int = DEFAULT_GLOBAL_DRAIN_DEADLINE_SECONDS,
     service_timeout_seconds: int | None = None,
-    heavy_timeout_seconds: int = DEFAULT_HEAVY_TIMEOUT_SECONDS,
-    heavy_gate_timeout_seconds: int = DEFAULT_HEAVY_GATE_TIMEOUT_SECONDS,
 ) -> bytes:
     """Render a unit with explicit paths and bounded runner settings."""
 
@@ -250,8 +236,6 @@ def render_unit(
         drain_deadline_seconds=drain_deadline_seconds,
         global_deadline_seconds=global_deadline_seconds,
         service_timeout_seconds=service_timeout_seconds,
-        heavy_timeout_seconds=heavy_timeout_seconds,
-        heavy_gate_timeout_seconds=heavy_gate_timeout_seconds,
     )
     if not python_executable.is_file() or not os.access(python_executable, os.X_OK):
         raise MergeQueueRunnerInstallError(
@@ -276,10 +260,6 @@ def render_unit(
     )
     rendered = rendered.replace(
         "@SERVICE_TIMEOUT_SECONDS@", str(service_timeout_seconds)
-    )
-    rendered = rendered.replace("@HEAVY_TIMEOUT_SECONDS@", str(heavy_timeout_seconds))
-    rendered = rendered.replace(
-        "@HEAVY_GATE_TIMEOUT_SECONDS@", str(heavy_gate_timeout_seconds)
     )
     unresolved = [marker for marker in _TEMPLATE_MARKERS if marker in rendered]
     if unresolved:
@@ -341,8 +321,6 @@ def _resolve_install_paths(
     source_runner: str | Path | None,
     service_template: str | Path | None,
     timer_template: str | Path | None,
-    heavy_service_template: str | Path | None,
-    heavy_timer_template: str | Path | None,
     python_executable: str | Path | None,
 ) -> _InstallPaths:
     """Validate every source and destination before staging any file."""
@@ -362,14 +340,6 @@ def _resolve_install_paths(
         _path_value(timer_template, _package_path(TIMER_NAME)),
         label="timer template",
     )
-    heavy_service_source = _validate_path(
-        _path_value(heavy_service_template, _package_path(HEAVY_SERVICE_NAME)),
-        label="heavy service template",
-    )
-    heavy_timer_source = _validate_path(
-        _path_value(heavy_timer_template, _package_path(HEAVY_TIMER_NAME)),
-        label="heavy timer template",
-    )
     runner_target = _validate_path(
         _path_value(bin_path, Path.home() / ".local" / "bin" / DEFAULT_RUNNER_NAME),
         label="runner destination",
@@ -385,8 +355,6 @@ def _resolve_install_paths(
         runner_source,
         service_source,
         timer_source,
-        heavy_service_source,
-        heavy_timer_source,
         runner_target,
         units,
         python_path,
@@ -412,8 +380,6 @@ def _build_payloads(
     max_age_seconds: int,
     drain_deadline_seconds: int,
     global_deadline_seconds: int,
-    heavy_timeout_seconds: int,
-    heavy_gate_timeout_seconds: int,
 ) -> tuple[_Payload, ...]:
     """Materialize all source payloads before replacing any destination."""
 
@@ -436,22 +402,6 @@ def _build_payloads(
         drain_deadline_seconds=drain_deadline_seconds,
         global_deadline_seconds=global_deadline_seconds,
     )
-    heavy_service_content = render_unit(
-        paths.heavy_service_source,
-        python_executable=paths.python_executable,
-        runner_path=paths.runner_target,
-        workspace_root=paths.root,
-        heavy_timeout_seconds=heavy_timeout_seconds,
-        heavy_gate_timeout_seconds=heavy_gate_timeout_seconds,
-    )
-    heavy_timer_content = render_unit(
-        paths.heavy_timer_source,
-        python_executable=paths.python_executable,
-        runner_path=paths.runner_target,
-        workspace_root=paths.root,
-        heavy_timeout_seconds=heavy_timeout_seconds,
-        heavy_gate_timeout_seconds=heavy_gate_timeout_seconds,
-    )
     return (
         _Payload(
             "runner", paths.runner_source, paths.runner_target, runner_content, 0o755
@@ -465,20 +415,6 @@ def _build_payloads(
         ),
         _Payload(
             "timer", paths.timer_source, paths.units / TIMER_NAME, timer_content, 0o644
-        ),
-        _Payload(
-            "heavy-service",
-            paths.heavy_service_source,
-            paths.units / HEAVY_SERVICE_NAME,
-            heavy_service_content,
-            0o644,
-        ),
-        _Payload(
-            "heavy-timer",
-            paths.heavy_timer_source,
-            paths.units / HEAVY_TIMER_NAME,
-            heavy_timer_content,
-            0o644,
         ),
     )
 
@@ -655,18 +591,14 @@ def install(
     source_runner: str | Path | None = None,
     service_template: str | Path | None = None,
     timer_template: str | Path | None = None,
-    heavy_service_template: str | Path | None = None,
-    heavy_timer_template: str | Path | None = None,
     python_executable: str | Path | None = None,
     systemctl: str = "systemctl",
     reload: bool = True,
     max_age_seconds: int = DEFAULT_MAX_QUEUE_AGE_SECONDS,
     drain_deadline_seconds: int = DEFAULT_DRAIN_DEADLINE_SECONDS,
     global_deadline_seconds: int = DEFAULT_GLOBAL_DRAIN_DEADLINE_SECONDS,
-    heavy_timeout_seconds: int = DEFAULT_HEAVY_TIMEOUT_SECONDS,
-    heavy_gate_timeout_seconds: int = DEFAULT_HEAVY_GATE_TIMEOUT_SECONDS,
 ) -> InstallReport:
-    """Install queue and phased-push units as one rollback-capable transaction."""
+    """Install the queue runner units as one rollback-capable transaction."""
 
     paths = _resolve_install_paths(
         workspace_root,
@@ -675,8 +607,6 @@ def install(
         source_runner=source_runner,
         service_template=service_template,
         timer_template=timer_template,
-        heavy_service_template=heavy_service_template,
-        heavy_timer_template=heavy_timer_template,
         python_executable=python_executable,
     )
     payloads = _build_payloads(
@@ -684,8 +614,6 @@ def install(
         max_age_seconds=max_age_seconds,
         drain_deadline_seconds=drain_deadline_seconds,
         global_deadline_seconds=global_deadline_seconds,
-        heavy_timeout_seconds=heavy_timeout_seconds,
-        heavy_gate_timeout_seconds=heavy_gate_timeout_seconds,
     )
     snapshots = tuple(_snapshot(payload.destination) for payload in payloads)
     return _perform_install(payloads, snapshots, systemctl=systemctl, reload=reload)
@@ -725,18 +653,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_GLOBAL_DRAIN_DEADLINE_SECONDS,
         help="queue runner wall-clock deadline across all selected roots",
     )
-    parser.add_argument(
-        "--heavy-timeout-seconds",
-        type=int,
-        default=DEFAULT_HEAVY_TIMEOUT_SECONDS,
-        help="systemd wall-clock deadline for the dedicated phased-push lane",
-    )
-    parser.add_argument(
-        "--heavy-gate-timeout-seconds",
-        type=int,
-        default=DEFAULT_HEAVY_GATE_TIMEOUT_SECONDS,
-        help="RM_GATE_TIMEOUT_SECONDS for the dedicated phased-push lane",
-    )
     return parser
 
 
@@ -753,8 +669,6 @@ def main(argv: list[str] | None = None) -> int:
             max_age_seconds=args.max_age_seconds,
             drain_deadline_seconds=args.drain_deadline_seconds,
             global_deadline_seconds=args.global_deadline_seconds,
-            heavy_timeout_seconds=args.heavy_timeout_seconds,
-            heavy_gate_timeout_seconds=args.heavy_gate_timeout_seconds,
         )
     except MergeQueueRunnerInstallError as exc:
         print(f"repository-manager runner install refused: {exc}")

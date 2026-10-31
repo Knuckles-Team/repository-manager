@@ -155,11 +155,9 @@ def _mock_git(project_map=None):
 
 
 @pytest.mark.anyio
-async def test_rm_projects_validate_wires_auto_bump_and_auto_push_and_hygiene():
-    """auto_bump=True, auto_push=True: the bump job must depend on the
-    validation job ids; the push job must depend on the bump job (NOT on the
-    raw validation ids); worktree_hygiene must depend on the push job (the
-    last stage), and prune defaults to False."""
+async def test_rm_projects_validate_commit_code_depends_on_validation():
+    """commit_code=True: the commit job depends on the validation ids, and no
+    bump, push, or hygiene job is submitted."""
     rm_projects = await _get_rm_projects_tool()
     git = _mock_git()
 
@@ -179,78 +177,6 @@ async def test_rm_projects_validate_wires_auto_bump_and_auto_push_and_hygiene():
             output_dir=None,
             generate_report=True,
             repositories=None,
-            auto_bump=True,
-            auto_push=True,
-            bump_part="minor",
-            prune_worktrees=False,
-            commit_code=False,
-            commit_message=None,
-            force_revalidate=False,
-            failed_only=False,
-            summary=True,
-            job_id=None,
-            ctx=None,
-        )
-
-    actions = [c["action"] for c in calls]
-    # 2 validate jobs (repo-a, repo-b) + maintain + phased_push + worktree_hygiene
-    assert actions.count("validate") == 2
-    assert actions.count("maintain") == 1
-    assert actions.count("phased_push") == 1
-    assert actions.count("worktree_hygiene") == 1
-
-    validate_ids = [
-        f"job-{i + 1}" for i, c in enumerate(calls) if c["action"] == "validate"
-    ]
-    maintain_call = next(c for c in calls if c["action"] == "maintain")
-    push_call = next(c for c in calls if c["action"] == "phased_push")
-    hygiene_call = next(c for c in calls if c["action"] == "worktree_hygiene")
-
-    # wait_for_jobs_and_run(dependency_job_ids, require_success, func, ...)
-    assert maintain_call["args"][0] == validate_ids
-    assert maintain_call["args"][1] is True
-    assert maintain_call["kwargs"]["part"] == "minor"
-    assert maintain_call["kwargs"]["dry_run"] is False
-
-    bump_job_id = res["bump_job_id"]
-    assert push_call["args"][0] == [bump_job_id]
-
-    push_job_id = res["push_job_id"]
-    assert hygiene_call["args"][0] == [push_job_id]
-    assert hygiene_call["args"][1] is False
-    assert hygiene_call["kwargs"]["prune"] is False
-
-    assert res["status"] == "submitted"
-
-
-@pytest.mark.anyio
-async def test_rm_projects_validate_commit_code_reroutes_bump_dependency():
-    """commit_code=True: the commit job depends on the validation ids; when
-    auto_bump is also set, the bump job depends ONLY on the commit job's id
-    (not on the raw validation ids) — bump_dependencies is reassigned."""
-    rm_projects = await _get_rm_projects_tool()
-    git = _mock_git()
-
-    calls = []
-
-    def fake_submit_job(action, func, *args, _extra_job_data=None, **kwargs):
-        calls.append({"action": action, "args": args, "kwargs": kwargs})
-        return {"status": "submitted", "job_id": f"job-{len(calls)}"}
-
-    with (
-        patch.object(mcp_server_module, "get_git_instance", return_value=git),
-        patch.object(mcp_server_module, "_submit_job", side_effect=fake_submit_job),
-    ):
-        res = await rm_projects["rm_projects_validate"].fn(
-            threads=None,
-            extra="all",
-            output_dir=None,
-            generate_report=True,
-            repositories=None,
-            auto_bump=True,
-            auto_push=False,
-            bump_part="patch",
-            prune_worktrees=False,
             commit_code=True,
             commit_message="chore: test commit",
             force_revalidate=False,
@@ -264,19 +190,12 @@ async def test_rm_projects_validate_commit_code_reroutes_bump_dependency():
         f"job-{i + 1}" for i, c in enumerate(calls) if c["action"] == "validate"
     ]
     commit_call = next(c for c in calls if c["action"] == "commit_code")
-    maintain_call = next(c for c in calls if c["action"] == "maintain")
 
     assert commit_call["args"][0] == validate_ids
     assert commit_call["kwargs"]["message"] == "chore: test commit"
 
-    commit_job_id = res["commit_job_id"]
-    assert maintain_call["args"][0] == [commit_job_id]
-    assert res["bump_job_id"]
-    assert "push_job_id" not in res
-    # worktree_hygiene not triggered unless auto_bump or auto_push -> it IS
-    # triggered here since auto_bump=True, and depends on the bump job.
-    hygiene_call = next(c for c in calls if c["action"] == "worktree_hygiene")
-    assert hygiene_call["args"][0] == [res["bump_job_id"]]
+    assert res["commit_job_id"]
+    assert {c["action"] for c in calls} == {"validate", "commit_code"}
 
 
 @pytest.mark.anyio
@@ -301,10 +220,6 @@ async def test_rm_projects_validate_running_job_is_not_resubmitted():
                 output_dir=None,
                 generate_report=True,
                 repositories=None,
-                auto_bump=False,
-                auto_push=False,
-                bump_part="minor",
-                prune_worktrees=False,
                 commit_code=False,
                 commit_message=None,
                 force_revalidate=False,
@@ -352,10 +267,6 @@ async def test_rm_projects_validate_completed_cache_hit_without_force_revalidate
                 output_dir=None,
                 generate_report=True,
                 repositories=None,
-                auto_bump=False,
-                auto_push=False,
-                bump_part="minor",
-                prune_worktrees=False,
                 commit_code=False,
                 commit_message=None,
                 force_revalidate=False,
@@ -397,10 +308,6 @@ async def test_rm_projects_validate_force_revalidate_bypasses_completed_cache():
                 output_dir=None,
                 generate_report=True,
                 repositories=None,
-                auto_bump=False,
-                auto_push=False,
-                bump_part="minor",
-                prune_worktrees=False,
                 commit_code=False,
                 commit_message=None,
                 force_revalidate=True,
@@ -433,10 +340,6 @@ async def test_rm_projects_validate_failed_only_with_no_failures_is_clean_noop()
             output_dir=None,
             generate_report=True,
             repositories=None,
-            auto_bump=False,
-            auto_push=False,
-            bump_part="minor",
-            prune_worktrees=False,
             commit_code=False,
             commit_message=None,
             force_revalidate=False,
@@ -468,9 +371,7 @@ async def test_rm_projects_validate_failed_only_targets_failed_repos_and_forces(
 
     with (
         patch.object(mcp_server_module, "get_git_instance", return_value=git),
-        patch.object(
-            mcp_server_module, "_last_failed_repos", return_value=["repo-b"]
-        ),
+        patch.object(mcp_server_module, "_last_failed_repos", return_value=["repo-b"]),
         patch.object(mcp_server_module, "_submit_job", side_effect=fake_submit_job),
     ):
         res = await rm_projects["rm_projects_validate"].fn(
@@ -479,10 +380,6 @@ async def test_rm_projects_validate_failed_only_targets_failed_repos_and_forces(
             output_dir=None,
             generate_report=True,
             repositories=None,
-            auto_bump=False,
-            auto_push=False,
-            bump_part="minor",
-            prune_worktrees=False,
             commit_code=False,
             commit_message=None,
             force_revalidate=False,

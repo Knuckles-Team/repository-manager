@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import subprocess
 from pathlib import Path
@@ -29,10 +28,7 @@ from repository_manager.operation_boundary import (
     OperationBoundaryError,
     open_directory,
     pin_existing,
-    read_release_plan_receipt,
-    snapshot_workspace,
     write_at,
-    write_release_plan_receipt,
 )
 from repository_manager.repository_manager import Git, GitResult
 
@@ -270,23 +266,6 @@ def test_write_at_checks_identity_before_truncating_replaced_file(
             write_at(root.fd, "config", b"new\n")
 
     assert target.read_text() == replacement
-
-
-def test_release_receipt_flushes_parent_for_start_and_atomic_completion(
-    tmp_path, monkeypatch
-):
-    flushes: list[int] = []
-    monkeypatch.setattr(
-        operation_boundary,
-        "_fsync_directory",
-        lambda descriptor: flushes.append(descriptor),
-    )
-    with open_directory(tmp_path) as root:
-        write_release_plan_receipt(root, {"state": "started"})
-        write_release_plan_receipt(root, {"state": "completed"}, atomic=True)
-        assert read_release_plan_receipt(root) == {"state": "completed"}
-
-    assert len(flushes) == 2
 
 
 def test_mount_identity_matches_the_kernel_descriptor_mount():
@@ -713,234 +692,6 @@ def test_workspace_sync_empty_map_rejects_root_swap(tmp_path, monkeypatch):
     assert "workspace_sync" in results[0].error.message
 
 
-def test_phased_push_rejects_same_path_checkout_replacement(tmp_path, monkeypatch):
-    manager = _manager_with_project(tmp_path)
-    project = Path(next(iter(manager.project_map.values())))
-    original_execute = manager._execute_push_phase
-
-    def replace_before_phase(**kwargs: object) -> bool:
-        saved = project.with_name("repo-original")
-        project.rename(saved)
-        project.mkdir()
-        return original_execute(**kwargs)
-
-    monkeypatch.setattr(manager, "_execute_push_phase", replace_before_phase)
-    results = manager.phased_push(
-        config={"phases": [{"phase": 1, "name": "one", "projects": ["repo"]}]},
-        start_phase=1,
-        auto_start=False,
-    )
-
-    assert any(
-        result.error
-        and (
-            "release plan changed" in result.error.message
-            or "identity" in result.error.message
-        )
-        for result in results
-    )
-    manager.git_action.assert_not_called()
-
-
-def test_phased_push_rejects_replacement_after_handle_binding(tmp_path, monkeypatch):
-    """A plan cannot admit a checkout replaced after its handle is pinned."""
-    manager = _manager_with_project(tmp_path)
-    project = Path(next(iter(manager.project_map.values())))
-    original_bind = manager._bind_release_plan_target
-
-    def bind_then_replace(*args: object, **kwargs: object) -> None:
-        original_bind(*args, **kwargs)
-        saved = project.with_name("repo-original")
-        project.rename(saved)
-        project.mkdir()
-
-    monkeypatch.setattr(manager, "_bind_release_plan_target", bind_then_replace)
-    results = manager.phased_push(
-        config={"phases": [{"phase": 1, "name": "one", "projects": ["repo"]}]},
-        start_phase=1,
-        auto_start=False,
-    )
-
-    assert results
-    assert any(
-        result.error and "identity" in result.error.message for result in results
-    )
-    manager.git_action.assert_not_called()
-
-
-def test_phased_push_rejects_origin_drift_before_mutation(tmp_path, monkeypatch):
-    manager = _manager_with_project(tmp_path)
-    project = Path(next(iter(manager.project_map.values())))
-    git_dir = project / ".git"
-    git_dir.mkdir()
-    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
-    (git_dir / "config").write_text(
-        '[remote "origin"]\n\turl = https://github.com/example/repo.git\n'
-    )
-    original_execute = manager._execute_push_phase
-
-    def drift_before_phase(**kwargs: object) -> bool:
-        (git_dir / "config").write_text(
-            '[remote "origin"]\n\turl = https://github.com/example/other.git\n'
-        )
-        return original_execute(**kwargs)
-
-    monkeypatch.setattr(manager, "_execute_push_phase", drift_before_phase)
-    results = manager.phased_push(
-        config={"phases": [{"phase": 1, "name": "one", "projects": ["repo"]}]},
-        start_phase=1,
-        auto_start=False,
-    )
-
-    assert any(
-        result.error
-        and (
-            "release plan changed" in result.error.message
-            or "identity" in result.error.message
-        )
-        for result in results
-    )
-    manager.git_action.assert_not_called()
-
-
-def test_phased_push_rejects_origin_drift_after_handle_binding(tmp_path, monkeypatch):
-    source = _source_repository(tmp_path)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    project = workspace / "repo"
-    _run(["git", "clone", "-q", str(source), str(project)], workspace)
-    _run(
-        [
-            "git",
-            "config",
-            "remote.origin.url",
-            "https://github.com/example/repo.git",
-        ],
-        project,
-    )
-    manager = Git(path=str(workspace))
-    manager.project_map = {
-        "https://github.com/example/repo.git": str(project),
-    }
-    original_bind = manager._bind_release_plan_target
-
-    def bind_then_drift(*args: Any, **kwargs: Any) -> None:
-        original_bind(*args, **kwargs)
-        _run(
-            [
-                "git",
-                "config",
-                "remote.origin.url",
-                "https://github.com/example/other.git",
-            ],
-            project,
-        )
-
-    monkeypatch.setattr(manager, "_bind_release_plan_target", bind_then_drift)
-    results = manager.phased_push(
-        config={"phases": [{"phase": 1, "name": "one", "projects": ["repo"]}]},
-        start_phase=1,
-        auto_start=False,
-    )
-
-    assert results
-    assert any(
-        result.error and "identity" in result.error.message for result in results
-    )
-
-
-def test_secure_bump_propagation_ignores_unplanned_collision_service(tmp_path):
-    """Dependency propagation stays within the frozen release target pairs."""
-    manager = Git(path=str(tmp_path))
-    agent = tmp_path / "agent-packages" / "agents" / "arr-mcp"
-    service = tmp_path / "services" / "arr-mcp"
-    agent.mkdir(parents=True)
-    service.mkdir(parents=True)
-    agent_url = "https://github.com/example/arr-mcp.git"
-    service_url = "https://github.com/example/services-arr-mcp.git"
-    manager.project_map = {agent_url: str(agent), service_url: str(service)}
-    phase = [{"phase_num": 5, "name": "agents", "targets": [("arr-mcp", str(agent))]}]
-    provenance = manager._freeze_release_plan("bump", {}, phase, options={})
-    updates = MagicMock(return_value=[])
-    manager._update_dependency_files = updates  # type: ignore[method-assign]
-
-    manager._propagate_bump_to_dependents(
-        project_name="published-package",
-        new_version="1.0.1",
-        phase_num=5,
-        phase_of=lambda _name: 5,
-        dry_run=False,
-        all_results=[],
-        provenance=provenance,
-        plan_assertion=lambda: None,
-        allowed_targets={("arr-mcp", str(agent))},
-    )
-
-    assert [call.kwargs["path"] for call in updates.call_args_list] == [str(agent)]
-
-
-def test_phased_push_replays_only_a_recorded_terminal_outcome(tmp_path):
-    manager = _manager_with_project(tmp_path)
-    config = {"phases": [{"phase": 1, "name": "one", "projects": ["repo"]}]}
-    first = manager.phased_push(config=config, start_phase=1, auto_start=False)
-    calls = manager.git_action.call_count
-    second = manager.phased_push(config=config, start_phase=1, auto_start=False)
-
-    assert first and second
-    assert manager.git_action.call_count == calls
-    assert [item.model_dump() for item in second] == [
-        item.model_dump() for item in first
-    ]
-
-
-def test_phased_push_rejects_divergent_plan_reuse(tmp_path):
-    manager = _manager_with_project(tmp_path)
-    first_config = {"phases": [{"phase": 1, "name": "one", "projects": ["repo"]}]}
-    manager.phased_push(config=first_config, start_phase=1, auto_start=False)
-    calls = manager.git_action.call_count
-    result = manager.phased_push(
-        config={"phases": [{"phase": 1, "name": "different", "projects": ["repo"]}]},
-        start_phase=1,
-        auto_start=False,
-    )
-
-    assert result and result[0].status == "error"
-    assert result[0].error is not None
-    assert "different release plan" in result[0].error.message
-    assert manager.git_action.call_count == calls
-
-
-def test_mixed_explicit_bulk_collision_requires_same_canonical_pair(tmp_path):
-    manager = Git(path=str(tmp_path))
-    bulk_url = "https://example.invalid/agents/shared.git"
-    explicit_url = "https://mirror.invalid/shared.git"
-    bulk_path = tmp_path / "agent-packages" / "agents" / "shared"
-    explicit_path = tmp_path / "shared"
-    for project_path in (bulk_path, explicit_path):
-        project_path.mkdir(parents=True)
-        (project_path / "pyproject.toml").write_text(
-            "[project]\n"
-            "name = 'shared'\n"
-            "dynamic = ['version']\n"
-            "\n"
-            "[build-system]\n"
-            "requires = ['hatchling>=1']\n"
-            "build-backend = 'hatchling.build'\n"
-        )
-    manager.project_map = {
-        bulk_url: str(bulk_path),
-        explicit_url: str(explicit_path),
-    }
-    manager._project_categories = {
-        bulk_url: ("agent-packages", "agents"),
-        explicit_url: (),
-    }
-    config = {"phases": [{"phase": 5, "projects": ["shared"], "bulk_bump": True}]}
-
-    with pytest.raises(ValueError, match="one canonical path"):
-        manager._build_bump_phase_list(config=config, start_phase=5, filter_set=None)
-
-
 @pytest.mark.parametrize(
     "model, payload",
     [
@@ -970,56 +721,6 @@ def test_manifest_loader_rejects_symlink_root_with_empty_map(tmp_path):
     manager = Git()
     assert manager.load_projects_from_yaml(str(manifest)) is False
     assert manager.project_map == {}
-
-
-def test_release_plan_binds_head_and_git_config_identity(tmp_path):
-    manager = _manager_with_project(tmp_path)
-    project = Path(next(iter(manager.project_map.values())))
-    git_dir = project / ".git"
-    git_dir.mkdir()
-    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
-    (git_dir / "config").write_text(
-        '[remote "origin"]\n\turl = https://github.com/example/repo.git\n'
-    )
-    phase = [
-        {
-            "phase_num": 1,
-            "name": "one",
-            "projects_to_push": [("repo", str(project))],
-        }
-    ]
-    provenance = manager._freeze_release_plan("push", {}, phase, options={})
-    (git_dir / "HEAD").write_text("ref: refs/heads/other\n")
-
-    assert not manager._release_plan_matches(provenance, {}, phase, options={})
-
-
-def test_release_plan_rejects_any_preexisting_push_remote(tmp_path):
-    manager = _manager_with_project(tmp_path)
-    project = Path(next(iter(manager.project_map.values())))
-    git_dir = project / ".git"
-    git_dir.mkdir()
-    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
-    (git_dir / "config").write_text(
-        '[remote "origin"]\n'
-        "\turl = https://github.com/example/repo.git\n"
-        "\tpushurl = https://github.com/example/repo-push.git\n"
-        "\tpushurl = https://github.com/example/second-push.git\n"
-    )
-    phase = [
-        {
-            "phase_num": 1,
-            "name": "one",
-            "projects_to_push": [("repo", str(project))],
-        }
-    ]
-    provenance = manager._freeze_release_plan("push", {}, phase, options={})
-
-    assert provenance.scope_identity == {
-        "valid": False,
-        "error": "unsafe release scope",
-    }
-    assert not manager._release_plan_matches(provenance, {}, phase, options={})
 
 
 def test_git_action_rejects_multiple_preexisting_push_urls(tmp_path):
@@ -1166,30 +867,6 @@ def test_source_config_popen_race_cannot_redirect_sealed_push(tmp_path, monkeypa
     assert _ref_value(attacker, "refs/heads/main") is None
 
 
-def test_linked_worktree_snapshot_binds_common_config(tmp_path):
-    source = _source_repository(tmp_path)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    checkout = workspace / "repo"
-    _run(["git", "clone", "-q", str(source), str(checkout)], workspace)
-    linked = workspace / "linked"
-    _run(["git", "worktree", "add", "-q", str(linked), "-b", "linked"], checkout)
-    manager = Git(path=str(workspace))
-    manager.project_map = {"https://github.com/example/repo.git": str(linked)}
-
-    snapshot = snapshot_workspace(
-        workspace,
-        [("https://github.com/example/repo.git", str(linked))],
-    )
-    metadata = snapshot["projects"][0]["git"]
-
-    expected_digest = hashlib.sha256(
-        (checkout / ".git" / "config").read_bytes()
-    ).hexdigest()
-    assert metadata["config_digest"] == expected_digest
-    assert metadata["common"] != metadata["worktree"]
-
-
 def test_linked_worktree_handle_rejects_common_config_content_append(tmp_path):
     source = _source_repository(tmp_path)
     workspace = tmp_path / "workspace"
@@ -1207,36 +884,6 @@ def test_linked_worktree_handle_rejects_common_config_content_append(tmp_path):
             OperationBoundaryError, match="config content identity changed"
         ):
             pinned.assert_operation_identity()
-
-
-def test_phased_bump_rejects_same_path_replacement_before_bump(tmp_path, monkeypatch):
-    manager = _manager_with_project(tmp_path)
-    project = Path(next(iter(manager.project_map.values())))
-    original_bump = manager._bump_one_project
-
-    def replace_before_bump(**kwargs: object) -> str | None:
-        saved = project.with_name("repo-original")
-        project.rename(saved)
-        project.mkdir()
-        return original_bump(**kwargs)
-
-    monkeypatch.setattr(manager, "_bump_one_project", replace_before_bump)
-    results = manager.phased_bumpversion(
-        config={"phases": [{"phase": 1, "name": "one", "projects": ["repo"]}]},
-        start_phase=1,
-        auto_start=False,
-        force=True,
-    )
-
-    assert results
-    assert any(
-        result.error
-        and (
-            "identity" in result.error.message or "release plan" in result.error.message
-        )
-        for result in results
-    )
-    manager.git_action.assert_not_called()
 
 
 def test_pre_commit_rejects_checkout_swap_after_handle_pin(tmp_path, monkeypatch):
@@ -1257,19 +904,3 @@ def test_pre_commit_rejects_checkout_swap_after_handle_pin(tmp_path, monkeypatch
     assert result.status == "error"
     assert result.error is not None
     assert "identity" in result.error.message or "pinned" in result.error.message
-
-
-def test_auto_start_rejects_checkout_swap_after_pending_probe(tmp_path, monkeypatch):
-    manager = _manager_with_project(tmp_path)
-    project = Path(next(iter(manager.project_map.values())))
-
-    def swap_pending(_path: str, *, pinned: object) -> bool:
-        saved = project.with_name("repo-original")
-        project.rename(saved)
-        project.mkdir()
-        return True
-
-    monkeypatch.setattr(manager, "_repo_has_pending_work", swap_pending)
-    config = {"phases": [{"phase": 1, "name": "one", "projects": ["repo"]}]}
-
-    assert manager._auto_start_phase(config, operation="bump") is None

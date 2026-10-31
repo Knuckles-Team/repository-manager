@@ -106,28 +106,6 @@ def test_setup_from_yaml(mock_pull, mock_git, sample_workspace_yml):
     assert mock_pull.call_count > 0
 
 
-def test_maintenance_config_loading(sample_workspace_yml):
-    yml_path, _ = sample_workspace_yml
-    git = Git()
-
-    os.environ["WORKSPACE_YML"] = str(yml_path)
-
-    with patch.object(Git, "pre_commit_projects") as mock_pre:
-        with patch.object(Git, "bump_version") as mock_bump:
-            mock_pre.return_value = [
-                GitResult(status="success", data="OK", metadata=get_mock_metadata())
-            ]
-            mock_bump.return_value = get_mock_metadata("bump")
-
-            # auto_start=False keeps the high start_phase a clean no-op; this
-            # test exercises config loading, not change-aware start detection.
-            git.maintain_projects(dry_run=True, start_phase=100, auto_start=False)
-
-            assert hasattr(git, "config")
-            assert git.config is not None
-            assert git.config.name == "Arbora Workspace"
-            assert git.config.maintenance is not None
-            assert git.config.maintenance.phases[0].phase == 1
 
 
 def test_git_init_with_default_workspace():
@@ -1036,7 +1014,7 @@ def test_bump_version_fallback_execution(mock_git_action, sample_workspace_yml):
             )
         elif "commit" in command:
             assert "--no-verify" not in command
-            assert "phased bump" in command
+            assert "version bump" in command
             return GitResult(
                 status="success",
                 data="Committed fallback",

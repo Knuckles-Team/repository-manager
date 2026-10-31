@@ -354,7 +354,7 @@ def _latest_jobs() -> dict[str, dict[str, Any]]:
     latest job per repo means a repo reflects only its current state, and stale
     'running' jobs from a superseded cascade stop inflating the running count.
 
-    Workspace-wide orchestration jobs (phased bump/push, etc.) carry no
+    Workspace-wide orchestration jobs (clone, commit_code, etc.) carry no
     ``repo_name`` and are each preserved verbatim. (CONCEPT:RM-TOPOLOGY)
     """
     latest_by_repo: dict[str, tuple[str, dict[str, Any]]] = {}
@@ -436,8 +436,7 @@ def _reap_job_if_stale(
     future = _job_futures.get(job_id)
     if future is not None and not future.done():
         # A live worker/pending Future is stronger liveness evidence than
-        # wall age. This is essential for phased_push, whose configured
-        # inter-phase wait alone can legitimately reach 30 minutes.
+        # wall age.
         return
     heartbeat = j.get("heartbeat_at") or j.get("started_at") or j.get("submitted_at")
     if not heartbeat:
@@ -466,7 +465,7 @@ def _reap_stale_jobs(max_age_seconds: float | None = None) -> None:
     oversized concurrent sweep) can otherwise sit in 'running' forever, making
     the roll-up look permanently frozen (e.g. ``626 completed / 45 running``
     unchanged for many minutes). A pending/running Future is authoritative
-    liveness evidence regardless of age; observable phased progress advances a
+    liveness evidence regardless of age; observable progress advances a
     heartbeat. Only a record with neither is eligible for age-based reaping.
     This is a DISPLAY/accounting safety net — it does not kill an underlying
     operation. Env-tunable via

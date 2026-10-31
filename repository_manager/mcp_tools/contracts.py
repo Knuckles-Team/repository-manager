@@ -6,7 +6,6 @@ RM_GIT_ACTIONS = (
     "enumerate",
     "pull",
     "push",
-    "phased_push",
     "add",
     "commit",
     "pre_commit",
@@ -22,8 +21,6 @@ RM_WORKSPACE_ACTIONS = (
     "setup",
     "template",
     "save",
-    "maintain",
-    "maintain_status",
 )
 
 RM_WORKTREE_ACTIONS = (

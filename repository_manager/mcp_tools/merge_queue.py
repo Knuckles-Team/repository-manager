@@ -66,8 +66,8 @@ def register_merge_queue_tools(
             default=True,
             description=(
                 "Publish a landed base through the repository's gated push path. "
-                "Set false for the fast queue timer; the phased-push scheduler "
-                "then owns publication."
+                "Set false for the fast queue timer; publication is then "
+                "a separate, explicit push."
             ),
         ),
         ctx: Context | None = Field(
@@ -79,7 +79,7 @@ def register_merge_queue_tools(
         The canonical driver of parallel development: lanes take worktrees, work,
         then hand branches here, and the queue gates them **as merged**,
         fast-forwards the base, and prunes the worktree and branch. Set ``push``
-        false when a scheduler must leave publication to phased push.
+        false when a scheduler must leave publication to a separate push.
 
         **The queue does not know what a gate is.** Gates are declared in the
         target repository's own ``.mergequeue.yaml`` — a command, a tier, a
@@ -107,7 +107,7 @@ def register_merge_queue_tools(
         the repo's own gated push path (``_gate_before_push`` + ``push_project``
         — the same pre-commit gates and GH013/divergent-remote handling a manual
         push gets). With ``push`` false, publication is deliberately deferred to
-        the phased-push scheduler. A push failure never fails the landing —
+        a separate push. A push failure never fails the landing —
         ``landed: true, pushed: false`` is a legitimate, visible intermediate
         state; check ``push_error`` on the outcome for why. The queue's own
         ``run`` summary also reports ``pushed``/``landed_unpushed`` counts.

@@ -42,9 +42,6 @@ EXPECTED_TOOL_NAMES = (
     "repository_manager_install_projects",
     "repository_manager_list_branches",
     "repository_manager_load_projects_from_yaml",
-    "repository_manager_maintain_projects",
-    "repository_manager_phased_bumpversion",
-    "repository_manager_phased_push",
     "repository_manager_pre_commit",
     "repository_manager_pre_commit_projects",
     "repository_manager_pull_project",
@@ -63,7 +60,6 @@ EXPECTED_TOOL_NAMES = (
     "rm_git_enumerate",
     "rm_git_pull",
     "rm_git_push",
-    "rm_git_phased_push",
     "rm_git_add",
     "rm_git_commit",
     "rm_git_pre_commit",
@@ -114,13 +110,15 @@ EXPECTED_TOOL_NAMES = (
     "rm_gates_phase_direction",
     "rm_gates_repos",
     "rm_gates_phase_direction_here",
+    "rm_rollout_plan",
+    "rm_rollout_apply",
+    "rm_rollout_status",
+    "rm_rollout_release",
     "rm_workspace_list",
     "rm_workspace_list_branches",
     "rm_workspace_setup",
     "rm_workspace_template",
     "rm_workspace_save",
-    "rm_workspace_maintain",
-    "rm_workspace_maintain_status",
     "rm_workspace_fleet_evidence_check",
     "rm_concepts_reserve",
     "rm_concepts_get",
@@ -187,9 +185,9 @@ EXPECTED_TOOL_NAMES = (
 # Recomputed for the SDK 0.3.0 per-operation surface: every rm_* action is its own
 # rm_<group>_<action> tool, and the Git facade serves one
 # repository_manager_<operation> tool per method; no action-routed tool remains.
-# Recomputed for scion-sdk 0.6.4: tool docstrings now name scion-sdk.
+# Recomputed for RM-RELEASE-R009: phased bump/push tools retired, rm_rollout_{plan,apply,status,release} added.
 BASELINE_CATALOG_SHA256 = (
-    "bf428dbcafbbb6ed521ef3aacc22c8ff84dcaa6b2819ae526719d7b4cc0f1dcb"
+    "bcedd6e49f20416fa2951e88f22bb14d824399c8bed72df4fb6de5674b25fd3d"
 )
 
 

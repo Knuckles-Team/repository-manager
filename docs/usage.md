@@ -13,7 +13,7 @@ small, and each can be toggled independently with its environment variable.
 | Module | Toggle | Default | Action-routed methods |
 |---|---|---|---|
 | Misc | `MISCTOOL` | `True` | health check and miscellaneous helpers |
-| Git Operations | `GIT_OPERATIONSTOOL` | `True` | `clone`, `pull`, `push`, `phased_push` (legacy `raw` is permanently retired) |
+| Git Operations | `GIT_OPERATIONSTOOL` | `True` | `clone`, `pull`, `push` (legacy `raw` is permanently retired) |
 | Workspace Management | `WORKSPACE_MANAGEMENTTOOL` | `True` | `list`, `list_branches`, `maintain`, `remediate`, `save`, `setup`, `template` |
 | Project Management | `PROJECT_MANAGEMENT_TOOL` | `True` | `build`, `install`, `validate`, `validate_status` |
 
@@ -21,7 +21,7 @@ Example agent prompts that map onto these tools:
 
 - *"List every project in the workspace."* → `workspace_management list`
 - *"Pull the latest changes for all repositories."* → `git_operations pull`
-- *"Validate the workspace, then run a phased push of the agents."* → `project_management validate` + `git_operations phased_push`
+- *"Roll scion-sdk 0.6.4 to every connector."* → `rm_rollout` (`plan`, `apply`, `status`, `release`)
 
 ## As a Python API
 
@@ -78,20 +78,19 @@ repository-manager --clone
 repository-manager --pull
 ```
 
-The autonomous release harness runs a validation → bump → maintain → push sequence
-that aborts on the first failure:
+`--validate` runs a full pre-release validation across the workspace.
+
+To roll a dependency floor across the fleet (one pull request per repository,
+auto-merge, resumable ledger, tag after merge), use the `rollout` command:
 
 ```bash
-repository-manager --validate --bump patch --maintain --push
+repository-manager rollout --dependency scion-sdk --floor 0.6.4 --dry-run
+repository-manager rollout --dependency scion-sdk --floor 0.6.4
+repository-manager rollout status --dependency scion-sdk --floor 0.6.4
+repository-manager rollout release --dependency scion-sdk --floor 0.6.4
 ```
 
-- **`--validate`** runs a full pre-release validation; subsequent steps abort on failure.
-- **`--bump [patch|minor|major]`** bumps semantic versions.
-- **`--maintain`** propagates version changes through the five-phase dependency tree.
-- **`--push`** runs a parallelized, phase-gated Git push; phase transitions are decided by running downstream repos' own pre-push gates, with `wait_minutes` as the retry ceiling (CONCEPT:RM-DEP-READY — see `docs/phased_push.md`). Phase 5 is restricted to manifest-classified, PyPI-buildable agent repositories and fails closed for infrastructure or incomplete metadata.
-
-The phased mechanics are documented in detail in
-[Phased Maintenance](phased_maintenance.md) and [Phased Push](phased_push.md).
+See [Dependency rollout](rollout.md).
 
 ### Lane lifecycle (`CONCEPT:RM-LANE-DOCTOR`)
 

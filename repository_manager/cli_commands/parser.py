@@ -43,6 +43,10 @@ def run(runtime: CliRuntime) -> int:
     Main entry point for the Repository Manager CLI.
     Supports workspace management, Git bulk operations, and maintenance.
     """
+    if sys.argv[1:2] == ["rollout"]:
+        from repository_manager.cli_commands.rollout import run_rollout_cli
+
+        return run_rollout_cli(sys.argv[2:])
     parser = argparse.ArgumentParser(
         description="Repository Manager - 100% Model-Driven Pydantic Graph Agent",
         formatter_class=argparse.RawTextHelpFormatter,
@@ -51,8 +55,8 @@ Examples:
   # Standard setup (clones all missing repos in parallel)
   repository-manager --clone
 
-  # Maintenance workflow (Bump patch version everywhere)
-  repository-manager --maintain --bump patch
+  # Roll a dependency floor across the fleet (PRs, auto-merge, resumable)
+  repository-manager rollout --dependency scion-sdk --floor 0.6.4 --dry-run
 
   # Selective operations
   repository-manager --repositories "genius-agent, gitlab-api" --pull
@@ -320,77 +324,10 @@ Examples:
         ),
     )
     group_maintenance.add_argument(
-        "--maintain",
-        action="store_true",
-        help=(
-            "Execute five-phase maintenance (Bump -> Pre-commit -> Verify); "
-            "Phase 5 is limited to manifest-classified PyPI agents."
-        ),
-    )
-    group_maintenance.add_argument(
-        "--push",
-        action="store_true",
-        help=(
-            "Execute five-phase push; Phase 5 is limited to "
-            "manifest-classified PyPI agents."
-        ),
-    )
-    group_maintenance.add_argument(
-        "--bump",
-        choices=["patch", "minor", "major"],
-        help="Version bump part (major/minor/patch). Use with --maintain or standalone.",
-    )
-    group_maintenance.add_argument(
         "--report",
         nargs="?",
         const=True,
         help="Export markdown summary results to a file (default: Workspace root).",
-    )
-    group_maintenance.add_argument(
-        "--phase",
-        type=int,
-        default=1,
-        help="Starting phase for the five-phase maintenance lifecycle (1-5).",
-    )
-    group_maintenance.add_argument(
-        "--single-phase",
-        action="store_true",
-        help="Only execute the specified phase, do not proceed to subsequent phases.",
-    )
-    group_maintenance.add_argument(
-        "--no-auto-start",
-        dest="auto_start",
-        action="store_false",
-        default=True,
-        help=(
-            "Opt out of change-aware start. By default --maintain/--push begin at "
-            "the lowest phase with repository changes; this forces a start at "
-            "--phase instead."
-        ),
-    )
-    group_maintenance.add_argument(
-        "--project",
-        type=str,
-        help=(
-            "Only execute maintenance operations for the given project name or "
-            "comma-separated project names. A bulk phase can only be narrowed; "
-            "this filter cannot add an ineligible release target."
-        ),
-    )
-    group_maintenance.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Perform maintenance operations without committing changes. Use with --maintain.",
-    )
-    group_maintenance.add_argument(
-        "--allow-pre-commit",
-        action="store_true",
-        help="Execute the pre-commit phase during maintenance workflow. Pre-commits are skipped by default.",
-    )
-    group_maintenance.add_argument(
-        "--config",
-        type=str,
-        help="Path to an overridden maintenance JSON/YAML configuration. Use with --maintain.",
     )
     group_maintenance.add_argument(
         "--break-system-packages",
@@ -453,8 +390,8 @@ Examples:
         "--queue-no-push",
         action="store_true",
         help=(
-            "Land through the queue's fast gates but defer publication to the "
-            "dedicated phased-push scheduler."
+            "Land through the queue's fast gates but defer publication to a "
+            "separate, explicit push."
         ),
     )
     group_queue.add_argument(
@@ -772,9 +709,6 @@ def _run_parsed_command(
 
     has_errors = _run_gate_dispatch(runtime, git, args)
     has_errors = _dispatch_validate(runtime, git, args, has_errors)
-    has_errors = _dispatch_bump(runtime, git, args, has_errors)
-    has_errors = _dispatch_maintain(runtime, git, args, has_errors)
-    has_errors = _dispatch_push(runtime, git, args, has_errors)
     return _cli_return_code(has_errors)
 
 
@@ -788,9 +722,6 @@ def _check_fleet_evidence(runtime: CliRuntime, args: argparse.Namespace) -> int:
                 "pull",
                 "install",
                 "build",
-                "maintain",
-                "push",
-                "bump",
                 "validate",
                 "save",
                 "add",
@@ -1254,12 +1185,7 @@ def _dispatch_validate(
 ) -> bool:
     if not args.validate:
         return has_errors
-    val_results = git.validate_and_release(
-        threads=args.threads,
-        auto_bump=bool(args.bump) if not args.maintain else False,
-        auto_push=args.push,
-        bump_part=args.bump if args.bump else "minor",
-    )
+    val_results = git.validate_and_release(threads=args.threads)
     if not val_results.get("passed"):
         has_errors = True
         runtime.logger.error("Validation failed with errors.")
@@ -1267,138 +1193,7 @@ def _dispatch_validate(
         runtime.logger.info(
             "Validation and subsequent operations completed successfully."
         )
-
-    # Prevent these from executing again below
-    args.bump = None
-    args.push = False
     return has_errors
-
-
-def _dispatch_bump(
-    runtime: CliRuntime, git: Git, args: argparse.Namespace, has_errors: bool
-) -> bool:
-    if not (args.bump and not args.maintain):
-        return has_errors
-    if has_errors:
-        runtime.logger.error("Skipping bump due to preceding validation errors.")
-        return True
-    config = _cli_maintenance_config(runtime, git, args)
-    if config is None:
-        return True
-    runtime.logger.info(f"Bumping version ({args.bump}) with phased selection...")
-    results = git.phased_bumpversion(
-        part=args.bump,
-        start_phase=args.phase,
-        dry_run=args.dry_run,
-        config=config,
-        single_phase=args.single_phase,
-        project_filter=args.project,
-        auto_start=args.auto_start,
-    )
-    if any(result.status == "error" for result in results):
-        has_errors = True
-    summary = git.generate_markdown_summary("Phased Version Bump", results)
-    runtime.logger.info(summary)
-    git._export_report(summary, "version_bump_report.md")
-    return has_errors
-
-
-def _load_config_file(runtime: CliRuntime, config_path: str) -> dict[str, Any] | None:
-    try:
-        with open(config_path) as f:
-            data = json.load(f)
-    except Exception as e:
-        runtime.logger.error("Operation failed: error_type=%s", type(e).__name__)
-        sys.exit(1)
-    return _require_config_mapping(runtime, data)
-
-
-def _require_config_mapping(runtime: CliRuntime, data: object) -> dict[str, Any] | None:
-    if type(data) is dict:
-        return data
-    runtime.logger.error("Operation failed: error_type=ValueError")
-    sys.exit(1)
-
-
-def _cli_maintenance_config(
-    runtime: CliRuntime, git: Git, args: argparse.Namespace
-) -> dict[str, Any] | None:
-    """Resolve every CLI maintenance verb through the core strict boundary."""
-    raw = _load_config_file(runtime, args.config) if args.config else None
-    resolved = git._resolve_maintenance_config(raw)
-    if resolved is None:
-        runtime.logger.error("Maintenance configuration is invalid or unavailable.")
-    return resolved
-
-
-def _dispatch_maintain(
-    runtime: CliRuntime, git: Git, args: argparse.Namespace, has_errors: bool
-) -> bool:
-    if not args.maintain:
-        return has_errors
-    if has_errors and (args.push or args.maintain):
-        runtime.logger.error(
-            "Skipping maintenance bump due to preceding validation errors."
-        )
-        has_errors = True
-    else:
-        config = _cli_maintenance_config(runtime, git, args)
-        if config is None:
-            return True
-
-        results = git.phased_bumpversion(
-            part=args.bump if args.bump else "patch",
-            start_phase=args.phase,
-            dry_run=args.dry_run,
-            allow_pre_commit=args.allow_pre_commit,
-            config=config,
-            single_phase=args.single_phase,
-            project_filter=args.project,
-            auto_start=args.auto_start,
-        )
-
-        for res in results:
-            if res.status == "error":
-                has_errors = True
-
-        summary = git.generate_markdown_summary("Phased Maintenance Bump", results)
-
-        runtime.logger.info(summary)
-        git._export_report(summary, "maintenance_report.md")
-    return has_errors
-
-
-def _dispatch_push(
-    runtime: CliRuntime, git: Git, args: argparse.Namespace, has_errors: bool
-) -> bool:
-    if not args.push:
-        return has_errors
-    if has_errors:
-        runtime.logger.error(
-            "Skipping push due to preceding validation or bump errors."
-        )
-        return True
-    else:
-        config = _cli_maintenance_config(runtime, git, args)
-        if config is None:
-            return True
-        push_results = git.phased_push(
-            start_phase=args.phase,
-            config=config,
-            single_phase=args.single_phase,
-            project_filter=args.project,
-            auto_start=args.auto_start,
-        )
-        summary = git.generate_markdown_summary("Phased Push", push_results)
-        runtime.logger.info(summary)
-        git._export_report(summary, "push_report.md")
-        return _push_results_have_errors(push_results)
-
-
-def _push_results_have_errors(push_results: list[Any]) -> bool:
-    """Return whether any phased-push result reports an execution error."""
-
-    return any(getattr(result, "status", None) == "error" for result in push_results)
 
 
 def _cli_return_code(has_errors: bool) -> int:

@@ -23,7 +23,7 @@
 *Version: 3.5.5*
 
 > **Documentation** — Installation, deployment, usage across the CLI, API, MCP, and
-> agent interfaces, and the phased multi-repository release workflows are maintained
+> agent interfaces, and the fleet dependency rollout workflow are maintained
 > in the [official documentation](https://knuckles-team.github.io/repository-manager/).
 
 ---
@@ -110,9 +110,7 @@ This table is auto-generated from the live server — do not edit by hand.
 | `repository_manager_install_projects` | `GITTOOL` | Bulk installs Python and Node projects in the workspace. |
 | `repository_manager_list_branches` | `GITTOOL` | Returns a dictionary mapping project basenames to their current active git branch. |
 | `repository_manager_load_projects_from_yaml` | `GITTOOL` | Loads repository URLs from a YAML workspace file using Pydantic models. |
-| `repository_manager_maintain_projects` | `GITTOOL` | Execute the phased bumpversion workflow: pre-commits + phased bumping. |
-| `repository_manager_phased_bumpversion` | `GITTOOL` | Execute the phased bumpversion workflow: pre-commits + phased bumping. |
-| `repository_manager_phased_push` | `GITTOOL` | Execute the phased git push workflow. |
+| `rm_rollout` | `ROLLOUTTOOL` | Roll a dependency floor across the fleet: `plan`, `apply`, `status`, `release`. |
 | `repository_manager_pre_commit` | `GITTOOL` | Execute pre-commit commands in the specified path. |
 | `repository_manager_pre_commit_projects` | `GITTOOL` | Execute pre-commit commands for all projects in parallel. |
 | `repository_manager_pull_project` | `GITTOOL` | Pull updates for a single Git project and optionally checkout the default branch. |
@@ -193,6 +191,7 @@ When query strings or parameters are provided, an LLM-free **Knowledge Graph res
         "DEVELOPMENT_SURFACESTOOL": "True",
         "DOCS_READINESSTOOL": "True",
         "GATESTOOL": "True",
+        "ROLLOUTTOOL": "True",
         "GH_TOKEN": "your_github_token_here",
         "GITHUB_TOKEN": "your_github_token_here",
         "GITLAB_HOST": "https://gitlab.com",
@@ -259,6 +258,7 @@ own runtime secret boundary.
         "DEVELOPMENT_SURFACESTOOL": "True",
         "DOCS_READINESSTOOL": "True",
         "GATESTOOL": "True",
+        "ROLLOUTTOOL": "True",
         "GH_TOKEN": "your_github_token_here",
         "GITHUB_TOKEN": "your_github_token_here",
         "GITLAB_HOST": "https://gitlab.com",
@@ -324,6 +324,7 @@ docker run -i --rm \
   -e DEVELOPMENT_SURFACESTOOL=True \
   -e DOCS_READINESSTOOL=True \
   -e GATESTOOL=True \
+  -e ROLLOUTTOOL=True \
   -e GH_TOKEN=your_github_token_here \
   -e GITHUB_TOKEN=your_github_token_here \
   -e GITLAB_HOST=https://gitlab.com \
@@ -438,6 +439,7 @@ the detailed transport contract.
 | `BUILDTOOL` | `True` |  |
 | `PROJECTTOOL` | `True` |  |
 | `GATESTOOL` | `True` |  |
+| `ROLLOUTTOOL` | `True` | Enables `rm_rollout` (dependency floor rollout). |
 | `CONCEPTSTOOL` | `True` |  |
 | `REMOTE_WORKERSTOOL` | `True` |  |
 | `AUTH_TYPE` | `bearer` | authentication type (e.g. bearer, none) |
@@ -446,7 +448,6 @@ the detailed transport contract.
 | `RM_GATE_TIMEOUT_SECONDS` | `1800` | Wall-clock ceiling, in seconds, for one pre-commit gate stage (repository_manager/gates.py). Unset uses the per-stage built-in default. |
 | `MERGE_QUEUE_DRAIN_DEADLINE_SECONDS` | `180` | per-repository fast queue drain wall-clock deadline |
 | `MERGE_QUEUE_GLOBAL_DEADLINE_SECONDS` | `3600` | whole fast queue invocation wall-clock deadline |
-| `MERGE_QUEUE_HEAVY_DEADLINE_SECONDS` | `18000` | heavy phased-push invocation wall-clock deadline |
 | `MERGE_QUEUE_MAX_AGE_SECONDS` | `86400` | queued-record age limit before fail-closed omission |
 | `MERGE_QUEUE_LEASE_TTL_SECONDS` | `14400` | repo-scoped queue lease; must exceed the drain deadline |
 | `RM_CPU_FRACTION` | `0.20` | fraction of logical cores budgeted for validation workers |
@@ -632,8 +633,7 @@ is the recommended reference for installation, deployment, and day-to-day operat
 | [Deployment](https://knuckles-team.github.io/repository-manager/deployment/) | run the MCP and agent servers, Compose, Caddy + Technitium, env config |
 | [Usage](https://knuckles-team.github.io/repository-manager/usage/) | the MCP tools, the `Git` client, the CLI |
 | [Overview](https://knuckles-team.github.io/repository-manager/overview/) | ecosystem role, enterprise readiness, architecture |
-| [Phased Maintenance](https://knuckles-team.github.io/repository-manager/phased_maintenance/) | dependency-ordered workspace updates |
-| [Phased Push](https://knuckles-team.github.io/repository-manager/phased_push/) | parallel, phase-gated multi-repository releases |
+| [Dependency rollout](https://knuckles-team.github.io/repository-manager/rollout/) | roll a dependency floor across the fleet through PRs |
 | [Concepts](https://knuckles-team.github.io/repository-manager/concepts/) | concept registry (`CONCEPT:RM-*`) |
 
 `AGENTS.md` is the canonical contributor/agent guidance.

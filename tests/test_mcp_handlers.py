@@ -178,7 +178,6 @@ async def test_mcp_rm_git_tool(tmp_path):
     mock_git.clone_projects.return_value = "cloned"
     mock_git.pull_projects.return_value = "pulled"
     mock_git.push_projects.return_value = "pushed"
-    mock_git.phased_push.return_value = "phased_pushed"
     mock_git.path = str(tmp_path)
     # _resolve_repo_dir() resolves a bare name to a real on-disk dir via
     # os.path.exists() under the workspace path. Create the relative repo dir so
@@ -193,8 +192,6 @@ async def test_mcp_rm_git_tool(tmp_path):
             command=None,
             path=None,
             threads=None,
-            phase=1,
-            target_project=None,
             ctx=None,
         )
         assert res.status == "error"
@@ -205,8 +202,6 @@ async def test_mcp_rm_git_tool(tmp_path):
             command="git status",
             path=None,
             threads=None,
-            phase=1,
-            target_project=None,
             ctx=None,
         )
         assert res.status == "error"
@@ -218,8 +213,6 @@ async def test_mcp_rm_git_tool(tmp_path):
             command=None,
             path=None,
             threads=None,
-            phase=1,
-            target_project=None,
             projects=None,
             ctx=None,
         )
@@ -230,8 +223,6 @@ async def test_mcp_rm_git_tool(tmp_path):
             command=None,
             path=None,
             threads=None,
-            phase=1,
-            target_project=None,
             projects="https://github.com/org/repo-a.git, https://github.com/org/repo-b.git",
             ctx=None,
         )
@@ -258,8 +249,6 @@ async def test_mcp_rm_git_tool(tmp_path):
             command=None,
             path=None,
             threads=None,
-            phase=1,
-            target_project=None,
             projects=None,
             ctx=None,
         )
@@ -270,8 +259,6 @@ async def test_mcp_rm_git_tool(tmp_path):
             command=None,
             path="/tmp",
             threads=None,
-            phase=1,
-            target_project=None,
             projects="repo-a, /absolute/path/repo-b",
             ctx=None,
         )
@@ -293,8 +280,6 @@ async def test_mcp_rm_git_tool(tmp_path):
             command=None,
             path=None,
             threads=None,
-            phase=1,
-            target_project=None,
             projects=None,
             ctx=None,
         )
@@ -305,8 +290,6 @@ async def test_mcp_rm_git_tool(tmp_path):
             command=None,
             path="/tmp",
             threads=None,
-            phase=1,
-            target_project=None,
             projects="repo-a, /absolute/path/repo-b",
             ctx=None,
         )
@@ -320,17 +303,6 @@ async def test_mcp_rm_git_tool(tmp_path):
         mock_git.push_projects.assert_any_call(
             project_dirs=[repo_a_dir, "/absolute/path/repo-b"]
         )
-
-        # 6. Action: phased_push
-        res = await rm_git["rm_git_phased_push"].fn(
-            command=None,
-            path=None,
-            threads=None,
-            phase=2,
-            target_project="proj-a",
-            ctx=None,
-        )
-        assert res["status"] == "submitted"
 
         # 7. One tool per operation: no action router, so no invalid-action
         # or list_actions entry points are served.
@@ -551,9 +523,6 @@ async def test_mcp_rm_workspace_tool():
         res = await rm_workspace["rm_workspace_list"].fn(
             yml_path=None,
             config_dict=None,
-            part="patch",
-            phase=1,
-            dry_run=False,
             use_default=True,
             ctx=None,
         )
@@ -563,9 +532,6 @@ async def test_mcp_rm_workspace_tool():
         res = await rm_workspace["rm_workspace_list_branches"].fn(
             yml_path=None,
             config_dict=None,
-            part="patch",
-            phase=1,
-            dry_run=False,
             use_default=True,
             ctx=None,
         )
@@ -575,9 +541,6 @@ async def test_mcp_rm_workspace_tool():
         res = await rm_workspace["rm_workspace_setup"].fn(
             yml_path=None,
             config_dict=None,
-            part="patch",
-            phase=1,
-            dry_run=False,
             use_default=True,
             ctx=None,
         )
@@ -587,9 +550,6 @@ async def test_mcp_rm_workspace_tool():
         res = await rm_workspace["rm_workspace_setup"].fn(
             yml_path="workspace.yml",
             config_dict=None,
-            part="patch",
-            phase=1,
-            dry_run=False,
             use_default=True,
             ctx=None,
         )
@@ -599,9 +559,6 @@ async def test_mcp_rm_workspace_tool():
         res = await rm_workspace["rm_workspace_template"].fn(
             yml_path=None,
             config_dict=None,
-            part="patch",
-            phase=1,
-            dry_run=False,
             use_default=True,
             ctx=None,
         )
@@ -611,9 +568,6 @@ async def test_mcp_rm_workspace_tool():
         res = await rm_workspace["rm_workspace_template"].fn(
             yml_path="workspace.yml",
             config_dict=None,
-            part="patch",
-            phase=1,
-            dry_run=False,
             use_default=True,
             ctx=None,
         )
@@ -623,9 +577,6 @@ async def test_mcp_rm_workspace_tool():
         res = await rm_workspace["rm_workspace_save"].fn(
             yml_path="workspace.yml",
             config_dict=None,
-            part="patch",
-            phase=1,
-            dry_run=False,
             use_default=True,
             ctx=None,
         )
@@ -635,9 +586,6 @@ async def test_mcp_rm_workspace_tool():
         res = await rm_workspace["rm_workspace_save"].fn(
             yml_path="workspace.yml",
             config_dict={"invalid": "key"},
-            part="patch",
-            phase=1,
-            dry_run=False,
             use_default=True,
             ctx=None,
         )
@@ -647,25 +595,10 @@ async def test_mcp_rm_workspace_tool():
         res = await rm_workspace["rm_workspace_save"].fn(
             yml_path="workspace.yml",
             config_dict={"name": "test_workspace", "path": "/path", "repositories": []},
-            part="patch",
-            phase=1,
-            dry_run=False,
             use_default=True,
             ctx=None,
         )
         assert res == "save_ok"
-
-        # 10. Action: maintain
-        res = await rm_workspace["rm_workspace_maintain"].fn(
-            yml_path=None,
-            config_dict=None,
-            part="patch",
-            phase=1,
-            dry_run=False,
-            use_default=True,
-            ctx=None,
-        )
-        assert res["status"] == "submitted"
 
         # 12. One tool per operation: no action router is served.
         assert "rm_workspace" not in rm_workspace
@@ -690,9 +623,6 @@ async def test_mcp_rm_workspace_fleet_evidence_check():
         res = await rm_workspace["rm_workspace_fleet_evidence_check"].fn(
             yml_path=None,
             config_dict=None,
-            part="patch",
-            phase=1,
-            dry_run=False,
             use_default=True,
             fleet_evidence_json=None,
             ctx=None,
@@ -716,9 +646,6 @@ async def test_mcp_rm_workspace_fleet_evidence_check():
         res = await rm_workspace["rm_workspace_fleet_evidence_check"].fn(
             yml_path=None,
             config_dict=None,
-            part="patch",
-            phase=1,
-            dry_run=False,
             use_default=True,
             fleet_evidence_json=reference_json,
             ctx=None,
@@ -751,9 +678,6 @@ async def test_mcp_rm_projects_tool():
             output_dir=None,
             generate_report=True,
             force_revalidate=False,
-            auto_bump=False,
-            auto_push=False,
-            bump_part="minor",
             repositories="repo-a",
             job_id=None,
             ctx=None,
@@ -775,9 +699,6 @@ async def test_mcp_rm_projects_tool():
             output_dir=None,
             generate_report=True,
             force_revalidate=False,
-            auto_bump=False,
-            auto_push=False,
-            bump_part="minor",
             repositories=None,
             job_id=None,
             ctx=None,
@@ -791,9 +712,6 @@ async def test_mcp_rm_projects_tool():
             output_dir=None,
             generate_report=True,
             force_revalidate=False,
-            auto_bump=False,
-            auto_push=False,
-            bump_part="minor",
             repositories=None,
             job_id=None,
             ctx=None,
@@ -819,9 +737,6 @@ async def test_mcp_rm_projects_tool():
             output_dir=None,
             generate_report=True,
             force_revalidate=False,
-            auto_bump=False,
-            auto_push=False,
-            bump_part="minor",
             repositories=None,
             job_id="job-status-test",
             ctx=None,
@@ -971,7 +886,7 @@ def test_reap_stale_jobs_flips_overdue_running_to_failed():
         _jobs.clear()
 
 
-def test_reaper_preserves_live_long_phased_push_and_fails_orphan():
+def test_reaper_preserves_live_long_job_and_fails_orphan():
     """Future/progress liveness beats age; an equally old orphan is reaped."""
     live_future: concurrent.futures.Future[str] = concurrent.futures.Future()
     assert live_future.set_running_or_notify_cancel()
@@ -986,7 +901,7 @@ def test_reaper_preserves_live_long_phased_push_and_fails_orphan():
         _job_futures.clear()
         _jobs["live-phased"] = {
             "status": "running",
-            "action": "phased_push",
+            "action": "commit_code",
             "submitted_at": old,
             "started_at": old,
             "heartbeat_at": old,
@@ -1027,72 +942,6 @@ def test_reaper_preserves_live_long_phased_push_and_fails_orphan():
     with _jobs_lock:
         _job_futures.clear()
         _jobs.clear()
-
-
-def test_bump_skip_reason_avoids_double_bump_on_unpushed_repo():
-    """Clean tree + ahead-of-origin + HEAD is a bump commit => skip (no re-bump)."""
-    from repository_manager.repository_manager import Git
-
-    git = Git.__new__(Git)  # bypass __init__; we only exercise _bump_skip_reason
-
-    def fake_git_action(command, path=None, **kw):
-        r = MagicMock()
-        if command == "git status":
-            r.data = (
-                "On branch main\nYour branch is ahead of 'origin/main' by 1 commit.\n"
-                "nothing to commit, working tree clean"
-            )
-        elif command.startswith("git log"):
-            r.data = "Bump version: 0.38.0 -> 0.39.0"
-        else:
-            r.data = ""
-        return r
-
-    git.git_action = fake_git_action  # type: ignore[method-assign,assignment]
-    reason = git._bump_skip_reason("/fake/repo")
-    assert reason and "awaiting push" in reason
-
-
-def test_bump_skip_reason_allows_bump_for_unbumped_feature_commit():
-    """Clean tree + ahead, but HEAD is a FEATURE commit => must NOT skip (needs bump)."""
-    from repository_manager.repository_manager import Git
-
-    git = Git.__new__(Git)
-
-    def fake_git_action(command, path=None, **kw):
-        r = MagicMock()
-        if command == "git status":
-            r.data = (
-                "On branch main\nYour branch is ahead of 'origin/main' by 2 commits.\n"
-                "nothing to commit, working tree clean"
-            )
-        elif command.startswith("git log"):
-            r.data = "feat: add new endpoint"
-        else:
-            r.data = ""
-        return r
-
-    git.git_action = fake_git_action  # type: ignore[method-assign,assignment]
-    assert git._bump_skip_reason("/fake/repo") is None
-
-
-def test_bump_skip_reason_skips_when_clean_and_in_sync():
-    """Clean tree + in sync with origin => skip (no changes to bump)."""
-    from repository_manager.repository_manager import Git
-
-    git = Git.__new__(Git)
-
-    def fake_git_action(command, path=None, **kw):
-        r = MagicMock()
-        r.data = (
-            "On branch main\nYour branch is up to date with 'origin/main'.\n"
-            "nothing to commit, working tree clean"
-        )
-        return r
-
-    git.git_action = fake_git_action  # type: ignore[method-assign,assignment]
-    reason = git._bump_skip_reason("/fake/repo")
-    assert reason and "no code changes" in reason
 
 
 def test_resolve_repo_dir_honors_nested_workspace_layout(tmp_path):
