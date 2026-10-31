@@ -186,8 +186,9 @@ EXPECTED_TOOL_NAMES = (
 # rm_<group>_<action> tool, and the Git facade serves one
 # repository_manager_<operation> tool per method; no action-routed tool remains.
 # Recomputed for RM-RELEASE-R009: phased bump/push tools retired, rm_rollout_{plan,apply,status,release} added.
+# Recomputed for scion-sdk 0.6.4: tool docstrings name scion-sdk.
 BASELINE_CATALOG_SHA256 = (
-    "bcedd6e49f20416fa2951e88f22bb14d824399c8bed72df4fb6de5674b25fd3d"
+    "9e1f4340648da68e51b528c34fdb39ccbf118166e5d3b8c21db9f6241c451642"
 )
 
 

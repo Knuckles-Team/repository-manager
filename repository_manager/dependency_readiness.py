@@ -4,7 +4,7 @@ CONCEPT:RM-DEP-READY
 
 The problem this closes: an intra-fleet dependency constraint that no published
 version satisfies (on 2026-08-12 PyPI held only ``epistemic-graph==2.23.0`` while
-``agent-connector-sdk`` required ``>=2.23.2``) — an unsatisfiable constraint nothing
+``scion-sdk`` required ``>=2.23.2``) — an unsatisfiable constraint nothing
 in this fleet detected.
 
 ``check_tree`` reads *one repo's own* declared dependencies (``pyproject.toml``),
