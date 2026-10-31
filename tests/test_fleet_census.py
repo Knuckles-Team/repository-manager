@@ -29,8 +29,8 @@ def test_bounded_census_captures_four_evidence_families(tmp_path: Path) -> None:
     _write(
         tmp_path,
         "service/pyproject.toml",
-        '[project]\nname="service"\ndependencies=["agent-connector-sdk>=1"]\n'
-        '[tool.uv.sources]\nagent-connector-sdk={path="../au"}\n'
+        '[project]\nname="service"\ndependencies=["scion-sdk>=1"]\n'
+        '[tool.uv.sources]\nscion-sdk={path="../au"}\n'
         'missing-package={path="../missing"}\n',
     )
     _write(

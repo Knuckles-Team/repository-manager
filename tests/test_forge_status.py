@@ -17,17 +17,19 @@ from repository_manager import forge_status as fs
 
 
 def test_backend_for_remote_selects_github_for_github_com():
-    backend = fs.backend_for_remote("https://github.com/knuckles-team/agent-connector-sdk.git")
+    backend = fs.backend_for_remote("https://github.com/knuckles-team/scion-sdk.git")
     assert isinstance(backend, fs.GitHubActionsBackend)
 
 
 def test_backend_for_remote_selects_github_for_ssh_shorthand():
-    backend = fs.backend_for_remote("git@github.com:knuckles-team/agent-connector-sdk.git")
+    backend = fs.backend_for_remote("git@github.com:knuckles-team/scion-sdk.git")
     assert isinstance(backend, fs.GitHubActionsBackend)
 
 
 def test_backend_for_remote_selects_gitlab_for_internal_host():
-    backend = fs.backend_for_remote("https://example-gitlab.internal/org/repository-manager.git")
+    backend = fs.backend_for_remote(
+        "https://example-gitlab.internal/org/repository-manager.git"
+    )
     assert isinstance(backend, fs.GitLabPipelineBackend)
 
 
@@ -40,14 +42,15 @@ def test_backend_for_remote_unparseable_url_degrades_to_unknown_backend():
 
 def test_owner_repo_from_remote_https():
     assert fs.owner_repo_from_remote(
-        "https://github.com/knuckles-team/agent-connector-sdk.git"
-    ) == ("knuckles-team", "agent-connector-sdk")
+        "https://github.com/knuckles-team/scion-sdk.git"
+    ) == ("knuckles-team", "scion-sdk")
 
 
 def test_owner_repo_from_remote_ssh_shorthand():
-    assert fs.owner_repo_from_remote(
-        "git@github.com:knuckles-team/agent-connector-sdk.git"
-    ) == ("knuckles-team", "agent-connector-sdk")
+    assert fs.owner_repo_from_remote("git@github.com:knuckles-team/scion-sdk.git") == (
+        "knuckles-team",
+        "scion-sdk",
+    )
 
 
 def test_owner_repo_from_remote_nested_gitlab_group():
@@ -112,7 +115,9 @@ def test_github_backend_completed_success():
 
 
 def test_github_backend_completed_failure():
-    client = _FakeGitHubClient([_FakeGitHubRun(status="completed", conclusion="failure")])
+    client = _FakeGitHubClient(
+        [_FakeGitHubRun(status="completed", conclusion="failure")]
+    )
     backend = fs.GitHubActionsBackend(client=client)
     status = backend.latest_run_for_ref("o", "r", "v1.0.0")
     assert status.state == "completed"
@@ -260,7 +265,9 @@ def test_gitlab_backend_no_client_and_no_url_degrades_to_unknown():
 
 def test_github_backend_degrades_when_client_import_unavailable(monkeypatch, caplog):
     monkeypatch.setattr(fs, "_GitHubWorkflowsApi", None)
-    monkeypatch.setattr(fs, "_GITHUB_AGENT_UNAVAILABLE", "No module named 'github_agent'")
+    monkeypatch.setattr(
+        fs, "_GITHUB_AGENT_UNAVAILABLE", "No module named 'github_agent'"
+    )
     with caplog.at_level("WARNING", logger="repository_manager.forge_status"):
         backend = fs.GitHubActionsBackend()
         status = backend.latest_run_for_ref("o", "r", "v1.0.0")
@@ -287,9 +294,11 @@ def test_backend_for_remote_degrades_end_to_end_when_github_agent_unavailable(
     dependency_readiness.await_gate_readiness would exercise it when the
     optional client package is missing: never raises, always 'unknown'."""
     monkeypatch.setattr(fs, "_GitHubWorkflowsApi", None)
-    monkeypatch.setattr(fs, "_GITHUB_AGENT_UNAVAILABLE", "No module named 'github_agent'")
-    backend = fs.backend_for_remote("https://github.com/knuckles-team/agent-connector-sdk.git")
+    monkeypatch.setattr(
+        fs, "_GITHUB_AGENT_UNAVAILABLE", "No module named 'github_agent'"
+    )
+    backend = fs.backend_for_remote("https://github.com/knuckles-team/scion-sdk.git")
     with caplog.at_level("WARNING", logger="repository_manager.forge_status"):
-        status = backend.latest_run_for_ref("knuckles-team", "agent-connector-sdk", "v1.0.0")
+        status = backend.latest_run_for_ref("knuckles-team", "scion-sdk", "v1.0.0")
     assert status.state == "unknown"
     assert any("FORGE_STATUS_UNAVAILABLE" in rec.message for rec in caplog.records)

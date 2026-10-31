@@ -1,7 +1,7 @@
 """Fragment / generated-view audit-projection tests.
 
 Proves the append-only-fragment + folded-generated-view pattern (mirrored
-from agent-connector-sdk' own concept marker ledger) actually works, and proves
+from scion-sdk' own concept marker ledger) actually works, and proves
 the drift detector catches a hand-edited generated view (H-9: prove a gate
 catches a known-bad input, mirroring H-20 "regenerate, never hand-pick").
 """

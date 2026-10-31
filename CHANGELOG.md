@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.7] - 2026-10-30
+
+### Fixed
+- `rollout` relocks (`uv lock`, no upgrade) after the patch bump so `uv.lock` records the package's new own version and connector lock-coherence tests pass.
+- `rollout` runs the repo's full pre-commit (also `.config/pre-commit.yaml`; `uvx pre-commit` when not installed) and stages hook-rewritten files.
+- `default_runtime_manifest_path` resolves to `~/.config/arbora/workspace.yml` (`ARBORA_CONFIG_DIR` overrides); the old location is gone.
+
+## [3.5.6] - 2026-10-30
+
+### Added
+- `repository-manager rollout` (MCP `rm_rollout`, RM-RELEASE-R009): a deterministic,
+  resumable dependency-floor rollout. Selects the workspace group ∩ non-archived repos ∩
+  repos declaring the dependency, plans into an XDG-state JSONL ledger, and per repository
+  (fresh worktree off origin/main, bounded parallelism) sets `>=X,<next-minor`, relocks and
+  verifies the lock, patch-bumps, adds a CHANGELOG entry, regenerates spec status, runs
+  pre-commit, commits with the repo identity, opens a PR and arms `--auto --rebase`.
+  `rollout status` reports merged/failing/pending; `rollout release` tags after merge.
+
+### Removed
+- Phased bump/push (`--maintain`, `--push`, `--bump`, `--phase`, MCP `phased_push`,
+  `rm_projects` auto_bump/auto_push, the phased-push runner timer) and its docs. It pushed
+  straight to main, named pre-rename packages and never raised a floor or relocked.
+
+## [3.5.5]
+
+### Fixed
+- **Windows portability (RM-GOVERNANCE-R032)** -- the package no longer assumes a POSIX host.
+  New `repository_manager/portable_fs.py` is the single platform seam: descriptor-anchored
+  operations (`operation_boundary`) fall back to lstat-verified, token-addressed directory
+  handles where `dir_fd`/directory descriptors do not exist (no more `/proc/self/fd` paths or
+  `pass_fds` on Windows); state/config/cache directories resolve to `%LOCALAPPDATA%`/`%APPDATA%`
+  when no XDG variable is set (`worktree`, `capacity_store`, `gate_ledger`, `lane_registry`,
+  `workspace_manifest`); process groups terminate via `Popen.terminate`/`taskkill /T /F` instead
+  of `os.killpg`/`signal.SIGKILL` (`repository_manager`, `process_supervisor`,
+  `merge_queue_runner`); directory links fall back to junctions when symlinks are not permitted;
+  `os.open` reads/writes add `O_BINARY` so digests are not corrupted by newline translation;
+  directory fsync is a no-op on Windows instead of a swallowed `OSError`; `O_NOFOLLOW` is optional
+  on Windows (callers already `lstat`-reject links); path containment is case-folded;
+  `cmd.exe` replaces `bash -c` for unwrapped stages; the child-env allowlist keeps the Windows
+  process variables. `windows-ci.yml` now runs import-safety and the unit tests as real (non
+  report-only) steps via `uv run`.
+
+## [3.5.4]
+
+### Changed
+- Require `scion-sdk[mcp]>=0.6.4,<0.7.0`; imports move from `agent_connector_sdk` to `scion_sdk`; `uv.lock` relocked.
+
 ### Added
 - **Dependency-readiness gate (CONCEPT:RM-DEP-READY)** — `repository_manager/dependency_readiness.py`,
   a pluggable artifact-availability predicate (`IndexBackend` protocol; `PyPISimpleIndexBackend`

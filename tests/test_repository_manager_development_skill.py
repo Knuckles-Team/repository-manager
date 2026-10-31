@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL = ROOT / "repository_manager" / "skills" / "repository-manager-development" / "SKILL.md"
+SKILL = (
+    ROOT
+    / "repository_manager"
+    / "skills"
+    / "repository-manager-development"
+    / "SKILL.md"
+)
 PYPROJECT = ROOT / "pyproject.toml"
 
 pytestmark = pytest.mark.spec("PIPE-CONNSPEC-R157.4")
@@ -32,4 +38,4 @@ def test_development_skill_has_rapid_contract_and_package_binding() -> None:
     project = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     package_data = project["tool"]["setuptools"]["package-data"]["repository_manager"]
     assert "skills/**" in package_data
-    assert "agent_connector_sdk.skill_providers" not in project["project"]["entry-points"]
+    assert "scion_sdk.skill_providers" not in project["project"]["entry-points"]

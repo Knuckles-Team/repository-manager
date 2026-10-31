@@ -7,14 +7,10 @@ multiple repositories in parallel using Python's multiprocessing capabilities.
 """
 
 import contextlib
-import copy
 import dataclasses
 import datetime
-import fnmatch
 import functools
-import hashlib
 import inspect
-import json
 import os
 import re
 import shlex
@@ -27,7 +23,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from importlib.metadata import version as _distribution_version
 from pathlib import Path, PureWindowsPath
-from typing import Any, Literal, TypeVar, cast
+from typing import Any, TypeVar
 from urllib.parse import urlsplit, urlunsplit
 
 __version__ = _distribution_version("repository-manager")
@@ -43,14 +39,11 @@ __all__ = [
 ]
 
 import concurrent.futures
-import multiprocessing
 import shutil
-import signal
 
 import yaml  # type: ignore[import-untyped]
-from agent_connector_sdk.library_state import get_library_file_path
-from agent_connector_sdk.utilities import to_boolean
-from pydantic import ValidationError
+from scion_sdk.library_state import get_library_file_path
+from scion_sdk.utilities import to_boolean
 
 try:
     from skill_graphs.skill_graph_utilities import get_skill_graphs_path
@@ -61,9 +54,9 @@ except ImportError:
 
 from importlib.resources import files
 
-from agent_connector_sdk.utilities import get_logger
+from scion_sdk.utilities import get_logger
 
-from repository_manager import dependency_readiness
+from repository_manager import portable_fs as pfs
 from repository_manager.canonical_guard import guarded_canonical_mutation
 from repository_manager.development.fleet_release_gate import (
     require_legacy_release_route,
@@ -77,7 +70,6 @@ from repository_manager.models import (
     GitError,
     GitMetadata,
     GitResult,
-    MaintenanceConfig,
     ReadmeResult,
     RepositoryConfig,
     SubdirectoryConfig,
@@ -93,16 +85,10 @@ from repository_manager.operation_boundary import (
     pin_existing,
     pin_existing_under,
     read_at,
-    read_release_plan_receipt,
-    receipt_result_payload,
-    snapshot_pinned_checkout,
-    snapshot_workspace,
     write_at,
-    write_release_plan_receipt,
 )
 from repository_manager.release_validation import (
     canonical_repository_url,
-    read_release_document,
     release_repository_name,
     repository_name,
 )
@@ -187,34 +173,6 @@ class _UnsafeMutationTarget(ValueError):
         self.candidate = candidate
 
 
-class _ReleasePlanDrift(ValueError):
-    """Signal that a frozen legacy release plan no longer matches its inputs."""
-
-    def __init__(self, operation: str, expected_digest: str) -> None:
-        super().__init__(operation)
-        self.operation = operation
-        self.expected_digest = expected_digest
-
-
-@dataclasses.dataclass(frozen=True)
-class _ReleasePlanProvenance:
-    """Immutable provenance for one legacy phased bump/push invocation.
-
-    The older phased APIs predate the typed workspace release-plan contracts.
-    They still need the same safety property: the exact input registry and
-    ordered ``(phase, name, path)`` membership used for planning must be the
-    input used at every mutation boundary.  The payload itself stays local;
-    only bounded SHA-256 digests are exposed to progress/results.
-    """
-
-    operation: Literal["bump", "push"]
-    input_digest: str
-    plan_digest: str
-    root_identity: dict[str, int | None] | None = None
-    scope_identity: dict[str, Any] | None = None
-    registry_digest: str | None = None
-
-
 _CASE_INSENSITIVE_ORIGIN_HOSTS = frozenset({"github.com"})
 
 
@@ -223,39 +181,6 @@ def _reject_lexical_parent(path: Path, *, label: str) -> Path:
     if ".." in path.parts:
         raise ValueError(f"{label} contains a lexical parent segment")
     return path
-
-
-def _release_plan_digest(payload: object) -> str:
-    """Return a deterministic digest for a bounded release-plan payload."""
-    encoded = json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _release_phase_payload(phase_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Serialize only the ordered, exact release targets in a phase list."""
-    return [
-        {
-            "phase_num": phase["phase_num"],
-            "name": phase["name"],
-            "targets": [
-                [name, path]
-                for name, path in phase.get(
-                    "targets", phase.get("projects_to_push", [])
-                )
-            ],
-            **(
-                {"wait_minutes": phase["wait_minutes"]}
-                if "wait_minutes" in phase
-                else {}
-            ),
-        }
-        for phase in phase_list
-    ]
 
 
 # Keep this list in sync with uv's documented ``tool.uv.sources`` table
@@ -389,7 +314,7 @@ def _privacy_safe_diagnostic(value: object) -> str:
     """Sanitize command output before returning or persisting it."""
 
     try:
-        from agent_connector_sdk.privacy import sanitize_for_persistence
+        from scion_sdk.privacy import sanitize_for_persistence
 
         clean, _ = sanitize_for_persistence(str(value or ""))
     except Exception:
@@ -538,7 +463,7 @@ def get_packaged_file_path(package: str, file: str) -> str:
 
 # Robust environment variable retrieval with empty string fallbacks
 _raw_workspace = os.getenv("REPOSITORY_MANAGER_WORKSPACE", "")
-_portable_workspace = os.getenv("CONNECTOR_WORKSPACE_ROOT", "")
+_portable_workspace = os.getenv("REPOSITORY_MANAGER_WORKSPACE_ROOT", "")
 DEFAULT_REPOSITORY_MANAGER_WORKSPACE = os.path.abspath(
     os.path.expanduser(_raw_workspace or _portable_workspace or os.getcwd())
 )
@@ -690,105 +615,6 @@ class _CommandOutputCapture:
         return "".join(self.lines)
 
 
-@dataclasses.dataclass
-class _PhaseProgress:
-    """Progress bookkeeping for one phased (bump / push) run.
-
-    Owns the ``progress is not None`` guard and the per-item counters that the
-    phased bump and phased push workflows both maintain, so those workflows
-    read as the phase topology they actually are.
-
-    ``state`` is the caller-supplied progress mapping (``None`` disables every
-    update); ``noun`` is the verb used in the per-item completion log line.
-    """
-
-    state: dict | None
-    noun: str
-    total: int = 0
-    processed: int = 0
-
-    def initialize(self, heading: str, phases: list[tuple[str, list[str]]]) -> None:
-        """Seed the per-phase counters for every phase about to run."""
-        if self.state is None:
-            return
-        self.state["current_phase"] = heading
-        self.state["progress"] = 0
-        self.state["phases"] = {}
-        for name, items in phases:
-            self.state["phases"][name] = {
-                "status": "pending",
-                "total": len(items),
-                "processed": 0,
-                "completed": 0,
-                "success": 0,
-                "failed": 0,
-                "details": dict.fromkeys(items, "pending"),
-                "repos": dict.fromkeys(items, "pending"),
-            }
-
-    def nothing_to_do(self, heading: str) -> None:
-        """Mark the run complete without any phase having run."""
-        if self.state is None:
-            return
-        self.state["current_phase"] = heading
-        self.state["progress"] = 100
-        self.state["phases"] = {}
-
-    def note(self, heading: str) -> None:
-        """Update only the human-readable current-phase banner."""
-        if self.state is None:
-            return
-        self.state["current_phase"] = heading
-
-    def begin_phase(self, phase_name: str) -> None:
-        if self.state is None:
-            return
-        self.state["current_phase"] = f"{phase_name} in progress"
-        self.state["phases"][phase_name]["status"] = "running"
-
-    def end_phase(self, phase_name: str) -> None:
-        if self.state is None:
-            return
-        self.state["phases"][phase_name]["status"] = "completed"
-
-    def begin_item(self, phase_name: str, item: str) -> None:
-        if self.state is None:
-            return
-        phase = self.state["phases"][phase_name]
-        phase["details"][item] = "running"
-        phase["repos"][item] = "running"
-
-    def finish_item(self, phase_name: str, item: str, status_str: str) -> None:
-        """Record one project's terminal status and advance the overall percentage."""
-        if self.state is None:
-            return
-        phase = self.state["phases"][phase_name]
-        phase["details"][item] = status_str
-        phase["repos"][item] = status_str
-        phase["processed"] += 1
-        phase["completed"] += 1
-        phase["success" if status_str == "success" else "failed"] += 1
-
-        self.processed += 1
-        percent = int((self.processed / self.total) * 100)
-        self.state["progress"] = percent
-        logger.info(
-            f"[{self.processed}/{self.total}] ({percent}%) "
-            f"Completed {self.noun} for {item}: {status_str}"
-        )
-
-    def finish(self, heading: str) -> None:
-        if self.state is None:
-            return
-        self.state["current_phase"] = heading
-        self.state["progress"] = 100
-
-
-def _require_release_preparation(auto_bump: bool, auto_push: bool) -> None:
-    if auto_bump or auto_push:
-        require_legacy_release_route("release_preparation")
-
-
 class Git:
     """A class to handle Git operations such as cloning and pulling repositories."""
 
@@ -830,17 +656,15 @@ class Git:
         if threads:
             self.set_threads(threads=threads)
 
-        # Centralized debug logging under XDG logs directory of agent-connector-sdk
+        # Centralized debug logging under XDG logs directory of scion-sdk
         try:
-            from agent_connector_sdk.paths import log_dir
+            from scion_sdk.paths import log_dir
 
             logs_dir = log_dir()
         except ImportError:
             import platformdirs
 
-            logs_dir = Path(
-                platformdirs.user_log_path("agent-connector-sdk", "knuckles-team")
-            )
+            logs_dir = Path(platformdirs.user_log_path("scion-sdk", "knuckles-team"))
 
         logs_dir.mkdir(parents=True, exist_ok=True)
         self.debug_log_path = str(logs_dir / "repository_manager_debug.log")
@@ -1031,8 +855,8 @@ class Git:
         ``install=True`` extends clone/pull with the fresh-machine bootstrap
         gap this closes (CONCEPT:RM-BOOTSTRAP): after every repository is
         cloned or pulled, materialize the `.uv-workspace-siblings/` symlinks
-        and run `uv sync` for agent-connector-sdk and every cloned project that
-        declares a path dependency on it, dependency-ordered (agent-connector-sdk
+        and run `uv sync` for scion-sdk and every cloned project that
+        declares a path dependency on it, dependency-ordered (scion-sdk
         first). See :meth:`install_projects` for the mechanism and its
         documented limits. Install failures are reported, never masked --
         `setup_from_yaml` returns ``status="error"`` if any project failed to
@@ -1355,555 +1179,6 @@ class Git:
     def _operation_target_candidate(self, path: str | None) -> str | Path:
         """Resolve an optional mutation target without changing its contract."""
         return self._workspace_root() if path is None else path
-
-    def _revalidate_release_target(
-        self,
-        name: str,
-        path: str,
-        *,
-        operation: str,
-        require_directory: bool = False,
-    ) -> _ReleaseTarget:
-        """Revalidate and return one canonical release ``(name, path)`` pair.
-
-        Release plans are built from a mutable project registry.  Rechecking
-        the exact pair at the operation boundary prevents a lexical alias or a
-        filesystem swap between planning and the mutation from widening the
-        operation's scope.
-        """
-        validated = self._validate_workspace_path(
-            path,
-            label=f"{operation} project {name!r}",
-            require_directory=require_directory,
-        )
-        if validated.name != name:
-            raise ValueError(
-                f"{operation} project {name!r} does not match canonical path {validated}"
-            )
-        return name, str(validated)
-
-    def _release_plan_input_payload(
-        self, config: dict[str, Any], options: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Capture the exact legacy-plan inputs without retaining raw secrets."""
-        project_map = [
-            [str(url), str(path)]
-            for url, path in sorted(self.project_map.items(), key=lambda item: item[0])
-        ]
-        categories = [
-            [str(url), list(category)]
-            for url, category in sorted(
-                self._project_categories.items(), key=lambda item: item[0]
-            )
-        ]
-        return {
-            "workspace": str(self.path),
-            "project_map": project_map,
-            "project_categories": categories,
-            "config": config,
-            "options": options,
-        }
-
-    def _release_plan_with_filesystem_payload(
-        self, config: dict[str, Any], options: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Add immutable checkout state to the shared legacy-plan payload."""
-        payload = self._release_plan_input_payload(config, options)
-        payload["filesystem"] = self._release_scope_identity_payload()
-        return payload
-
-    def _release_scope_identity_payload(self) -> dict[str, Any]:
-        """Capture root, checkout, Git, and normalized-origin identities.
-
-        The legacy release planner remains the sole source of ordered target
-        membership.  This payload only adds the immutable filesystem and Git
-        state that must still agree when that existing plan reaches a mutation.
-        """
-        projects = [
-            (str(url), str(path))
-            for url, path in sorted(self.project_map.items(), key=lambda item: item[0])
-        ]
-        try:
-            snapshot = snapshot_workspace(self._workspace_root(), projects)
-            for project in snapshot["projects"]:
-                metadata = project.get("git")
-                if not isinstance(metadata, dict):
-                    continue
-                origin = metadata.get("origin")
-                if origin is None:
-                    metadata["origin_identity"] = None
-                    continue
-                try:
-                    metadata["origin_identity"] = self._canonical_checkout_origin(
-                        str(project["url"]), str(origin)
-                    )
-                except (TypeError, ValueError):
-                    metadata["origin_identity"] = "<invalid-origin>"
-                    snapshot["valid"] = False
-            snapshot.setdefault("valid", True)
-            return snapshot
-        except (OperationBoundaryError, OSError, ValueError):
-            return {"valid": False, "error": "unsafe release scope"}
-
-    def _freeze_release_plan(
-        self,
-        operation: Literal["bump", "push"],
-        config: dict[str, Any],
-        phase_list: list[dict[str, Any]],
-        *,
-        options: dict[str, Any],
-        auxiliary_targets: list[_ReleaseTarget] | None = None,
-    ) -> _ReleasePlanProvenance:
-        """Freeze input provenance and ordered target membership for a run."""
-        auxiliary = [[name, path] for name, path in (auxiliary_targets or [])]
-        input_payload = self._release_plan_with_filesystem_payload(config, options)
-        registry_digest = _release_plan_digest(
-            self._release_plan_input_payload(config, options)
-        )
-        input_digest = _release_plan_digest(input_payload)
-        plan_digest = _release_plan_digest(
-            {
-                "operation": operation,
-                "input_digest": input_digest,
-                "phases": _release_phase_payload(phase_list),
-                "auxiliary_targets": auxiliary,
-            }
-        )
-        root_identity, scope_identity = self._release_plan_provenance_identities(
-            input_payload
-        )
-        return _ReleasePlanProvenance(
-            operation=operation,
-            input_digest=input_digest,
-            plan_digest=plan_digest,
-            root_identity=root_identity,
-            scope_identity=scope_identity,
-            registry_digest=registry_digest,
-        )
-
-    @staticmethod
-    def _release_plan_provenance_identities(
-        input_payload: dict[str, Any],
-    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-        """Extract immutable filesystem identities from a frozen input payload."""
-        filesystem = input_payload.get("filesystem")
-        if not isinstance(filesystem, dict):
-            return None, None
-        root = filesystem.get("root")
-        root_identity = dict(root) if isinstance(root, dict) else None
-        return root_identity, copy.deepcopy(filesystem)
-
-    def _release_plan_target_snapshot(
-        self,
-        provenance: _ReleasePlanProvenance,
-        project_name: str,
-        project_path: str,
-    ) -> dict[str, Any]:
-        """Return the frozen identity for one exact release target."""
-        scope = provenance.scope_identity
-        if not isinstance(scope, dict) or scope.get("valid") is not True:
-            raise OperationBoundaryError("release plan has no valid filesystem scope")
-        entries = scope.get("projects")
-        if not isinstance(entries, list):
-            raise OperationBoundaryError("release plan filesystem scope is malformed")
-        expected_path = str(
-            Path(os.path.abspath(os.path.expanduser(os.fspath(project_path))))
-        )
-        matches = self._release_plan_target_matches(
-            entries, expected_path, project_name
-        )
-        if len(matches) != 1:
-            raise OperationBoundaryError(
-                f"release plan target is not uniquely bound: {project_name}"
-            )
-        return copy.deepcopy(matches[0])
-
-    def _release_plan_target_matches(
-        self,
-        entries: list[Any],
-        expected_path: str,
-        project_name: str,
-    ) -> list[dict[str, Any]]:
-        """Select exact frozen ``(name, path)`` entries for one target."""
-        matches: list[dict[str, Any]] = []
-        for entry in entries:
-            if not isinstance(entry, dict) or entry.get("path") != expected_path:
-                continue
-            url = entry.get("url")
-            if not isinstance(url, str):
-                continue
-            if self._release_project_name_or_empty(url) != project_name:
-                continue
-            if entry.get("exists") is True:
-                matches.append(entry)
-        return matches
-
-    def _normalized_release_target_git(
-        self,
-        expected_git: dict[str, Any],
-        actual_git: Any,
-        expected: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Normalize live origin identity before comparing a frozen Git snapshot."""
-        if not isinstance(actual_git, dict):
-            raise OperationBoundaryError("release plan Git identity disappeared")
-        normalized = copy.deepcopy(actual_git)
-        self._reject_release_push_origin(expected_git, normalized)
-        origin = normalized.get("origin")
-        manifest_url = expected.get("url")
-        if origin is None:
-            normalized["origin_identity"] = None
-        elif isinstance(manifest_url, str):
-            try:
-                normalized["origin_identity"] = self._canonical_checkout_origin(
-                    manifest_url, str(origin)
-                )
-            except ValueError:
-                normalized["origin_identity"] = "<invalid-origin>"
-        else:
-            normalized["origin_identity"] = "<invalid-origin>"
-        return normalized
-
-    @staticmethod
-    def _reject_release_push_origin(
-        expected_git: dict[str, Any], actual_git: dict[str, Any]
-    ) -> None:
-        """Reject old or current snapshots that contain a configured push URL."""
-        values = (expected_git.get("push_origin"), actual_git.get("push_origin"))
-        if any(value is not None for value in values):
-            raise OperationBoundaryError(
-                "release plan refuses configured remote.origin.pushurl"
-            )
-
-    def _assert_pinned_release_target(
-        self,
-        provenance: _ReleasePlanProvenance,
-        project_name: str,
-        project_path: str,
-        pinned: PinnedDirectory,
-        *,
-        expected: dict[str, Any] | None = None,
-    ) -> None:
-        """Compare a pinned target with the immutable release-plan snapshot."""
-        expected = expected or self._release_plan_target_snapshot(
-            provenance, project_name, project_path
-        )
-        scope = provenance.scope_identity
-        expected_root = scope.get("root") if isinstance(scope, dict) else None
-        if expected_root != pinned.root_identity.as_dict():
-            raise OperationBoundaryError("release plan workspace root identity changed")
-        pinned.assert_path_identity()
-        actual = snapshot_pinned_checkout(pinned)
-        expected_git = expected.get("git")
-        actual_git = actual.get("git")
-        if isinstance(expected_git, dict):
-            actual_git = self._normalized_release_target_git(
-                expected_git, actual_git, expected
-            )
-        if (
-            actual.get("path") != expected.get("path")
-            or actual.get("checkout") != expected.get("checkout")
-            or actual_git != expected_git
-        ):
-            raise OperationBoundaryError(
-                f"release plan target identity changed: {project_name}"
-            )
-
-    def _bind_release_plan_target(
-        self,
-        provenance: _ReleasePlanProvenance,
-        project_name: str,
-        project_path: str,
-        pinned: PinnedDirectory,
-        *,
-        plan_assertion: Callable[[], None] | None = None,
-    ) -> None:
-        """Attach the frozen target assertion to its operation handle."""
-        expected = self._release_plan_target_snapshot(
-            provenance, project_name, project_path
-        )
-
-        def assert_target() -> None:
-            self._assert_pinned_release_target(
-                provenance,
-                project_name,
-                project_path,
-                pinned,
-                expected=expected,
-            )
-            if plan_assertion is not None:
-                plan_assertion()
-
-        expected_url = expected.get("url")
-        if not isinstance(expected_url, str):
-            raise OperationBoundaryError("release plan target has no repository URL")
-        pinned.expected_origin = canonical_repository_url(expected_url)
-        pinned.boundary_assertion = assert_target
-        assert_target()
-
-    def _assert_release_plan_structure(
-        self,
-        provenance: _ReleasePlanProvenance,
-        config: dict[str, Any],
-        phase_list: list[dict[str, Any]],
-        plan_options: dict[str, Any],
-        auxiliary_targets: list[_ReleaseTarget] | None = None,
-    ) -> None:
-        """Check mutable plan inputs without rescanning every checkout."""
-        expected_registry = provenance.registry_digest
-        current_registry = _release_plan_digest(
-            self._release_plan_input_payload(config, plan_options)
-        )
-        auxiliary = [[name, path] for name, path in (auxiliary_targets or [])]
-        current_plan = _release_plan_digest(
-            {
-                "operation": provenance.operation,
-                "input_digest": provenance.input_digest,
-                "phases": _release_phase_payload(phase_list),
-                "auxiliary_targets": auxiliary,
-            }
-        )
-        if (
-            expected_registry != current_registry
-            or current_plan != provenance.plan_digest
-        ):
-            raise _ReleasePlanDrift(provenance.operation, provenance.plan_digest)
-
-    def _release_plan_matches(
-        self,
-        provenance: _ReleasePlanProvenance,
-        config: dict[str, Any],
-        phase_list: list[dict[str, Any]],
-        *,
-        options: dict[str, Any],
-        auxiliary_targets: list[_ReleaseTarget] | None = None,
-    ) -> bool:
-        """Check input registry, config, and ordered target membership for drift."""
-        current_payload = self._release_plan_with_filesystem_payload(config, options)
-        current_input = self._release_plan_input_digest(current_payload)
-        if current_input != provenance.input_digest:
-            return False
-        auxiliary = [[name, path] for name, path in (auxiliary_targets or [])]
-        current_plan = _release_plan_digest(
-            {
-                "operation": provenance.operation,
-                "input_digest": current_input,
-                "phases": _release_phase_payload(phase_list),
-                "auxiliary_targets": auxiliary,
-            }
-        )
-        return current_plan == provenance.plan_digest
-
-    @staticmethod
-    def _release_plan_scope_valid(payload: dict[str, Any]) -> bool:
-        """Return whether a current plan payload still has a usable scope."""
-        scope = payload.get("filesystem", {})
-        return isinstance(scope, dict) and bool(scope.get("valid", False))
-
-    @classmethod
-    def _release_plan_input_digest(cls, payload: dict[str, Any]) -> str:
-        """Digest only a payload whose filesystem scope is valid."""
-        if not cls._release_plan_scope_valid(payload):
-            return "<invalid-scope>"
-        return _release_plan_digest(payload)
-
-    def _assert_release_plan(
-        self,
-        provenance: _ReleasePlanProvenance,
-        config: dict[str, Any],
-        phase_list: list[dict[str, Any]],
-        *,
-        options: dict[str, Any],
-        auxiliary_targets: list[_ReleaseTarget] | None = None,
-    ) -> None:
-        """Raise a typed refusal when a legacy plan no longer matches inputs."""
-        try:
-            matches = self._release_plan_matches(
-                provenance,
-                config,
-                phase_list,
-                options=options,
-                auxiliary_targets=auxiliary_targets,
-            )
-        except (KeyError, TypeError, ValueError, OverflowError):
-            # A concurrently malformed phase/config input is drift, not a
-            # reason to leak an exception past the legacy API or continue with
-            # an unverified target set.
-            matches = False
-        if not matches:
-            raise _ReleasePlanDrift(provenance.operation, provenance.plan_digest)
-
-    def _release_plan_drift_result(self, drift: _ReleasePlanDrift) -> GitResult:
-        """Return a privacy-safe, auditable result for release-plan drift."""
-        return GitResult(
-            status="error",
-            data=f"release_plan_digest={drift.expected_digest}",
-            error=GitError(
-                message=(
-                    f"phased_{drift.operation} aborted: release plan changed "
-                    "before the next mutation"
-                ),
-                code=409,
-            ),
-            metadata=GitMetadata(
-                command=f"phased_{drift.operation}",
-                workspace=_project_label(self.path),
-                return_code=409,
-                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-            ),
-        )
-
-    @staticmethod
-    def _record_release_plan(
-        progress: dict | None, provenance: _ReleasePlanProvenance
-    ) -> None:
-        """Expose only digests, never raw plan paths, in progress state."""
-        if progress is None:
-            return
-        progress["release_plan_digest"] = provenance.plan_digest
-        progress["release_plan_input_digest"] = provenance.input_digest
-
-    @staticmethod
-    def _release_plan_receipt_result(message: str) -> GitResult:
-        """Return a typed refusal for an unsafe or replayed push plan."""
-        return GitResult(
-            status="error",
-            data="",
-            error=GitError(message=message, code=409),
-            metadata=GitMetadata(
-                command="phased_push",
-                workspace="configured-workspace",
-                return_code=409,
-                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-            ),
-        )
-
-    def _begin_push_plan_receipt(
-        self, provenance: _ReleasePlanProvenance
-    ) -> tuple[list[GitResult] | None, GitResult | None]:
-        """Consume a push plan once, or return its recorded idempotent result."""
-        try:
-            receipt, created = self._record_push_plan_start(provenance)
-        except (OperationBoundaryError, OSError) as exc:
-            return None, self._release_plan_receipt_result(
-                f"phased_push refused: cannot record release plan ({type(exc).__name__})"
-            )
-        if created:
-            return None, None
-        return self._replay_push_plan_receipt(receipt, provenance)
-
-    def _record_push_plan_start(
-        self, provenance: _ReleasePlanProvenance
-    ) -> tuple[dict[str, Any] | None, bool]:
-        """Atomically create the durable push-consumption marker when absent."""
-        with _hold_repo_mutation(str(self._workspace_root())):
-            with open_directory(self._workspace_root()) as root:
-                if (
-                    provenance.root_identity is not None
-                    and root.identity.as_dict() != provenance.root_identity
-                ):
-                    raise OperationBoundaryError("workspace root identity changed")
-                receipt = read_release_plan_receipt(root)
-                if receipt is not None:
-                    return receipt, False
-                write_release_plan_receipt(
-                    root,
-                    {
-                        "operation": "push",
-                        "plan_digest": provenance.plan_digest,
-                        "input_digest": provenance.input_digest,
-                        "state": "started",
-                        "results": [],
-                    },
-                )
-                return None, True
-
-    def _replay_push_plan_receipt(
-        self,
-        receipt: dict[str, Any] | None,
-        provenance: _ReleasePlanProvenance,
-    ) -> tuple[list[GitResult] | None, GitResult | None]:
-        """Validate and replay a completed durable push outcome."""
-        if receipt is None:
-            return None, self._release_plan_receipt_result(
-                "phased_push refused: release-plan receipt disappeared"
-            )
-
-        operation = receipt.get("operation")
-        digest = receipt.get("plan_digest")
-        input_digest = receipt.get("input_digest")
-        if (
-            operation != "push"
-            or digest != provenance.plan_digest
-            or input_digest != provenance.input_digest
-        ):
-            return None, self._release_plan_receipt_result(
-                "phased_push refused: a different release plan has already been "
-                "consumed"
-            )
-        if receipt.get("state") != "completed":
-            return None, self._release_plan_receipt_result(
-                "phased_push refused: release plan was consumed without a "
-                "recorded outcome"
-            )
-        raw_results = receipt.get("results")
-        if not isinstance(raw_results, list):
-            return None, self._release_plan_receipt_result(
-                "phased_push refused: release-plan outcome is malformed"
-            )
-        try:
-            replayed = [GitResult.model_validate(item) for item in raw_results]
-        except ValidationError:
-            return None, self._release_plan_receipt_result(
-                "phased_push refused: release-plan outcome is malformed"
-            )
-        return replayed, None
-
-    def _complete_push_plan_receipt(
-        self,
-        provenance: _ReleasePlanProvenance,
-        results: list[GitResult],
-    ) -> None:
-        """Persist the terminal push outcome for exact idempotent retries."""
-        try:
-            with _hold_repo_mutation(str(self._workspace_root())):
-                with open_directory(self._workspace_root()) as root:
-                    if (
-                        provenance.root_identity is not None
-                        and root.identity.as_dict() != provenance.root_identity
-                    ):
-                        raise OperationBoundaryError(
-                            "workspace root identity changed before receipt completion"
-                        )
-                    receipt = read_release_plan_receipt(root)
-                    if (
-                        not isinstance(receipt, dict)
-                        or receipt.get("operation") != "push"
-                        or receipt.get("plan_digest") != provenance.plan_digest
-                        or receipt.get("input_digest") != provenance.input_digest
-                    ):
-                        raise OperationBoundaryError(
-                            "release-plan receipt changed before completion"
-                        )
-                    write_release_plan_receipt(
-                        root,
-                        {
-                            "operation": "push",
-                            "plan_digest": provenance.plan_digest,
-                            "input_digest": provenance.input_digest,
-                            "state": "completed",
-                            "results": receipt_result_payload(results),
-                        },
-                        atomic=True,
-                    )
-        except (OperationBoundaryError, OSError, TypeError, ValueError) as exc:
-            # The push may already have had an external side effect.  Do not
-            # pretend a retry is safe when its terminal outcome could not be
-            # made durable; the started receipt intentionally remains the
-            # conservative anti-replay marker.
-            logger.error(
-                "Could not persist phased_push outcome: %s", type(exc).__name__
-            )
 
     @staticmethod
     def _normalize_uv_name(name: str, *, label: str) -> str:
@@ -2249,7 +1524,7 @@ class Git:
     @staticmethod
     def _replace_uv_sibling_link(link: Path, target: Path) -> None:
         """Create or correct one sibling symlink without replacing real files."""
-        if link.is_symlink():
+        if pfs.is_link(link):
             try:
                 if link.resolve(strict=False) == target:
                     return
@@ -2263,11 +1538,11 @@ class Git:
         staged = Git._uv_sibling_temp_path(link)
         staged_created = False
         try:
-            staged.symlink_to(target, target_is_directory=True)
+            pfs.create_dir_link(staged, target)
             staged_created = True
-            if link.exists() and not link.is_symlink():
+            if link.exists() and not pfs.is_link(link):
                 raise ValueError(f"refusing to replace non-symlink path {link}")
-            os.replace(staged, link)
+            pfs.replace_link(staged, link)
         finally:
             if staged_created:
                 cleanup_errors = Git._cleanup_uv_sibling_temp(staged, os.fspath(target))
@@ -2283,12 +1558,12 @@ class Git:
     @staticmethod
     def _cleanup_uv_sibling_temp(staged: Path, expected_target: str) -> list[str]:
         """Remove one task-owned staging symlink without deleting real files."""
-        if not staged.is_symlink():
+        if not pfs.is_link(staged):
             if staged.exists():
                 return [f"staging path is no longer a symlink: {staged}"]
             return []
         try:
-            actual_target = os.readlink(staged)
+            actual_target = pfs.read_link(staged)
         except OSError as exc:
             return [f"cannot inspect staging path {staged}: {exc}"]
         if actual_target != expected_target:
@@ -2302,13 +1577,13 @@ class Git:
     @staticmethod
     def _rollback_new_uv_link(link: Path, new_target: str, errors: list[str]) -> None:
         """Remove a link this transaction created, if it is still ours to remove."""
-        if not link.is_symlink():
+        if not pfs.is_link(link):
             if link.exists():
                 errors.append(
                     f"refusing to remove non-symlink path during rollback: {link}"
                 )
             return
-        if os.readlink(link) != new_target:
+        if pfs.read_link(link) != new_target:
             errors.append(f"refusing to remove changed symlink during rollback: {link}")
             return
         link.unlink()
@@ -2316,9 +1591,9 @@ class Git:
     @staticmethod
     def _restore_uv_link(link: Path, previous_target: str, errors: list[str]) -> None:
         """Point a pre-existing link back at the target it had before."""
-        if link.is_symlink() and os.readlink(link) == previous_target:
+        if pfs.is_link(link) and pfs.read_link(link) == previous_target:
             return
-        if link.exists() and not link.is_symlink():
+        if link.exists() and not pfs.is_link(link):
             errors.append(
                 f"refusing to replace non-symlink path during rollback: {link}"
             )
@@ -2327,9 +1602,9 @@ class Git:
         restore = Git._uv_sibling_temp_path(link)
         restore_created = False
         try:
-            restore.symlink_to(previous_target)
+            pfs.create_dir_link(restore, previous_target)
             restore_created = True
-            os.replace(restore, link)
+            pfs.replace_link(restore, link)
         finally:
             if restore_created:
                 errors.extend(Git._cleanup_uv_sibling_temp(restore, previous_target))
@@ -2389,7 +1664,7 @@ class Git:
                 label=f"uv sibling link {name!r}",
                 allow_leaf_symlink=True,
             )
-            if link.exists() and not link.is_symlink():
+            if link.exists() and not pfs.is_link(link):
                 raise ValueError(f"refusing to replace non-symlink path {link}")
             normalized_name = self._normalize_uv_name(
                 name, label="uv sibling path component"
@@ -2415,7 +1690,7 @@ class Git:
         updates: list[tuple[Path, Path, str | None, Path]] = []
         for name, target in validated_links:
             link = sibling_dir / name
-            previous_target = os.readlink(link) if link.is_symlink() else None
+            previous_target = pfs.read_link(link) if pfs.is_link(link) else None
             if previous_target is not None and self._uv_link_already_points_at(
                 link, target
             ):
@@ -2432,7 +1707,7 @@ class Git:
     ) -> None:
         """Create every replacement symlink under a task-owned staging name."""
         for _link, target, _previous_target, staged_path in updates:
-            staged_path.symlink_to(target, target_is_directory=True)
+            pfs.create_dir_link(staged_path, target)
             staged.append((staged_path, os.fspath(target)))
 
     @staticmethod
@@ -2441,14 +1716,14 @@ class Git:
     ) -> None:
         """Move every staged symlink onto its final name."""
         for link, _target, _previous_target, staged_path in updates:
-            if link.exists() and not link.is_symlink():
+            if link.exists() and not pfs.is_link(link):
                 raise ValueError(f"refusing to replace non-symlink path {link}")
-            os.replace(staged_path, link)
+            pfs.replace_link(staged_path, link)
 
     @staticmethod
     def _remove_created_uv_sibling_dir(sibling_dir: Path) -> list[str]:
         """Remove a sibling directory this transaction created, if still safe."""
-        if sibling_dir.is_symlink() or not sibling_dir.is_dir():
+        if pfs.is_link(sibling_dir) or not sibling_dir.is_dir():
             return [f"refusing to remove changed sibling directory {sibling_dir}"]
         try:
             sibling_dir.rmdir()
@@ -2496,7 +1771,7 @@ class Git:
                     created_sibling_dir = True
                 except FileExistsError:
                     pass
-            if sibling_dir.is_symlink() or not sibling_dir.is_dir():
+            if pfs.is_link(sibling_dir) or not sibling_dir.is_dir():
                 raise ValueError(f"sibling path is not a directory {sibling_dir}")
 
             self._stage_uv_sibling_links(updates, staged)
@@ -2535,7 +1810,7 @@ class Git:
         resolved_targets = self._resolve_uv_sibling_targets(names)
 
         sibling_dir = project / _UV_WORKSPACE_SIBLINGS_DIRNAME
-        if sibling_dir.is_symlink():
+        if pfs.is_link(sibling_dir):
             raise ValueError(f"refusing symlink sibling directory {sibling_dir}")
         if sibling_dir.exists() and not sibling_dir.is_dir():
             raise ValueError(f"sibling path is not a directory {sibling_dir}")
@@ -2563,17 +1838,17 @@ class Git:
 
         logger.info("Installing ecosystem using native uv workspace sync...")
         results: list[GitResult] = []
-        results.extend(self._install_agent_connector_sdk_first(extra))
+        results.extend(self._install_scion_sdk_first(extra))
         results.extend(self._install_remaining_ecosystem_projects())
         self._maybe_export_install_report(results, report)
         return results
 
-    def _install_agent_connector_sdk_first(self, extra: str) -> list[GitResult]:
-        """Step 1: install agent-connector-sdk first, then every other cloned
+    def _install_scion_sdk_first(self, extra: str) -> list[GitResult]:
+        """Step 1: install scion-sdk first, then every other cloned
         project that depends on it -- CONCEPT:RM-BOOTSTRAP.
 
         This replaces a prior `uv sync --all-packages` run at the
-        workspace root, which cannot succeed structurally: agent-connector-sdk
+        workspace root, which cannot succeed structurally: scion-sdk
         is its own uv workspace root (a dedicated, security-motivated
         boundary -- see its own AGENTS.md), and uv refuses a workspace
         member that is itself a workspace root ("Nested workspaces are not
@@ -2584,9 +1859,9 @@ class Git:
         matches an ancestor workspace's `[tool.uv.workspace].members`
         glob; running each project's `uv sync` directly IN that project's
         own directory (never at `self.path`) avoids both failure modes.
-        Every fleet member depends on agent-connector-sdk, and it is not yet
+        Every fleet member depends on scion-sdk, and it is not yet
         published to PyPI at the floor the fleet requires (only <=1.26.4
-        is public; the fleet requires >=2.0.0), so agent-connector-sdk must
+        is public; the fleet requires >=2.0.0), so scion-sdk must
         install successfully before any dependent is attempted -- this
         fails closed rather than reporting a partial "N/M installed" that
         would mask a downstream project never having had a chance.
@@ -2595,10 +1870,10 @@ class Git:
             logger.warning("uv not found. Native workspace sync requires uv.")
             return []
 
-        au_path = self._find_project_path("agent-connector-sdk")
+        au_path = self._find_project_path("scion-sdk")
         if au_path is None or not os.path.isdir(au_path):
             logger.warning(
-                "agent-connector-sdk not present in this workspace's project "
+                "scion-sdk not present in this workspace's project "
                 "set; every fleet member depends on it, so no project "
                 "can be installed."
             )
@@ -2612,8 +1887,7 @@ class Git:
                     data="",
                     error=GitError(
                         message=(
-                            "agent-connector-sdk checkout is missing "
-                            "scripts/uv_workspace.py"
+                            "scion-sdk checkout is missing scripts/uv_workspace.py"
                         ),
                         code=1,
                     ),
@@ -2637,7 +1911,7 @@ class Git:
 
     def _sync_uv_siblings(self, au_path: str, extra: str) -> list[GitResult]:
         """Materialize + `uv sync` every declared uv sibling once
-        agent-connector-sdk itself has installed successfully."""
+        scion-sdk itself has installed successfully."""
         results: list[GitResult] = []
         for path in list(self.project_map.values()):
             if path == au_path or not os.path.isdir(path):
@@ -2762,10 +2036,7 @@ class Git:
         available cores keeps background validation from starving the IDE and
         MCP server.
         """
-        try:
-            cores = len(os.sched_getaffinity(0))
-        except AttributeError:
-            cores = multiprocessing.cpu_count() or 4
+        cores = pfs.cpu_count()
         target = max(1, int(cores * max_cpu_pct / 100.0))
         return target
 
@@ -2822,56 +2093,20 @@ class Git:
                 passed = passed and ok
         return validation_results, passed
 
-    def _release_after_validation(
-        self, *, passed: bool, auto_bump: bool, auto_push: bool, bump_part: str
-    ) -> dict[str, Any]:
-        """Run the bump/push release steps, but only when validation passed."""
-        if not passed:
-            if auto_bump or auto_push:
-                logger.warning("Validation failed. Skipping bump and push.")
-            return {}
-
-        logger.info("All validations passed.")
-        release_results: dict[str, Any] = {}
-        if auto_bump:
-            logger.info(f"Triggering phased bumpversion ({bump_part})...")
-            release_results["bump"] = self.phased_bumpversion(part=bump_part)
-        if auto_push:
-            logger.info("Triggering phased push...")
-            release_results["push"] = self.phased_push()
-        return release_results
-
-    def validate_and_release(
-        self,
-        threads: int | None = None,
-        auto_bump: bool = False,
-        auto_push: bool = False,
-        bump_part: str = "minor",
-    ) -> dict[str, Any]:
-        """Validate projects in parallel, optionally triggering a release if successful."""
-        _require_release_preparation(auto_bump, auto_push)
+    def validate_and_release(self, threads: int | None = None) -> dict[str, Any]:
+        """Validate projects in parallel and report whether all passed."""
         if not self.project_map:
             logger.warning("No projects to validate.")
-            return {"passed": False, "validation_results": {}, "release_results": {}}
+            return {"passed": False, "validation_results": {}}
 
         effective_threads = threads or self._cpu_aware_threads()
         logger.info(
             f"Validating {len(self.project_map)} projects in parallel ({effective_threads} threads)..."
         )
-
         validation_results, passed = self._run_parallel_validation(effective_threads)
-        release_results = self._release_after_validation(
-            passed=passed,
-            auto_bump=auto_bump,
-            auto_push=auto_push,
-            bump_part=bump_part,
-        )
-
-        return {
-            "passed": passed,
-            "validation_results": validation_results,
-            "release_results": release_results,
-        }
+        if passed:
+            logger.info("All validations passed.")
+        return {"passed": passed, "validation_results": validation_results}
 
     def _export_report(self, markdown_content: str, default_name: str) -> None:
         """Exports markdown content to a file if reporting is enabled."""
@@ -3074,17 +2309,14 @@ class Git:
     @staticmethod
     def _terminate_process_group(process: subprocess.Popen) -> None:
         """SIGTERM then SIGKILL a timed-out command's whole process group."""
-        if not hasattr(os, "killpg"):
-            Git._kill_process(process)
-            return
         try:
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            pfs.terminate_process_group(process)
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                pfs.terminate_process_group(process, force=True)
                 process.wait(timeout=5)
-        except Exception:  # nosec B110
+        except (OSError, subprocess.SubprocessError):
             Git._kill_process(process)
 
     @staticmethod
@@ -3181,22 +2413,22 @@ class Git:
                     "descriptor-pinned path anchor is absent from the Git command"
                 )
             command_argv = [
-                f"/proc/self/fd/{destination_fd}" if token == lexical_path else token
+                pfs.fd_path(destination_fd) if token == lexical_path else token
                 for token in command_argv
             ]
         try:
             process = subprocess.Popen(
                 command_argv,
                 shell=False,
-                cwd=f"/proc/self/fd/{cwd_fd}",
+                cwd=pfs.fd_path(cwd_fd),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 text=True,
                 env=current_env,
                 bufsize=1,
-                start_new_session=True,
-                pass_fds=inherited,
+                **pfs.new_group_kwargs(),
+                **pfs.popen_fd_kwargs(inherited),
             )
         except OSError as exc:
             return self._repository_command_result(
@@ -3700,10 +2932,11 @@ class Git:
                         # absent.  A real clone always leaves at least .git.
                         if destination.target_fd is not None:
                             try:
-                                if destination.leaf is not None and not os.listdir(
-                                    destination.target_fd
+                                if (
+                                    destination.leaf is not None
+                                    and not pfs.scandir_names(destination.target_fd)
                                 ):
-                                    os.rmdir(destination.leaf, dir_fd=destination.fd)
+                                    pfs.rmdir(destination.leaf, dir_fd=destination.fd)
                             except OSError:
                                 # A non-empty destination is the expected real
                                 # clone handoff; any inability to inspect it is
@@ -4017,7 +3250,7 @@ class Git:
         No hook reported a verdict -- the gate did not complete (timeout,
         tooling error). Reporting that as "Pre-push gate failed (pre-push
         gate)" made a 600s HEAVY-tier timeout look identical to a real
-        hook failure, which is how agent-connector-sdk appeared to be blocked
+        hook failure, which is how scion-sdk appeared to be blocked
         on merit when it had simply run out of clock. Surface the harness
         error verbatim instead of inventing a hook name.
         """
@@ -4373,7 +3606,7 @@ class Git:
         """Run Git only inside the private admin repository."""
         command = ["git"]
         if initialized:
-            command.append(f"--git-dir=/proc/self/fd/{admin.fd}")
+            command.append(f"--git-dir={pfs.fd_path(admin.fd)}")
         command.extend(argv)
         return self._run_pinned_repository_command(
             command,
@@ -5746,149 +4979,6 @@ class Git:
                 ),
             )
 
-    def _bump_skip_reason(
-        self,
-        project_dir: str,
-        *,
-        pinned: PinnedDirectory | None = None,
-    ) -> str | None:
-        """Why a bump should be skipped for this repo, or ``None`` if it needs one.
-
-        Returns a human-readable reason when no (further) bump is warranted:
-
-        * **no code changes** — clean tree AND in sync with origin.
-        * **already bumped, awaiting push** — clean tree but AHEAD of origin
-          with a ``Bump version:`` commit at HEAD. Re-bumping here is the
-          double-bump bug: while the push step is starved, every retry sees the
-          repo as "not up to date" and bumps again (0.38→0.39→0.40 …). The push
-          step will deliver the existing bump, so skip.
-
-        A clean tree whose HEAD is a *feature* commit (committed but not yet
-        version-bumped) returns ``None`` so it still gets its first bump — the
-        fix narrows the skip to genuine no-ops, it does not suppress real bumps.
-        (CONCEPT:RM-BUMP idempotency)
-        """
-        status_check = self.git_action(
-            "git status",
-            path=project_dir,
-            **self._pinned_git_kwargs(pinned),
-        )
-        data_lower = status_check.data.lower() if status_check.data else ""
-        clean = "nothing to commit" in data_lower
-        up_to_date = "your branch is up to date" in data_lower
-        if clean and up_to_date:
-            return "no code changes detected (use force=True to override)"
-        if clean and not up_to_date:
-            head_subj = self.git_action(
-                "git log -1 --pretty=%s",
-                path=project_dir,
-                quiet=True,
-                **self._pinned_git_kwargs(pinned),
-            )
-            subject = (head_subj.data or "").strip().lower()
-            if subject.startswith("bump version:"):
-                return "already bumped, awaiting push (avoids double-bump)"
-        return None
-
-    def _repo_has_pending_work(
-        self,
-        project_dir: str,
-        *,
-        pinned: PinnedDirectory | None = None,
-    ) -> bool:
-        """True when a repo has anything to bump or push.
-
-        A repo that is both clean and in sync with origin has no uncommitted
-        changes, no unpushed feature commits, and no unpushed version bump — so
-        neither the bump nor the push step would act on it. This is the same
-        no-op test :meth:`_bump_skip_reason` uses; anything else (dirty tree,
-        ahead of origin) is treated as pending work.
-        """
-        status_check = self.git_action(
-            "git status",
-            path=project_dir,
-            quiet=True,
-            **self._pinned_git_kwargs(pinned),
-        )
-        data_lower = status_check.data.lower() if status_check.data else ""
-        clean = "nothing to commit" in data_lower
-        up_to_date = "your branch is up to date" in data_lower
-        return not (clean and up_to_date)
-
-    def _auto_start_phase(
-        self, config: dict, *, operation: Literal["bump", "push"]
-    ) -> int | None:
-        """Lowest phase number that contains a repo with pending work.
-
-        Phases are topologically ordered (lower phase = more upstream): a change
-        in phase *N* can only cascade to phases ``>= N`` via dependency-pin
-        propagation, never to an earlier phase. So the bump/push can safely begin
-        at the lowest phase that actually has work and still capture every
-        downstream effect, skipping purely-unaffected upstream phases (and their
-        inter-phase waits). Returns ``None`` when no repo has pending work — the
-        caller should then do nothing. (CONCEPT:RM-PHASE-START)
-        """
-        claimed: set[str] = set()
-        for phase in self._ordered_release_phases(config):
-            targets = self._select_phase_targets(
-                phase,
-                filter_set=None,
-                claimed=claimed,
-                include_bulk=bool(phase.get(f"bulk_{operation}")),
-            )
-            if self._phase_has_pending_work(targets):
-                return phase["phase"]
-        return None
-
-    def _phase_has_pending_work(self, targets: list[_ReleaseTarget]) -> bool:
-        """Whether any selected project has a local clone with pending work."""
-        return any(
-            self._phase_target_has_pending_work(name, path) for name, path in targets
-        )
-
-    def _phase_target_has_pending_work(self, name: str, path: str) -> bool:
-        """Check one canonical target for work without widening its scope."""
-        return self._phase_target_pending_probe(name, path)
-
-    def _phase_target_pending_probe(self, name: str, path: str) -> bool:
-        """Run the descriptor-pinned pending-work probe for one target."""
-        try:
-            _, validated_path = self._revalidate_release_target(
-                name,
-                path,
-                operation="auto-start",
-            )
-            with open_directory(self._workspace_root()) as root:
-                root.assert_root_identity()
-                with pin_existing(root, validated_path) as pinned:
-                    pinned.assert_path_identity()
-                    pending_method = self._repo_has_pending_work
-                    pending = self._pending_work_probe(
-                        pending_method, validated_path, pinned
-                    )
-                    pinned.assert_path_identity()
-                    return pending
-        except (OperationBoundaryError, ValueError) as exc:
-            logger.warning(
-                "Auto-start refused unsafe target %s: %s",
-                name,
-                type(exc).__name__,
-            )
-            return False
-
-    @staticmethod
-    def _pending_work_probe(
-        pending_method: Callable[..., bool],
-        validated_path: str,
-        pinned: PinnedDirectory,
-    ) -> bool:
-        """Invoke an injected pending-work probe while preserving pin support."""
-        if "pinned" in inspect.signature(pending_method).parameters:
-            return pending_method(validated_path, pinned=pinned)
-        # Keep the small private seam compatible with callers that inject a
-        # read-only pending-work probe; the real implementation remains pinned.
-        return pending_method(validated_path)
-
     def _bump_version_with_handle(
         self,
         *,
@@ -6083,7 +5173,7 @@ class Git:
         pinned: PinnedDirectory | None = None,
     ) -> GitResult:
         """Fallback behavior for a project with no bump2version config: stage
-        all changes and commit them as "phased bump"."""
+        all changes and commit them as "version bump"."""
         status_check = self.git_action(
             command="git status --porcelain",
             path=target_dir,
@@ -6109,7 +5199,7 @@ class Git:
 
         if dry_run:
             logger.info(
-                f"[DRY RUN] Would fallback to git add -A && git commit -m 'phased bump' in {target_dir}"
+                f"[DRY RUN] Would fallback to git add -A && git commit -m 'version bump' in {target_dir}"
             )
             return GitResult(
                 status="success",
@@ -6132,7 +5222,7 @@ class Git:
             return add_res
 
         commit_res = self.git_action(
-            command='git commit -m "phased bump"',
+            command='git commit -m "version bump"',
             path=target_dir,
             **self._pinned_git_kwargs(pinned),
         )
@@ -6140,7 +5230,7 @@ class Git:
             logger.error("Failed to commit fallback changes")
             return commit_res
 
-        logger.info("Successfully committed fallback changes with phased bump")
+        logger.info("Successfully committed fallback changes with version bump")
         return GitResult(
             status="success",
             data="current_version=unknown\nnew_version=unknown\n",
@@ -6532,1266 +5622,6 @@ class Git:
             return
         target_file.write_text(content)
 
-    @classmethod
-    def _project_phase_index(cls, config: dict) -> tuple[dict[str, int], int]:
-        """Map every declared project to its phase number, plus the bulk phase.
-
-        Used for the topological dependency check: a bump must not be
-        propagated backwards into a project owned by an earlier phase.
-        """
-        project_phases: dict[str, int] = {}
-        bulk_phase_num = 5
-        for phase in cls._ordered_release_phases(config):
-            p_num = phase["phase"]
-            if phase.get("bulk_bump"):
-                bulk_phase_num = p_num
-            for p in cls._phase_named_projects(phase):
-                project_phases[p] = p_num
-        return project_phases, bulk_phase_num
-
-    def _pre_commit_project_targets(
-        self,
-        config: dict,
-        filter_set: set[str] | None = None,
-        *,
-        start_phase: int = 1,
-        single_phase: bool = False,
-    ) -> list[_ReleaseTarget] | None:
-        """Exact targets the pre-commit stage should cover, or ``None`` for all.
-
-        Explicit phase members are always included. A ``bulk_bump`` phase adds
-        only manifest-classified, PyPI-buildable agent repositories; it never
-        expands pre-commit to unrelated infrastructure repositories.
-        """
-        if not config:
-            return None
-        phases = self._selected_release_phases(
-            config, start_phase=start_phase, single_phase=single_phase
-        )
-        return self._pre_commit_targets_for_phases(phases, filter_set)
-
-    def _pre_commit_targets_for_phases(
-        self,
-        phases: list[dict[str, Any]],
-        filter_set: set[str] | None,
-    ) -> list[_ReleaseTarget]:
-        """Flatten exact targets for already-selected maintenance phases."""
-        claimed: set[str] = set()
-        targets: list[_ReleaseTarget] = []
-        for phase in phases:
-            targets.extend(
-                self._select_phase_targets(
-                    phase,
-                    filter_set=filter_set,
-                    claimed=claimed,
-                    include_bulk=bool(phase.get("bulk_bump")),
-                )
-            )
-        return targets
-
-    def _pre_commit_target_dirs(
-        self, targets: list[_ReleaseTarget] | None
-    ) -> list[str]:
-        """Validated local paths for the pre-commit stage's exact scope."""
-        if targets is None:
-            return self._all_precommit_target_dirs()
-        return self._release_precommit_target_dirs(targets)
-
-    def _all_precommit_target_dirs(self) -> list[str]:
-        """Validate every mapped project path for an unrestricted pre-commit run."""
-        return [
-            str(self._validate_workspace_path(path, label="pre-commit project"))
-            for path in self.project_map.values()
-        ]
-
-    def _release_precommit_target_dirs(
-        self, targets: list[_ReleaseTarget]
-    ) -> list[str]:
-        """Revalidate the exact release pairs selected for pre-commit."""
-        return [
-            self._revalidate_release_target(name, path, operation="pre-commit")[1]
-            for name, path in targets
-        ]
-
-    def _run_bump_pre_commit_stage(
-        self,
-        config: dict,
-        filter_set: set[str] | None,
-        *,
-        start_phase: int,
-        single_phase: bool,
-        targets: list[_ReleaseTarget] | None = None,
-        _secure: bool = False,
-        provenance: _ReleasePlanProvenance | None = None,
-        plan_assertion: Callable[[], None] | None = None,
-    ) -> list[GitResult]:
-        """Run pre-commit (with autoupdate) and commit the resulting formatting."""
-        targets = self._resolve_bump_pre_commit_targets(
-            config,
-            filter_set,
-            start_phase=start_phase,
-            single_phase=single_phase,
-            targets=targets,
-        )
-        project_dirs = self._pre_commit_target_dirs(targets)
-        runner = {
-            False: self._run_legacy_bump_pre_commit_stage,
-            True: self._run_secure_bump_pre_commit_stage,
-        }[_secure]
-        return cast(Callable[..., list[GitResult]], runner)(
-            project_dirs=project_dirs,
-            targets=targets,
-            provenance=provenance,
-            plan_assertion=plan_assertion,
-        )
-
-    def _run_legacy_bump_pre_commit_stage(
-        self,
-        *,
-        project_dirs: list[str],
-        targets: list[_ReleaseTarget] | None,
-        provenance: _ReleasePlanProvenance | None,
-        plan_assertion: Callable[[], None] | None,
-    ) -> list[GitResult]:
-        """Run the compatibility pre-commit path without pinned handles."""
-        del targets, provenance, plan_assertion
-        results = list(
-            self.pre_commit_projects(
-                run=True,
-                autoupdate=True,
-                projects=project_dirs,
-            )
-        )
-        results.extend(
-            self.commit_projects(
-                message="chore: pre-commit autoupdate and formatting",
-                project_dirs=project_dirs,
-            )
-        )
-        return results
-
-    def _run_secure_bump_pre_commit_stage(
-        self,
-        *,
-        project_dirs: list[str],
-        targets: list[_ReleaseTarget] | None,
-        provenance: _ReleasePlanProvenance | None,
-        plan_assertion: Callable[[], None] | None,
-    ) -> list[GitResult]:
-        """Run pre-commit and commits while retaining exact target handles."""
-        secure_results: list[GitResult] = []
-        handles: list[PinnedDirectory] = []
-        try:
-            with open_directory(self._workspace_root()) as root:
-                root.assert_root_identity()
-                pinned_targets: dict[str, PinnedDirectory] = {}
-                names_by_path = {path: name for name, path in (targets or [])}
-                for project_dir in project_dirs:
-                    pinned = pin_existing(root, project_dir)
-                    pinned.assert_path_identity()
-                    if provenance is not None:
-                        project_name = names_by_path.get(project_dir)
-                        if project_name is None:
-                            raise OperationBoundaryError(
-                                "pre-commit target is not in the release plan"
-                            )
-                        self._bind_release_plan_target(
-                            provenance,
-                            project_name,
-                            project_dir,
-                            pinned,
-                            plan_assertion=plan_assertion,
-                        )
-                    handles.append(pinned)
-                    pinned_targets[project_dir] = pinned
-                secure_results.extend(
-                    self.pre_commit_projects(
-                        run=True,
-                        autoupdate=True,
-                        projects=project_dirs,
-                        _pinned_targets=pinned_targets,
-                    )
-                )
-                secure_results.extend(
-                    self.commit_projects(
-                        message="chore: pre-commit autoupdate and formatting",
-                        project_dirs=project_dirs,
-                        _pinned_targets=pinned_targets,
-                    )
-                )
-        except OperationBoundaryError as exc:
-            secure_results.append(
-                self._path_validation_result("pre_commit", self.path, exc)
-            )
-        finally:
-            for pinned in reversed(handles):
-                pinned.close()
-        return secure_results
-
-    def _resolve_bump_pre_commit_targets(
-        self,
-        config: dict,
-        filter_set: set[str] | None,
-        *,
-        start_phase: int,
-        single_phase: bool,
-        targets: list[_ReleaseTarget] | None,
-    ) -> list[_ReleaseTarget] | None:
-        """Reuse the frozen pre-commit scope when one was supplied."""
-        if targets is not None:
-            return targets
-        return self._pre_commit_project_targets(
-            config,
-            filter_set,
-            start_phase=start_phase,
-            single_phase=single_phase,
-        )
-
-    def _bump_phase_targets(
-        self, phase: dict, filter_set: set[str] | None, assigned_projects: set[str]
-    ) -> list[_ReleaseTarget]:
-        """The exact targets one configured phase contributes to the bump plan.
-
-        A filter only narrows a phase's existing members. It can never manufacture
-        a bulk target that failed the manifest/category/package eligibility gate.
-        """
-        return self._select_phase_targets(
-            phase,
-            filter_set=filter_set,
-            claimed=assigned_projects,
-            include_bulk=bool(phase.get("bulk_bump")),
-        )
-
-    @staticmethod
-    def _parse_project_filter(project_filter: str | None) -> set[str] | None:
-        """Parse ``project_filter`` into a set of project names, or ``None``.
-
-        ``project_filter`` may be a single name or a comma-separated set, letting
-        a caller re-bump exactly N specific repos (e.g. repos a prior partial
-        run silently skipped) without re-bumping the whole ecosystem. When a
-        filter set is active, the bulk phase is restricted to its members.
-        """
-        if not project_filter:
-            return None
-        return {p.strip() for p in project_filter.split(",") if p.strip()}
-
-    def _build_bump_phase_list(
-        self,
-        *,
-        config: dict,
-        start_phase: int,
-        filter_set: set[str] | None,
-        single_phase: bool = False,
-    ) -> tuple[list[dict[str, Any]], int]:
-        """Expand the configured phases into the concrete bump plan.
-
-        A project claimed by an earlier phase is dropped from every later one --
-        otherwise a project named in an explicit phase (e.g. agent-connector-sdk in
-        Phase 3) is ALSO swept into the Phase-5 bulk list and gets BUMPED TWICE.
-        (CONCEPT:RM-BUMP single-bump-per-project)
-        """
-        assigned_projects: set[str] = set()
-        phase_list: list[dict[str, Any]] = []
-        total_projects = 0
-
-        for phase in self._selected_release_phases(
-            config, start_phase=start_phase, single_phase=single_phase
-        ):
-            phase_num = phase["phase"]
-
-            targets = self._bump_phase_targets(phase, filter_set, assigned_projects)
-            if not targets:
-                continue
-
-            phase_list.append(
-                {
-                    "phase_num": phase_num,
-                    "name": phase.get("name", f"Phase {phase_num}"),
-                    "targets": targets,
-                }
-            )
-            total_projects += len(targets)
-
-        return phase_list, total_projects
-
-    @staticmethod
-    def _parse_bumped_version(data: str) -> str:
-        """Pull the post-bump version out of a ``bump_version`` result payload."""
-        match = re.search(r"new_version=(.*)", data)
-        if match:
-            return match.group(1).strip()
-        match = re.search(r"current_version=(.*)", data)
-        return match.group(1).strip() if match else "success"
-
-    def _bump_one_project(
-        self,
-        *,
-        project_name: str,
-        project_dir: str,
-        part: str,
-        dry_run: bool,
-        force: bool,
-        all_results: list[GitResult],
-        _pinned: PinnedDirectory | None = None,
-    ) -> str | None:
-        """Bump one project's version.
-
-        Returns the new version string, ``"skipped"`` when the project had no
-        bump-worthy change, or ``None`` when it was unresolvable or the bump
-        failed. A declared project whose local clone is absent (stale registry
-        entry / never-cloned repo) must not crash the whole phased bump, so it
-        is skipped with a warning and the rest of the topology proceeds.
-        """
-        runner = {
-            False: self._bump_one_project_unpinned,
-            True: self._bump_one_project_pinned,
-        }[_pinned is not None]
-        return cast(Callable[..., str | None], runner)(
-            project_name=project_name,
-            project_dir=project_dir,
-            part=part,
-            dry_run=dry_run,
-            force=force,
-            all_results=all_results,
-            pinned=_pinned,
-        )
-
-    def _bump_one_project_unpinned(
-        self,
-        *,
-        project_name: str,
-        project_dir: str,
-        part: str,
-        dry_run: bool,
-        force: bool,
-        all_results: list[GitResult],
-        pinned: PinnedDirectory | None,
-    ) -> str | None:
-        """Pin a standalone bump target before running the common operation."""
-        del pinned
-        try:
-            with open_directory(self._workspace_root()) as root:
-                root.assert_root_identity()
-                with pin_existing(root, project_dir) as operation_pinned:
-                    return self._bump_one_project_pinned(
-                        project_name=project_name,
-                        project_dir=project_dir,
-                        part=part,
-                        dry_run=dry_run,
-                        force=force,
-                        all_results=all_results,
-                        pinned=operation_pinned,
-                    )
-        except OperationBoundaryError as exc:
-            logger.warning(
-                "Skipping bump for unsafe target %s: %s",
-                project_name,
-                type(exc).__name__,
-            )
-            return None
-
-    def _bump_one_project_pinned(
-        self,
-        *,
-        project_name: str,
-        project_dir: str,
-        part: str,
-        dry_run: bool,
-        force: bool,
-        all_results: list[GitResult],
-        pinned: PinnedDirectory,
-    ) -> str | None:
-        """Run the bump logic against one retained descriptor-pinned checkout."""
-        pinned.assert_path_identity()
-        _, validated_path = self._revalidate_release_target(
-            project_name,
-            project_dir,
-            operation="bump",
-        )
-        if Path(validated_path) != pinned.path:
-            raise OperationBoundaryError("pinned bump target changed during validation")
-        project_dir = validated_path
-
-        if not force and self._bump_skip_reason(project_dir, pinned=pinned):
-            logger.info("Skipping project version bump")
-            return "skipped"
-
-        pinned.assert_path_identity()
-        result = self.bump_version(
-            part=part,
-            allow_dirty=True,
-            path=project_dir,
-            dry_run=dry_run,
-            force=force,
-            verbose=dry_run or not dry_run,
-            _pinned=pinned,
-        )
-        all_results.append(result)
-        if result.status != "success":
-            return None
-        return self._parse_bumped_version(result.data)
-
-    @staticmethod
-    def _dependency_update_result(
-        path: str, project_name: str, new_version: str, dep_file_name: str
-    ) -> GitResult:
-        """The success record for one propagated dependency-pin update."""
-        return GitResult(
-            status="success",
-            data=f"Updated {project_name} to {new_version} in {dep_file_name}",
-            metadata=GitMetadata(
-                command="update_dependency",
-                workspace=_project_label(path),
-                return_code=0,
-                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-            ),
-        )
-
-    def _update_dependency_files(
-        self,
-        *,
-        path: str,
-        project_name: str,
-        new_version: str,
-        dry_run: bool,
-        _pinned: PinnedDirectory | None = None,
-    ) -> list[GitResult]:
-        """Repin *project_name* in every dependency-declaring file under *path*.
-
-        Not just ``pyproject.toml``: ``requirements.txt`` commonly pins the same
-        package (often ``==``) and would otherwise go stale.
-        (CONCEPT:RM-BUMP cross-dependency propagation)
-        """
-        runner = {
-            False: self._update_dependency_files_unpinned,
-            True: self._update_dependency_files_pinned,
-        }[_pinned is not None]
-        return cast(Callable[..., list[GitResult]], runner)(
-            path=path,
-            project_name=project_name,
-            new_version=new_version,
-            dry_run=dry_run,
-            pinned=_pinned,
-        )
-
-    def _update_dependency_files_unpinned(
-        self,
-        *,
-        path: str,
-        project_name: str,
-        new_version: str,
-        dry_run: bool,
-        pinned: PinnedDirectory | None,
-    ) -> list[GitResult]:
-        """Pin an unbound dependency-update target before editing it."""
-        del pinned
-        try:
-            with open_directory(self._workspace_root()) as root:
-                root.assert_root_identity()
-                with pin_existing(root, path) as operation_pinned:
-                    return self._update_dependency_files_pinned(
-                        path=path,
-                        project_name=project_name,
-                        new_version=new_version,
-                        dry_run=dry_run,
-                        pinned=operation_pinned,
-                    )
-        except OperationBoundaryError as exc:
-            return [self._path_validation_result("update_dependency", path, exc)]
-
-    def _update_dependency_files_pinned(
-        self,
-        *,
-        path: str,
-        project_name: str,
-        new_version: str,
-        dry_run: bool,
-        pinned: PinnedDirectory,
-    ) -> list[GitResult]:
-        """Repin every dependency file through one retained descriptor."""
-        pinned.assert_path_identity()
-        validated_path = self._validate_workspace_path(
-            path,
-            label=f"dependency update project {project_name!r}",
-        )
-        path = str(validated_path)
-        if Path(path) != pinned.path:
-            raise OperationBoundaryError(
-                "pinned dependency-update target changed during validation"
-            )
-        return self._update_dependency_files_for_pinned_path(
-            path, project_name, new_version, dry_run, pinned
-        )
-
-    def _update_dependency_files_for_pinned_path(
-        self,
-        path: str,
-        project_name: str,
-        new_version: str,
-        dry_run: bool,
-        pinned: PinnedDirectory,
-    ) -> list[GitResult]:
-        """Update each supported dependency document under one pinned checkout."""
-        results: list[GitResult] = []
-        for dep_file_name in ("pyproject.toml", "requirements.txt"):
-            result = self._update_one_dependency_file(
-                path, project_name, new_version, dry_run, dep_file_name, pinned
-            )
-            if result is not None:
-                results.append(result)
-        return results
-
-    def _update_one_dependency_file(
-        self,
-        path: str,
-        project_name: str,
-        new_version: str,
-        dry_run: bool,
-        dep_file_name: str,
-        pinned: PinnedDirectory,
-    ) -> GitResult | None:
-        """Update one dependency document and return its audit record."""
-        pinned.assert_operation_identity()
-        if read_at(pinned.fd, dep_file_name) is None:
-            return None
-        updated = self._update_dependency(
-            str(Path(path) / dep_file_name),
-            project_name,
-            new_version,
-            dry_run,
-            _directory_fd=pinned.fd,
-            _file_name=dep_file_name,
-            _boundary_assertion=pinned.assert_operation_identity,
-        )
-        if not updated:
-            return None
-        return self._dependency_update_result(
-            path, project_name, new_version, dep_file_name
-        )
-
-    def _propagate_bump_to_dependents(
-        self,
-        *,
-        project_name: str,
-        new_version: str,
-        phase_num: int,
-        phase_of: Callable[[str], int],
-        dry_run: bool,
-        all_results: list[GitResult],
-        provenance: _ReleasePlanProvenance | None = None,
-        plan_assertion: Callable[[], None] | None = None,
-        allowed_targets: set[tuple[str, str]] | None = None,
-    ) -> None:
-        """Repin the just-bumped project across every same-or-later-phase repo.
-
-        Earlier phases are skipped so a later bump cannot circle back and dirty
-        a phase that has already been released.
-        """
-        planned_names_by_path = self._planned_dependency_names(allowed_targets)
-        with self._dependency_propagation_root(provenance) as root:
-            for path in self.project_map.values():
-                self._propagate_bump_for_path(
-                    path=path,
-                    project_name=project_name,
-                    new_version=new_version,
-                    phase_num=phase_num,
-                    phase_of=phase_of,
-                    dry_run=dry_run,
-                    all_results=all_results,
-                    provenance=provenance,
-                    plan_assertion=plan_assertion,
-                    root=root,
-                    planned_names_by_path=planned_names_by_path,
-                )
-
-    @staticmethod
-    def _planned_dependency_names(
-        allowed_targets: set[tuple[str, str]] | None,
-    ) -> dict[str, set[str]] | None:
-        """Map each normalized planned path to its exact release names."""
-        if allowed_targets is None:
-            return None
-        names_by_path: dict[str, set[str]] = {}
-        for name, planned_path in allowed_targets:
-            names_by_path.setdefault(
-                str(Path(os.path.abspath(planned_path))), set()
-            ).add(name)
-        return names_by_path
-
-    def _dependency_propagation_root(
-        self, provenance: _ReleasePlanProvenance | None
-    ) -> contextlib.AbstractContextManager[PinnedDirectory | None]:
-        """Open a root pin only for release-plan-bound propagation."""
-        if provenance is not None:
-            return open_directory(self._workspace_root())
-        return contextlib.nullcontext(None)
-
-    def _propagate_bump_for_path(
-        self,
-        *,
-        path: str,
-        project_name: str,
-        new_version: str,
-        phase_num: int,
-        phase_of: Callable[[str], int],
-        dry_run: bool,
-        all_results: list[GitResult],
-        provenance: _ReleasePlanProvenance | None,
-        plan_assertion: Callable[[], None] | None,
-        root: PinnedDirectory | None,
-        planned_names_by_path: dict[str, set[str]] | None,
-    ) -> None:
-        """Apply one dependency propagation to one exact registry path."""
-        normalized_path = str(Path(os.path.abspath(path)))
-        if provenance is not None and planned_names_by_path is not None:
-            planned_names = planned_names_by_path.get(normalized_path, set())
-            if len(planned_names) != 1:
-                # A service or an otherwise unplanned checkout must never become
-                # a dependency target merely because its basename collides.
-                return
-            other_project_name = next(iter(planned_names))
-        else:
-            other_project_name = os.path.basename(path)
-        if other_project_name == project_name:
-            return
-        other_phase = phase_of(other_project_name)
-        if other_phase < phase_num:
-            logger.info(
-                f"Skipping dependency update for {project_name} in {other_project_name} "
-                f"to avoid circular updates of earlier phase (Phase {other_phase} < Phase {phase_num})"
-            )
-            return
-        if provenance is None:
-            all_results.extend(
-                self._update_dependency_files(
-                    path=path,
-                    project_name=project_name,
-                    new_version=new_version,
-                    dry_run=dry_run,
-                )
-            )
-            return
-        if root is None:
-            raise OperationBoundaryError("dependency update root handle is missing")
-        root.assert_root_identity()
-        with pin_existing(root, path) as pinned:
-            self._bind_release_plan_target(
-                provenance,
-                other_project_name,
-                path,
-                pinned,
-                plan_assertion=plan_assertion,
-            )
-            all_results.extend(
-                self._update_dependency_files(
-                    path=path,
-                    project_name=project_name,
-                    new_version=new_version,
-                    dry_run=dry_run,
-                    _pinned=pinned,
-                )
-            )
-
-    @staticmethod
-    def _run_bump_phase(
-        *,
-        p_info: dict[str, Any],
-        tracker: "_PhaseProgress",
-        processed_paths: set[str],
-        bump_one: Callable[[str, str], str | None],
-        propagate: Callable[[str, str, int], None],
-    ) -> None:
-        """Bump every project in one phase, propagating each new version onward."""
-        phase_name = p_info["name"]
-        phase_num = p_info["phase_num"]
-        tracker.begin_phase(phase_name)
-
-        for project_name, project_path in p_info["targets"]:
-            # Defensive: never bump a project twice in one run (a later phase
-            # must not re-bump one an earlier phase already handled).
-            if project_path in processed_paths:
-                continue
-
-            tracker.begin_item(phase_name, project_name)
-            processed_paths.add(project_path)
-            logger.info(
-                f"Bumping version for project: {project_name} in {phase_name}..."
-            )
-            new_version = bump_one(project_name, project_path)
-            tracker.finish_item(
-                phase_name, project_name, "success" if new_version else "failed"
-            )
-
-            if new_version and re.match(r"^v?\d+\.\d+\.\d+", new_version):
-                propagate(project_name, new_version, phase_num)
-
-        tracker.end_phase(phase_name)
-
-    def _prepare_bump_release_plan(
-        self,
-        *,
-        config: dict,
-        part: str,
-        start_phase: int,
-        dry_run: bool,
-        allow_pre_commit: bool,
-        single_phase: bool,
-        project_filter: str | None,
-        force: bool,
-        auto_start: bool,
-    ) -> tuple[
-        set[str] | None,
-        list[dict[str, Any]],
-        int,
-        list[_ReleaseTarget] | None,
-        dict[str, Any],
-        _ReleasePlanProvenance,
-    ]:
-        """Build the immutable bump scope and its input/provenance digests."""
-        filter_set = self._parse_project_filter(project_filter)
-        phase_list, total_projects = self._build_bump_phase_list(
-            config=config,
-            start_phase=start_phase,
-            filter_set=filter_set,
-            single_phase=single_phase,
-        )
-        precommit_targets: list[_ReleaseTarget] | None = (
-            self._pre_commit_project_targets(
-                config,
-                filter_set,
-                start_phase=start_phase,
-                single_phase=single_phase,
-            )
-            if allow_pre_commit
-            else []
-        )
-        plan_options = {
-            "part": part,
-            "start_phase": start_phase,
-            "dry_run": dry_run,
-            "allow_pre_commit": allow_pre_commit,
-            "single_phase": single_phase,
-            "project_filter": project_filter,
-            "force": force,
-            "auto_start": auto_start,
-        }
-        provenance = self._freeze_release_plan(
-            "bump",
-            config,
-            phase_list,
-            options=plan_options,
-            auxiliary_targets=precommit_targets,
-        )
-        return (
-            filter_set,
-            phase_list,
-            total_projects,
-            precommit_targets,
-            plan_options,
-            provenance,
-        )
-
-    def _assert_bump_plan(
-        self,
-        provenance: _ReleasePlanProvenance,
-        config: dict[str, Any],
-        phase_list: list[dict[str, Any]],
-        plan_options: dict[str, Any],
-        precommit_targets: list[_ReleaseTarget] | None,
-    ) -> None:
-        """Check bump plan structure at one descriptor-boundary admission.
-
-        Each target's root/checkout/Git identity is checked through its pinned
-        handle.  A full workspace rescan here would be a separate sequential
-        check rather than part of the mutation boundary.
-        """
-        self._assert_release_plan_structure(
-            provenance,
-            config,
-            phase_list,
-            plan_options,
-            precommit_targets,
-        )
-
-    def _bump_plan_one(
-        self,
-        project_name: str,
-        project_path: str,
-        *,
-        provenance: _ReleasePlanProvenance,
-        config: dict[str, Any],
-        phase_list: list[dict[str, Any]],
-        plan_options: dict[str, Any],
-        precommit_targets: list[_ReleaseTarget] | None,
-        part: str,
-        dry_run: bool,
-        force: bool,
-        all_results: list[GitResult],
-    ) -> str | None:
-        """Guard and bump one exact member of the frozen release plan."""
-        self._assert_bump_plan(
-            provenance, config, phase_list, plan_options, precommit_targets
-        )
-        return self._bump_plan_one_operation(
-            project_name,
-            project_path,
-            provenance=provenance,
-            config=config,
-            phase_list=phase_list,
-            plan_options=plan_options,
-            precommit_targets=precommit_targets,
-            part=part,
-            dry_run=dry_run,
-            force=force,
-            all_results=all_results,
-        )
-
-    def _bump_plan_one_operation(
-        self,
-        project_name: str,
-        project_path: str,
-        *,
-        provenance: _ReleasePlanProvenance,
-        config: dict[str, Any],
-        phase_list: list[dict[str, Any]],
-        plan_options: dict[str, Any],
-        precommit_targets: list[_ReleaseTarget] | None,
-        part: str,
-        dry_run: bool,
-        force: bool,
-        all_results: list[GitResult],
-    ) -> str | None:
-        """Pin and execute one frozen bump, converting refusal to a result."""
-        try:
-            with open_directory(self._workspace_root()) as root:
-                root.assert_root_identity()
-                with pin_existing(root, project_path) as pinned:
-                    pinned.assert_path_identity()
-                    self._bind_release_plan_target(
-                        provenance,
-                        project_name,
-                        project_path,
-                        pinned,
-                        plan_assertion=functools.partial(
-                            self._assert_release_plan_structure,
-                            provenance,
-                            config,
-                            phase_list,
-                            plan_options,
-                            precommit_targets,
-                        ),
-                    )
-                    return self._bump_one_project(
-                        project_name=project_name,
-                        project_dir=project_path,
-                        part=part,
-                        dry_run=dry_run,
-                        force=force,
-                        all_results=all_results,
-                        _pinned=pinned,
-                    )
-        except (OperationBoundaryError, ValueError) as exc:
-            all_results.append(self._path_validation_result("bump", project_path, exc))
-            return None
-
-    def _propagate_bump_plan(
-        self,
-        project_name: str,
-        new_version: str,
-        phase_num: int,
-        *,
-        provenance: _ReleasePlanProvenance,
-        config: dict[str, Any],
-        phase_list: list[dict[str, Any]],
-        plan_options: dict[str, Any],
-        precommit_targets: list[_ReleaseTarget] | None,
-        phase_of: Callable[[str], int],
-        dry_run: bool,
-        all_results: list[GitResult],
-    ) -> None:
-        """Guard and propagate one exact version across later plan phases."""
-        self._assert_bump_plan(
-            provenance, config, phase_list, plan_options, precommit_targets
-        )
-        return self._propagate_bump_plan_operation(
-            project_name,
-            new_version,
-            phase_num,
-            provenance=provenance,
-            config=config,
-            phase_list=phase_list,
-            plan_options=plan_options,
-            precommit_targets=precommit_targets,
-            phase_of=phase_of,
-            dry_run=dry_run,
-            all_results=all_results,
-        )
-
-    def _propagate_bump_plan_operation(
-        self,
-        project_name: str,
-        new_version: str,
-        phase_num: int,
-        *,
-        provenance: _ReleasePlanProvenance,
-        config: dict[str, Any],
-        phase_list: list[dict[str, Any]],
-        plan_options: dict[str, Any],
-        precommit_targets: list[_ReleaseTarget] | None,
-        phase_of: Callable[[str], int],
-        dry_run: bool,
-        all_results: list[GitResult],
-    ) -> None:
-        """Propagate one bump across only exact frozen release targets."""
-        try:
-            allowed_targets = {
-                (name, path)
-                for phase in phase_list
-                for name, path in phase.get("targets", [])
-            }
-            self._propagate_bump_to_dependents(
-                project_name=project_name,
-                new_version=new_version,
-                phase_num=phase_num,
-                phase_of=phase_of,
-                dry_run=dry_run,
-                all_results=all_results,
-                provenance=provenance,
-                plan_assertion=functools.partial(
-                    self._assert_release_plan_structure,
-                    provenance,
-                    config,
-                    phase_list,
-                    plan_options,
-                    precommit_targets,
-                ),
-                allowed_targets=allowed_targets,
-            )
-        except (OperationBoundaryError, ValueError) as exc:
-            all_results.append(
-                self._path_validation_result("dependency_update", project_name, exc)
-            )
-
-    def _record_release_plan_abort(
-        self,
-        drift: _ReleasePlanDrift,
-        tracker: "_PhaseProgress",
-        all_results: list[GitResult],
-    ) -> None:
-        """Record a typed abort when a frozen release plan changed."""
-        all_results.append(self._release_plan_drift_result(drift))
-        tracker.note(f"ABORTED — phased {drift.operation} release plan changed")
-
-    def _run_bump_precommit_plan(
-        self,
-        *,
-        allow_pre_commit: bool,
-        config: dict[str, Any],
-        filter_set: set[str] | None,
-        start_phase: int,
-        single_phase: bool,
-        precommit_targets: list[_ReleaseTarget] | None,
-        provenance: _ReleasePlanProvenance,
-        phase_list: list[dict[str, Any]],
-        plan_options: dict[str, Any],
-        tracker: "_PhaseProgress",
-        all_results: list[GitResult],
-    ) -> bool:
-        """Run the guarded pre-commit stage, returning false on plan drift."""
-        return self._run_bump_precommit_plan_operation(
-            allow_pre_commit=allow_pre_commit,
-            config=config,
-            filter_set=filter_set,
-            start_phase=start_phase,
-            single_phase=single_phase,
-            precommit_targets=precommit_targets,
-            provenance=provenance,
-            phase_list=phase_list,
-            plan_options=plan_options,
-            tracker=tracker,
-            all_results=all_results,
-        )
-
-    def _run_bump_precommit_plan_operation(
-        self,
-        *,
-        allow_pre_commit: bool,
-        config: dict[str, Any],
-        filter_set: set[str] | None,
-        start_phase: int,
-        single_phase: bool,
-        precommit_targets: list[_ReleaseTarget] | None,
-        provenance: _ReleasePlanProvenance,
-        phase_list: list[dict[str, Any]],
-        plan_options: dict[str, Any],
-        tracker: "_PhaseProgress",
-        all_results: list[GitResult],
-    ) -> bool:
-        """Run the guarded pre-commit stage and convert boundary failures."""
-        if not allow_pre_commit:
-            return True
-        try:
-            self._assert_bump_plan(
-                provenance, config, phase_list, plan_options, precommit_targets
-            )
-            all_results.extend(
-                self._run_bump_pre_commit_stage(
-                    config,
-                    filter_set,
-                    start_phase=start_phase,
-                    single_phase=single_phase,
-                    targets=precommit_targets,
-                    _secure=True,
-                    provenance=provenance,
-                    plan_assertion=functools.partial(
-                        self._assert_release_plan_structure,
-                        provenance,
-                        config,
-                        phase_list,
-                        plan_options,
-                        precommit_targets,
-                    ),
-                )
-            )
-        except _ReleasePlanDrift as drift:
-            self._record_release_plan_abort(drift, tracker, all_results)
-            return False
-        except (OperationBoundaryError, ValueError) as exc:
-            all_results.append(self._path_validation_result("bump", self.path, exc))
-            tracker.note("ABORTED — unsafe bump operation")
-            return False
-        return True
-
-    def _execute_frozen_bump_plan(
-        self,
-        *,
-        config: dict[str, Any],
-        filter_set: set[str] | None,
-        start_phase: int,
-        part: str,
-        dry_run: bool,
-        allow_pre_commit: bool,
-        single_phase: bool,
-        force: bool,
-        precommit_targets: list[_ReleaseTarget] | None,
-        phase_list: list[dict[str, Any]],
-        plan_options: dict[str, Any],
-        provenance: _ReleasePlanProvenance,
-        project_phases: dict[str, int],
-        bulk_phase_num: int,
-        tracker: "_PhaseProgress",
-        all_results: list[GitResult],
-    ) -> bool:
-        """Execute all guarded bump mutations for one frozen plan."""
-        if not self._run_bump_precommit_plan(
-            allow_pre_commit=allow_pre_commit,
-            config=config,
-            filter_set=filter_set,
-            start_phase=start_phase,
-            single_phase=single_phase,
-            precommit_targets=precommit_targets,
-            provenance=provenance,
-            phase_list=phase_list,
-            plan_options=plan_options,
-            tracker=tracker,
-            all_results=all_results,
-        ):
-            return False
-
-        def phase_of(name: str) -> int:
-            return project_phases.get(name, bulk_phase_num)
-
-        bump_one = functools.partial(
-            self._bump_plan_one,
-            provenance=provenance,
-            config=config,
-            phase_list=phase_list,
-            plan_options=plan_options,
-            precommit_targets=precommit_targets,
-            part=part,
-            dry_run=dry_run,
-            force=force,
-            all_results=all_results,
-        )
-        propagate = functools.partial(
-            self._propagate_bump_plan,
-            provenance=provenance,
-            config=config,
-            phase_list=phase_list,
-            plan_options=plan_options,
-            precommit_targets=precommit_targets,
-            phase_of=phase_of,
-            dry_run=dry_run,
-            all_results=all_results,
-        )
-        processed_paths: set[str] = set()
-        try:
-            self._run_guarded_bump_phases(
-                phase_list=phase_list,
-                provenance=provenance,
-                config=config,
-                plan_options=plan_options,
-                precommit_targets=precommit_targets,
-                tracker=tracker,
-                processed_paths=processed_paths,
-                bump_one=bump_one,
-                propagate=propagate,
-            )
-        except _ReleasePlanDrift as drift:
-            self._record_release_plan_abort(drift, tracker, all_results)
-            return False
-        except (OperationBoundaryError, ValueError) as exc:
-            all_results.append(self._path_validation_result("bump", self.path, exc))
-            tracker.note("ABORTED — unsafe bump operation")
-            return False
-        return True
-
-    def _run_guarded_bump_phases(
-        self,
-        *,
-        phase_list: list[dict[str, Any]],
-        provenance: _ReleasePlanProvenance,
-        config: dict[str, Any],
-        plan_options: dict[str, Any],
-        precommit_targets: list[_ReleaseTarget] | None,
-        tracker: "_PhaseProgress",
-        processed_paths: set[str],
-        bump_one: Callable[[str, str], str | None],
-        propagate: Callable[[str, str, int], None],
-    ) -> None:
-        """Run every phase with a structural admission immediately beforehand."""
-        for p_info in phase_list:
-            self._assert_bump_plan(
-                provenance, config, phase_list, plan_options, precommit_targets
-            )
-            self._run_bump_phase(
-                p_info=p_info,
-                tracker=tracker,
-                processed_paths=processed_paths,
-                bump_one=bump_one,
-                propagate=propagate,
-            )
-
-    def phased_bumpversion(
-        self,
-        part: str = "patch",
-        start_phase: int = 1,
-        dry_run: bool = False,
-        allow_pre_commit: bool = False,
-        config: dict | None = None,
-        single_phase: bool = False,
-        project_filter: str | None = None,
-        progress: dict | None = None,
-        force: bool = False,
-        auto_start: bool = True,
-    ) -> list[GitResult]:
-        """
-        Execute the phased bumpversion workflow: pre-commits + phased bumping.
-
-        ``auto_start`` (the default) begins the run at the lowest phase that
-        actually contains a repo with pending work (advancing ``start_phase``
-        forward, never backward) so unchanged upstream phases are skipped.
-        A change in phase *N* still cascades to every phase ``>= N``. It stands
-        down — running from the explicit ``start_phase`` — when ``project_filter``
-        or ``force`` is set, since those are explicit-targeting requests that
-        deliberately bypass change detection. Pass ``auto_start=False`` to opt
-        out and always start at ``start_phase``.
-
-        Concept:
-            CONCEPT:RM-BUMP
-        """
-        require_legacy_release_route("bump")
-        if progress is None:
-            progress = self.progress
-
-        all_results: list[GitResult] = []
-        resolved = self._resolve_maintenance_config(config)
-        if resolved is None:
-            return []
-        config = resolved
-
-        project_phases, bulk_phase_num = self._project_phase_index(config)
-
-        tracker = _PhaseProgress(state=progress, noun="bump")
-
-        if self._should_auto_start(
-            auto_start=auto_start,
-            project_filter=project_filter,
-            single_phase=single_phase,
-            force=force,
-        ):
-            detected = self._resolve_auto_start_phase(
-                config=config,
-                start_phase=start_phase,
-                operation="bump",
-                tracker=tracker,
-                noun="bump",
-                lowest_label="lowest changed phase",
-            )
-            if detected is None:
-                return all_results
-            start_phase = detected
-
-        (
-            filter_set,
-            phase_list,
-            total_projects,
-            precommit_targets,
-            plan_options,
-            provenance,
-        ) = self._prepare_bump_release_plan(
-            config=config,
-            part=part,
-            start_phase=start_phase,
-            dry_run=dry_run,
-            allow_pre_commit=allow_pre_commit,
-            single_phase=single_phase,
-            project_filter=project_filter,
-            force=force,
-            auto_start=auto_start,
-        )
-        tracker.total = total_projects
-        self._record_release_plan(progress, provenance)
-        tracker.initialize(
-            "Initializing Bumps",
-            self._bump_progress_phases(phase_list),
-        )
-
-        if not self._execute_frozen_bump_plan(
-            config=config,
-            filter_set=filter_set,
-            start_phase=start_phase,
-            part=part,
-            dry_run=dry_run,
-            allow_pre_commit=allow_pre_commit,
-            single_phase=single_phase,
-            force=force,
-            precommit_targets=precommit_targets,
-            phase_list=phase_list,
-            plan_options=plan_options,
-            provenance=provenance,
-            project_phases=project_phases,
-            bulk_phase_num=bulk_phase_num,
-            tracker=tracker,
-            all_results=all_results,
-        ):
-            return all_results
-
-        tracker.finish("Bumps Completed")
-        return all_results
-
-    @staticmethod
-    def _bump_progress_phases(
-        phase_list: list[dict[str, Any]],
-    ) -> list[tuple[str, list[str]]]:
-        """Convert exact targets to the progress display's project-name view."""
-        return [
-            (phase["name"], [name for name, _path in phase["targets"]])
-            for phase in phase_list
-        ]
-
-    maintain_projects = phased_bumpversion
-
     def worktree_hygiene(
         self,
         prune: bool = False,
@@ -7814,143 +5644,12 @@ class Git:
             base=base, stale_days=stale_days, prune_merged=prune
         )
 
-    def _maintenance_config_model(self) -> MaintenanceConfig | None:
-        """The ``maintenance`` section of the active workspace config, if any.
-
-        Prefers an already-loaded :attr:`config`; otherwise loads ``workspace.yml``
-        (``WORKSPACE_YML`` overrides the name, relative paths resolve against
-        :attr:`path`). Returns ``None`` when no maintenance config is reachable.
-        """
-        if hasattr(self, "config") and self.config and self.config.maintenance:
-            return self.config.maintenance
-
-        yml_path = os.environ.get("WORKSPACE_YML") or "workspace.yml"
-        if not os.path.isabs(yml_path):
-            yml_path = os.path.join(self.path, yml_path)
-        if not os.path.exists(yml_path):
-            return None
-        if self.load_projects_from_yaml(yml_path) and self.config:
-            return self.config.maintenance
-        return None
-
-    def _resolve_maintenance_config(self, config: object | None) -> dict | None:
-        """Strictly validate *config*, or load the manifest config in its place.
-
-        ``None`` means no maintenance configuration is reachable and the caller
-        must abort; the error is logged here so every phased workflow reports it
-        identically.
-        """
-        if config is not None:
-            return self._validated_maintenance_mapping(config)
-        config_model = self._maintenance_config_model()
-        if config_model is None:
-            logger.error("No maintenance configuration found.")
-            return None
-        return config_model.model_dump(exclude_none=True)
-
-    @staticmethod
-    def _validated_maintenance_mapping(config: object) -> dict[str, Any] | None:
-        """Validate a caller-supplied maintenance mapping without coercion."""
-        if type(config) is not dict:
-            logger.error("Maintenance configuration must be a mapping.")
-            return None
-        try:
-            model = MaintenanceConfig.model_validate(config, strict=True)
-        except ValidationError as exc:
-            logger.error("Invalid maintenance configuration: %s", exc)
-            return None
-        return model.model_dump(exclude_none=True)
-
-    def _resolve_auto_start_phase(
-        self,
-        *,
-        config: dict,
-        start_phase: int,
-        operation: Literal["bump", "push"],
-        tracker: "_PhaseProgress",
-        noun: str,
-        lowest_label: str,
-    ) -> int | None:
-        """Advance *start_phase* to the lowest phase that still has pending work.
-
-        Never moves the start phase backwards. Returns ``None`` when nothing at
-        all is pending — in which case *tracker* has already been finalized and
-        the caller should return immediately.
-        """
-        detected = self._auto_start_phase(config, operation=operation)
-        if detected is None:
-            logger.info(
-                f"Phased {noun}: no repository changes detected; nothing to {noun}."
-            )
-            tracker.nothing_to_do(f"No changes — nothing to {noun}")
-            return None
-        if detected > start_phase:
-            logger.info(
-                f"Phased {noun}: {lowest_label} is {detected}; "
-                f"starting there (skipping phases {start_phase}–{detected - 1})."
-            )
-        return max(start_phase, detected)
-
-    @staticmethod
-    def _should_auto_start(
-        *,
-        auto_start: bool,
-        project_filter: str | None,
-        single_phase: bool,
-        force: bool = False,
-    ) -> bool:
-        """Apply the same explicit-scope exclusions to bump and push discovery."""
-        return bool(
-            auto_start and project_filter is None and not single_phase and not force
-        )
-
     def _project_path_for(self, project_name: str) -> str | None:
         """Local clone path of *project_name* from the URL->path project map."""
         for url, p_path in sorted(self.project_map.items()):
             if self._release_project_name_or_empty(url) == project_name:
                 return p_path
         return None
-
-    def _validated_bulk_release_path(
-        self, project_path: str, expected_name: str
-    ) -> Path | None:
-        """Canonical direct child of the manifest's PyPI-agent category."""
-        try:
-            validated = self._validate_workspace_path(
-                project_path,
-                label="bulk release project",
-                require_directory=True,
-            )
-            category_root = self._validate_workspace_path(
-                Path(self.path) / "agent-packages" / "agents",
-                label="bulk release category",
-                require_directory=True,
-            )
-        except ValueError:
-            return None
-        if validated.parent != category_root or validated.name != expected_name:
-            return None
-        return validated
-
-    def _has_pypi_release_metadata(
-        self, project_path: str, *, expected_name: str
-    ) -> bool:
-        """Whether *project_path* declares a buildable PyPI distribution.
-
-        Phase 5 is a package-release wave, so merely having a git repository or
-        a file named ``pyproject.toml`` is insufficient. The metadata must name
-        the distribution, provide a static or dynamic version, and select a
-        PEP 517 build backend with non-empty requirements. Malformed, partial,
-        or unreadable metadata fails closed.
-        """
-        validated = self._validated_bulk_release_path(project_path, expected_name)
-        if validated is None:
-            return False
-        return bool(
-            read_release_document(
-                validated / "pyproject.toml", expected_name=expected_name
-            )
-        )
 
     @classmethod
     def _release_project_name(cls, url: str) -> str:
@@ -7964,929 +5663,6 @@ class Git:
             return cls._release_project_name(url)
         except ValueError:
             return ""
-
-    def _url_has_pypi_release_metadata(self, url: str, project_path: str) -> bool:
-        """Validate package metadata against a URL's safe repository identity."""
-        name = self._release_project_name_or_empty(url)
-        return bool(
-            name and self._has_pypi_release_metadata(project_path, expected_name=name)
-        )
-
-    def _is_bulk_release_target(self, url: str, project_path: str) -> bool:
-        """Whether a manifest entry is eligible for the Phase-5 PyPI wave."""
-        return bool(
-            self._project_categories.get(url) == ("agent-packages", "agents")
-            and self._url_has_pypi_release_metadata(url, project_path)
-        )
-
-    def _validated_bulk_release_target(
-        self, url: str, project_path: str
-    ) -> _ReleaseTarget | None:
-        """Return one eligible target with its canonical path, or ``None``."""
-        name = self._release_project_name_or_empty(url)
-        if not name or self._project_categories.get(url) != (
-            "agent-packages",
-            "agents",
-        ):
-            return None
-        validated = self._validated_bulk_release_path(project_path, name)
-        if validated is None or not read_release_document(
-            validated / "pyproject.toml", expected_name=name
-        ):
-            return None
-        return name, str(validated)
-
-    def _eligible_bulk_release_targets(self) -> list[tuple[str, str]]:
-        """Validate and deduplicate the complete eligible Phase-5 universe."""
-        targets: list[tuple[str, str]] = []
-        eligible_names: set[str] = set()
-        for url, path in sorted(self.project_map.items()):
-            target = self._validated_bulk_release_target(url, path)
-            if target is None:
-                continue
-            name, canonical_path = target
-            if name in eligible_names:
-                raise ValueError(f"duplicate Phase-5 repository basename: {name}")
-            eligible_names.add(name)
-            targets.append((name, canonical_path))
-        return sorted(targets, key=lambda target: (target[0], target[1]))
-
-    def _bulk_release_targets(
-        self, processed_projects: set[str]
-    ) -> list[tuple[str, str]]:
-        """Eligible PyPI agent repos not already claimed by an earlier phase."""
-        targets = [
-            target
-            for target in self._eligible_bulk_release_targets()
-            if target[0] not in processed_projects
-        ]
-        processed_projects.update(name for name, _path in targets)
-        return targets
-
-    def _phase_push_targets(
-        self,
-        phase: dict,
-        filter_set: set[str] | None,
-        processed_projects: set[str],
-    ) -> list[tuple[str, str]]:
-        """The (name, path) pairs one configured phase would push."""
-        return self._select_phase_targets(
-            phase,
-            filter_set=filter_set,
-            claimed=processed_projects,
-            include_bulk=bool(phase.get("bulk_push")),
-        )
-
-    def _filtered_bulk_push_targets(
-        self,
-        processed_projects: set[str],
-        filter_set: set[str] | None,
-        phase: dict[str, Any] | None = None,
-    ) -> list[tuple[str, str]]:
-        """Eligible bulk targets narrowed by the shared comma-filter grammar."""
-        return self._select_phase_targets(
-            phase or {},
-            filter_set=filter_set,
-            claimed=processed_projects,
-            include_bulk=True,
-        )
-
-    def _select_phase_targets(
-        self,
-        phase: dict[str, Any],
-        *,
-        filter_set: set[str] | None,
-        claimed: set[str],
-        include_bulk: bool,
-    ) -> list[_ReleaseTarget]:
-        """Select exact canonical targets with one deterministic policy."""
-        candidates = self._phase_target_candidates(
-            phase,
-            filter_set=filter_set,
-            claimed=claimed,
-            include_bulk=include_bulk,
-        )
-        selected = self._selected_candidate_targets(
-            candidates, phase=phase, filter_set=filter_set, claimed=claimed
-        )
-        claimed.update(name for name, _path in selected)
-        return selected
-
-    def _phase_target_candidates(
-        self,
-        phase: dict[str, Any],
-        *,
-        filter_set: set[str] | None,
-        claimed: set[str],
-        include_bulk: bool,
-    ) -> dict[str, str]:
-        """Build exact candidate identities before common narrowing."""
-        candidates = (
-            {name: path for name, path in self._eligible_bulk_release_targets()}
-            if include_bulk
-            else {}
-        )
-        for name in self._phase_named_projects(phase):
-            if self._explicit_candidate_is_selected(
-                name,
-                candidates=candidates,
-                phase=phase,
-                filter_set=filter_set,
-                claimed=claimed,
-            ):
-                explicit_name, explicit_path = self._explicit_release_target(name)
-                self._merge_release_candidate(candidates, explicit_name, explicit_path)
-        return candidates
-
-    @staticmethod
-    def _merge_release_candidate(
-        candidates: dict[str, str], name: str, path: str
-    ) -> None:
-        """Merge one explicit target only when its canonical path agrees."""
-        existing_path = candidates.get(name)
-        if existing_path is not None and existing_path != path:
-            raise ValueError(f"explicit and bulk release targets disagree for {name!r}")
-        candidates[name] = path
-
-    def _explicit_candidate_is_selected(
-        self,
-        name: str,
-        *,
-        candidates: dict[str, str],
-        phase: dict[str, Any],
-        filter_set: set[str] | None,
-        claimed: set[str],
-    ) -> bool:
-        """Whether an explicit name still needs an exact target resolution."""
-        return bool(
-            name not in claimed
-            and (filter_set is None or name in filter_set)
-            and not self._phase_excludes_name(phase, name)
-        )
-
-    def _selected_candidate_targets(
-        self,
-        candidates: dict[str, str],
-        *,
-        phase: dict[str, Any],
-        filter_set: set[str] | None,
-        claimed: set[str],
-    ) -> list[_ReleaseTarget]:
-        """Narrow exact candidates with the shared filter/exclude policy."""
-        return [
-            (name, candidates[name])
-            for name in sorted(candidates)
-            if name not in claimed
-            and (filter_set is None or name in filter_set)
-            and not self._phase_excludes_name(phase, name)
-        ]
-
-    def _validated_explicit_targets(
-        self, url: str, path: str, expected_name: str
-    ) -> tuple[_ReleaseTarget, ...]:
-        """Return the exact validated match for one manifest entry."""
-        if self._release_project_name_or_empty(url) != expected_name:
-            return ()
-        validated = self._validate_workspace_path(
-            path, label="explicit release project"
-        )
-        if validated.name != expected_name:
-            return ()
-        return ((expected_name, str(validated)),)
-
-    def _explicit_release_target(self, expected_name: str) -> _ReleaseTarget:
-        """Resolve one unambiguous manifest name to its validated canonical path."""
-        matches: list[_ReleaseTarget] = []
-        for url, path in sorted(self.project_map.items()):
-            matches.extend(self._validated_explicit_targets(url, path, expected_name))
-        if len(matches) != 1:
-            raise ValueError(
-                f"maintenance project must resolve to one canonical path: {expected_name}"
-            )
-        return matches[0]
-
-    @staticmethod
-    def _phase_named_projects(phase: dict[str, Any]) -> list[str]:
-        """Validated explicit project names declared by one phase."""
-        projects = phase.get("projects", [])
-        if not isinstance(projects, list):
-            raise ValueError("maintenance phase projects must be a list")
-        names = list(projects)
-        singular = phase.get("project")
-        if singular is not None:
-            names.append(singular)
-        if not all(isinstance(name, str) and name.strip() for name in names):
-            raise ValueError("maintenance project names must be non-empty strings")
-        return names
-
-    @staticmethod
-    def _phase_exclude_patterns(phase: dict[str, Any]) -> list[str]:
-        """Validated fnmatch exclusions declared by one phase."""
-        patterns = phase.get("exclude", []) or []
-        if not isinstance(patterns, list) or not all(
-            isinstance(pattern, str) and pattern for pattern in patterns
-        ):
-            raise ValueError("maintenance phase exclude must be a string list")
-        return patterns
-
-    @classmethod
-    def _phase_excludes_name(cls, phase: dict[str, Any], name: str) -> bool:
-        """Whether one project identity matches a phase exclusion."""
-        return any(
-            fnmatch.fnmatch(name, pattern)
-            for pattern in cls._phase_exclude_patterns(phase)
-        )
-
-    @staticmethod
-    def _claim_unique_phase_projects(names: list[str], claimed: set[str]) -> None:
-        """Reject a repeated explicit project within or across phases."""
-        for name in names:
-            if name in claimed:
-                raise ValueError(f"duplicate maintenance project name: {name}")
-            claimed.add(name)
-
-    @classmethod
-    def _ordered_release_phases(cls, config: dict) -> list[dict[str, Any]]:
-        """Validate phase identifiers and return a deterministic numeric order."""
-        phases = config.get("phases", [])
-        if not isinstance(phases, list):
-            raise ValueError("maintenance phases must be a list")
-        seen: set[int] = set()
-        claimed_projects: set[str] = set()
-        ordered: list[dict[str, Any]] = []
-        for phase in phases:
-            if not isinstance(phase, dict):
-                raise ValueError("each maintenance phase must be a mapping")
-            number = phase.get("phase")
-            if isinstance(number, bool) or not isinstance(number, int) or number < 1:
-                raise ValueError("maintenance phase numbers must be positive integers")
-            if number in seen:
-                raise ValueError(f"duplicate maintenance phase number: {number}")
-            seen.add(number)
-            cls._claim_unique_phase_projects(
-                cls._phase_named_projects(phase), claimed_projects
-            )
-            cls._phase_exclude_patterns(phase)
-            ordered.append(phase)
-        return sorted(ordered, key=lambda phase: phase["phase"])
-
-    @classmethod
-    def _selected_release_phases(
-        cls, config: dict, *, start_phase: int, single_phase: bool
-    ) -> list[dict[str, Any]]:
-        """Ordered phases at/after the start, or exactly the start phase."""
-        phases = cls._ordered_release_phases(config)
-        if single_phase:
-            return [phase for phase in phases if phase["phase"] == start_phase]
-        return [phase for phase in phases if phase["phase"] >= start_phase]
-
-    @staticmethod
-    def _drop_missing_clones(
-        targets: list[tuple[str, str]],
-    ) -> list[tuple[str, str]]:
-        """Drop declared projects whose local clone is absent.
-
-        A stale registry entry / never-cloned repo must not surface as a false
-        push failure -- mirrors the same guard in the phased bump.
-        """
-        kept: list[tuple[str, str]] = []
-        for name, path in targets:
-            if not os.path.isdir(path):
-                logger.warning(
-                    "Skipping push for %s: project directory missing (%s)", name, path
-                )
-                continue
-            kept.append((name, path))
-        return kept
-
-    def _build_push_phase_list(
-        self,
-        *,
-        config: dict,
-        start_phase: int,
-        project_filter: str | None,
-        single_phase: bool = False,
-    ) -> tuple[list[dict[str, Any]], int]:
-        """Expand the configured phases into the concrete push plan.
-
-        Returns the ordered phase records and the total number of projects
-        across them (used for the overall progress percentage).
-        """
-        processed_projects: set[str] = set()
-        phase_list: list[dict[str, Any]] = []
-        total_projects = 0
-        filter_set = self._parse_project_filter(project_filter)
-
-        for phase in self._selected_release_phases(
-            config, start_phase=start_phase, single_phase=single_phase
-        ):
-            phase_num = phase["phase"]
-
-            targets = self._phase_push_targets(phase, filter_set, processed_projects)
-            targets = self._drop_missing_clones(targets)
-            if not targets:
-                continue
-
-            phase_list.append(
-                {
-                    "phase_num": phase_num,
-                    "name": phase.get("name", f"Phase {phase_num}"),
-                    "projects_to_push": targets,
-                    "wait_minutes": float(phase.get("wait_minutes", 0)),
-                }
-            )
-            total_projects += len(targets)
-
-        return phase_list, total_projects
-
-    @staticmethod
-    def _collect_push_result(
-        future: "concurrent.futures.Future", all_results: list[GitResult]
-    ) -> tuple[str, bool]:
-        """Append one push future's outcome; return (status, pushed-anything)."""
-        try:
-            res = future.result()
-        except Exception as e:
-            all_results.append(
-                GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(message=type(e).__name__, code=1),
-                )
-            )
-            return "failed", False
-
-        all_results.append(res)
-        if res.status != "success":
-            return "failed", False
-        return "success", "Everything up-to-date" not in res.data
-
-    def _execute_push_phase(
-        self,
-        *,
-        p_info: dict[str, Any],
-        tracker: "_PhaseProgress",
-        all_results: list[GitResult],
-        before_mutation: Callable[[str, str], None] | None = None,
-        provenance: _ReleasePlanProvenance | None = None,
-        plan_assertion: Callable[[], None] | None = None,
-    ) -> bool:
-        """Push one release phase through the descriptor-boundary operation."""
-        return self._execute_push_phase_operation(
-            p_info=p_info,
-            tracker=tracker,
-            all_results=all_results,
-            before_mutation=before_mutation,
-            provenance=provenance,
-            plan_assertion=plan_assertion,
-        )
-
-    def _execute_push_phase_operation(
-        self,
-        *,
-        p_info: dict[str, Any],
-        tracker: "_PhaseProgress",
-        all_results: list[GitResult],
-        before_mutation: Callable[[str, str], None] | None = None,
-        provenance: _ReleasePlanProvenance | None = None,
-        plan_assertion: Callable[[], None] | None = None,
-    ) -> bool:
-        """Push one phase's projects in parallel; return whether anything landed."""
-        phase_name = p_info["name"]
-        projects_to_push = p_info["projects_to_push"]
-
-        tracker.begin_phase(phase_name)
-        logger.info(
-            f"Starting {phase_name} push for {len(projects_to_push)} projects..."
-        )
-
-        phase_had_pushes = False
-        try:
-            with open_directory(self._workspace_root()) as root:
-                root.assert_root_identity()
-                pinned_targets: list[PinnedDirectory] = []
-                try:
-                    with concurrent.futures.ThreadPoolExecutor(
-                        max_workers=self.threads
-                    ) as executor:
-                        future_to_proj = {}
-                        for proj_name, p_path in projects_to_push:
-                            try:
-                                validated_path = self._validated_push_phase_target(
-                                    proj_name, p_path, before_mutation
-                                )
-                                pinned = pin_existing(root, validated_path)
-                                pinned.assert_path_identity()
-                                if provenance is not None:
-                                    self._bind_release_plan_target(
-                                        provenance,
-                                        proj_name,
-                                        validated_path,
-                                        pinned,
-                                        plan_assertion=plan_assertion,
-                                    )
-                            except _ReleasePlanDrift:
-                                raise
-                            except (OperationBoundaryError, ValueError) as exc:
-                                all_results.append(
-                                    self._path_validation_result("push", p_path, exc)
-                                )
-                                tracker.note(
-                                    f"ABORTED — unsafe push target {proj_name}"
-                                )
-                                return False
-                            pinned_targets.append(pinned)
-                            tracker.begin_item(phase_name, proj_name)
-                            future = executor.submit(
-                                self.push_project,
-                                path=validated_path,
-                                _pinned=pinned,
-                            )
-                            future_to_proj[future] = proj_name
-
-                        for future in concurrent.futures.as_completed(future_to_proj):
-                            proj_name = future_to_proj[future]
-                            status_str, pushed = self._collect_push_result(
-                                future, all_results
-                            )
-                            phase_had_pushes = phase_had_pushes or pushed
-                            tracker.finish_item(phase_name, proj_name, status_str)
-                finally:
-                    for pinned in reversed(pinned_targets):
-                        pinned.close()
-        except OperationBoundaryError as exc:
-            all_results.append(self._path_validation_result("push", self.path, exc))
-            tracker.note(f"ABORTED — unsafe push phase {phase_name}")
-            return False
-
-        tracker.end_phase(phase_name)
-        return phase_had_pushes
-
-    def _validated_push_phase_target(
-        self,
-        project_name: str,
-        project_path: str,
-        before_mutation: Callable[[str, str], None] | None,
-    ) -> str:
-        """Run the plan guard, then return the exact canonical push path."""
-        if before_mutation is not None:
-            before_mutation(project_name, project_path)
-        return self._revalidate_release_target(
-            project_name,
-            project_path,
-            operation="push",
-            require_directory=True,
-        )[1]
-
-    @staticmethod
-    def _report_barrier_timeout(
-        *,
-        outcome: Any,
-        p_info: dict[str, Any],
-        next_phase_name: str,
-        tracker: "_PhaseProgress",
-        all_results: list[GitResult],
-    ) -> None:
-        """Log, record, and surface a timed-out downstream gate-readiness barrier."""
-        phase_name = p_info["name"]
-        unresolved = "; ".join(f"{f.repo_name} ({f.detail})" for f in outcome.failures)
-        logger.error(
-            "Phase %s gate-readiness barrier TIMED OUT after %.1fs "
-            "(%d attempt(s)) with %d downstream repo(s) still failing "
-            "their pre-push gate -- ABORTING the wave before %s (or "
-            "any later phase) starts: %s. Set %s=<reason> to override "
-            "(loud + audit-logged), or re-run once the failing repo(s) "
-            "pass their own gate.",
-            p_info["phase_num"],
-            outcome.waited_s,
-            outcome.attempts,
-            len(outcome.failures),
-            next_phase_name,
-            unresolved,
-            dependency_readiness.OVERRIDE_ENV_VAR,
-        )
-        tracker.note(f"ABORTED — downstream gate(s) unmet after {phase_name}")
-        all_results.append(
-            GitResult(
-                status="error",
-                data="",
-                error=GitError(
-                    message=(
-                        f"phased_push aborted after {phase_name}: "
-                        f"downstream gate-readiness barrier timed out "
-                        f"after {outcome.waited_s:.1f}s "
-                        f"({outcome.attempts} attempt(s)) still "
-                        f"failing: {unresolved}"
-                    ),
-                    code=1,
-                ),
-            )
-        )
-
-    def _settle_phase_barrier(
-        self,
-        *,
-        p_info: dict[str, Any],
-        phase_had_pushes: bool,
-        later_phases: list[dict[str, Any]],
-        tracker: "_PhaseProgress",
-        all_results: list[GitResult],
-    ) -> bool:
-        """Hold the wave until downstream repos pass their own pre-push gate.
-
-        Returns ``False`` when the barrier timed out and ``phased_push`` must
-        abort before any later phase starts.
-        """
-        wait_minutes = p_info["wait_minutes"]
-        if wait_minutes <= 0:
-            return True
-
-        phase_name = p_info["name"]
-        phase_num = p_info["phase_num"]
-        if not phase_had_pushes:
-            logger.info(
-                f"Phase {phase_num} complete. Skipping the {wait_minutes}-minute "
-                "gate-readiness ceiling because 0 commits were pushed."
-            )
-            return True
-
-        tracker.note(
-            f"Running downstream pre-push gates after {phase_name} "
-            f"(retry ceiling {wait_minutes} min)"
-        )
-        outcome = self._await_phase_dependency_readiness(
-            phase_num=phase_num,
-            phase_name=phase_name,
-            projects_to_push=p_info["projects_to_push"],
-            later_phases=later_phases,
-            wait_minutes=wait_minutes,
-        )
-        if not outcome.ok:
-            self._report_barrier_timeout(
-                outcome=outcome,
-                p_info=p_info,
-                next_phase_name=(
-                    later_phases[0]["name"] if later_phases else "the next phase"
-                ),
-                tracker=tracker,
-                all_results=all_results,
-            )
-            return False
-
-        if outcome.targets_checked:
-            logger.info(
-                "Phase %s gate-readiness barrier satisfied after %.1fs "
-                "(%d attempt(s)) for %d downstream repo(s)%s — proceeding "
-                "immediately (retry ceiling was %s min).",
-                phase_num,
-                outcome.waited_s,
-                outcome.attempts,
-                len(outcome.targets_checked),
-                " (override used)" if outcome.overridden else "",
-                wait_minutes,
-            )
-        return True
-
-    def _assert_push_plan(
-        self,
-        _project_name: str,
-        _project_path: str,
-        *,
-        provenance: _ReleasePlanProvenance,
-        config: dict[str, Any],
-        phase_list: list[dict[str, Any]],
-        plan_options: dict[str, Any],
-    ) -> None:
-        """Check push plan structure immediately before one target mutation.
-
-        Filesystem identity belongs to the descriptor-bound target assertion;
-        rescanning every checkout here would recreate the sequential
-        check-then-use boundary this operation layer is meant to remove.
-        """
-        self._assert_release_plan_structure(
-            provenance,
-            config,
-            phase_list,
-            plan_options,
-        )
-
-    def _execute_frozen_push_plan(
-        self,
-        *,
-        config: dict[str, Any],
-        phase_list: list[dict[str, Any]],
-        plan_options: dict[str, Any],
-        provenance: _ReleasePlanProvenance,
-        tracker: "_PhaseProgress",
-        all_results: list[GitResult],
-    ) -> bool:
-        """Execute all guarded push mutations for one frozen plan."""
-        before_mutation = functools.partial(
-            self._assert_push_plan,
-            provenance=provenance,
-            config=config,
-            phase_list=phase_list,
-            plan_options=plan_options,
-        )
-        plan_assertion = functools.partial(
-            self._assert_release_plan_structure,
-            provenance,
-            config,
-            phase_list,
-            plan_options,
-        )
-        try:
-            for phase_idx, p_info in enumerate(phase_list):
-                self._assert_release_plan(
-                    provenance, config, phase_list, options=plan_options
-                )
-                phase_had_pushes = self._execute_push_phase(
-                    p_info=p_info,
-                    tracker=tracker,
-                    all_results=all_results,
-                    before_mutation=before_mutation,
-                    provenance=provenance,
-                    plan_assertion=plan_assertion,
-                )
-                if not self._settle_phase_barrier(
-                    p_info=p_info,
-                    phase_had_pushes=phase_had_pushes,
-                    later_phases=phase_list[phase_idx + 1 :],
-                    tracker=tracker,
-                    all_results=all_results,
-                ):
-                    return False
-        except _ReleasePlanDrift as drift:
-            self._record_release_plan_abort(drift, tracker, all_results)
-            return False
-        return True
-
-    def phased_push(
-        self,
-        start_phase: int = 1,
-        config: dict | None = None,
-        single_phase: bool = False,
-        project_filter: str | None = None,
-        progress: dict | None = None,
-        auto_start: bool = True,
-    ) -> list[GitResult]:
-        """
-        Execute the phased git push workflow.
-
-        ``auto_start`` (the default) begins the push at the lowest phase that has
-        a repo with unpushed work (advancing ``start_phase`` forward, never
-        backward), skipping the inter-phase waits of unchanged upstream phases.
-        It stands down — pushing from the explicit ``start_phase`` — when
-        ``project_filter`` is set, since that is an explicit-targeting request.
-        Pass ``auto_start=False`` to opt out and always start at ``start_phase``.
-
-        Concept:
-            CONCEPT:RM-PUSH
-        """
-        require_legacy_release_route("push")
-        if progress is None:
-            progress = self.progress
-
-        all_results: list[GitResult] = []
-        resolved = self._resolve_maintenance_config(config)
-        if resolved is None:
-            return []
-        config = resolved
-
-        tracker = _PhaseProgress(state=progress, noun="push")
-
-        if self._should_auto_start(
-            auto_start=auto_start,
-            project_filter=project_filter,
-            single_phase=single_phase,
-        ):
-            detected = self._resolve_auto_start_phase(
-                config=config,
-                start_phase=start_phase,
-                operation="push",
-                tracker=tracker,
-                noun="push",
-                lowest_label="lowest unpushed phase",
-            )
-            if detected is None:
-                return all_results
-            start_phase = detected
-
-        phase_list, tracker.total = self._build_push_phase_list(
-            config=config,
-            start_phase=start_phase,
-            project_filter=project_filter,
-            single_phase=single_phase,
-        )
-        plan_options = {
-            "start_phase": start_phase,
-            "single_phase": single_phase,
-            "project_filter": project_filter,
-            "auto_start": auto_start,
-        }
-        provenance = self._freeze_release_plan(
-            "push", config, phase_list, options=plan_options
-        )
-        self._record_release_plan(progress, provenance)
-        tracker.initialize(
-            "Initializing Pushes",
-            [(p["name"], [n for n, _ in p["projects_to_push"]]) for p in phase_list],
-        )
-
-        if not self._execute_phased_push_plan(
-            config=config,
-            phase_list=phase_list,
-            plan_options=plan_options,
-            provenance=provenance,
-            tracker=tracker,
-            all_results=all_results,
-        ):
-            return all_results
-
-        tracker.finish("Pushes Completed")
-        return all_results
-
-    def _execute_phased_push_plan(
-        self,
-        *,
-        config: dict[str, Any],
-        phase_list: list[dict[str, Any]],
-        plan_options: dict[str, Any],
-        provenance: _ReleasePlanProvenance,
-        tracker: "_PhaseProgress",
-        all_results: list[GitResult],
-    ) -> bool:
-        """Consume the durable receipt and execute one frozen push plan."""
-        if phase_list:
-            replayed, refusal = self._begin_push_plan_receipt(provenance)
-            if refusal is not None:
-                tracker.nothing_to_do("Push refused — release plan already consumed")
-                all_results.append(refusal)
-                return False
-            if replayed is not None:
-                tracker.nothing_to_do("Pushes replayed from recorded outcome")
-                all_results.extend(replayed)
-                return False
-        completed = self._execute_frozen_push_plan(
-            config=config,
-            phase_list=phase_list,
-            plan_options=plan_options,
-            provenance=provenance,
-            tracker=tracker,
-            all_results=all_results,
-        )
-        if phase_list:
-            self._complete_push_plan_receipt(provenance, all_results)
-        return completed
-
-    def _phase_published_packages(
-        self, projects_to_push: list[tuple[str, str]]
-    ) -> dict[str, str]:
-        """Canonicalized package name -> declaring ``pyproject.toml`` path, for
-        every project actually pushed in one ``phased_push`` phase.
-
-        Reads each pushed project's OWN ``[project].name`` rather than
-        assuming the git repo name equals the published package name — a
-        assumption that would be exactly the kind of hardcoded au/eg-shaped
-        guess this gate is meant to avoid. A project with no
-        ``pyproject.toml`` (or no ``[project].name``) publishes nothing this
-        barrier can reason about and is silently skipped, not an error.
-        """
-        from packaging.utils import canonicalize_name
-
-        published: dict[str, str] = {}
-        for proj_name, p_path in projects_to_push:
-            _, validated_path = self._revalidate_release_target(
-                proj_name,
-                p_path,
-                operation="published-package inspection",
-            )
-            pyproject_path = Path(validated_path) / "pyproject.toml"
-            data = read_release_document(pyproject_path)
-            if data is None:
-                continue
-            name = data["project"]["name"]
-            published[canonicalize_name(name)] = str(pyproject_path)
-        return published
-
-    def _await_phase_dependency_readiness(
-        self,
-        *,
-        phase_num: int,
-        phase_name: str,
-        projects_to_push: list[tuple[str, str]],
-        later_phases: list[dict[str, Any]],
-        wait_minutes: float,
-        poll_interval_s: float = 30.0,
-    ) -> "dependency_readiness.GateReadinessOutcome":
-        """Layer 2 of CONCEPT:RM-DEP-READY — gate-driven phase transitions.
-
-        The owner's refinement over the original blind
-        ``time.sleep(wait_minutes * 60)`` (slow when a publish took 4 minutes,
-        silently wrong when it never landed) and over the poll-the-index
-        barrier that briefly replaced it (a second implementation of exactly
-        what the release readiness hook already checks): **a phase transition is
-        decided by RUNNING the next phase's repos' own manual release hooks.**
-        Those hooks include ``dependency-readiness`` (Layer 1, ``[manual]``),
-        which fails closed when a declared intra-fleet constraint is unsatisfiable —
-        that hook IS the oracle, so
-        this method's only job is retry/backoff/deadline orchestration around
-        calling it (:func:`repository_manager.dependency_readiness.await_gate_readiness`,
-        which in turn calls :func:`repository_manager.gates.run_gate_stage`).
-        The release hook is the single source of package-index readiness;
-        routine pushes do not query the external index.
-
-        Determines which package(s) THIS phase just published (each pushed
-        project's own declared name, via :meth:`_phase_published_packages`),
-        then narrows to the later-phase repos that actually declare a
-        constraint on one of those packages (never every later-phase repo —
-        a repo with no stake in what was just published has nothing to gate
-        on), and gate-checks exactly those. Returns immediately (``waited_s``
-        near zero) when nothing published or nothing downstream cares — the
-        old blind-sleep code always waited the full budget regardless, even
-        when nothing needed it.
-
-        ``wait_minutes`` is preserved as exactly the retry-ceiling budget it
-        always was (a per-phase ``workspace.yml`` field an operator already
-        tunes in minutes) — now enforced as the deadline for the gate-check
-        retry loop instead of a sleep duration or an index-poll deadline, so
-        existing manifests keep working unmodified with the same meaning an
-        operator would expect ("how long am I willing to wait for the next
-        phase to become pushable").
-        """
-        published = self._phase_published_packages(projects_to_push)
-        if not published:
-            logger.info(
-                "Phase %s: no pushed project declares a [project].name — "
-                "nothing for the gate-readiness barrier to check.",
-                phase_num,
-            )
-            return dependency_readiness.GateReadinessOutcome(ok=True, waited_s=0.0)
-
-        # Keep a separately built universe for the readiness cross-check.  It
-        # must include every later-phase candidate, not only the narrowed set
-        # that currently declares a constraint, or an omitted dependent repo
-        # could make the barrier return early without ever running its check.
-        targets, candidate_repos = self._phase_readiness_targets(
-            published, later_phases
-        )
-
-        if not targets:
-            logger.info(
-                "Phase %s published %s; no later-phase repo declares a "
-                "constraint on it — proceeding immediately.",
-                phase_num,
-                sorted(published),
-            )
-        else:
-            logger.info(
-                "Phase %s published %s; running the release readiness hook for %d downstream "
-                "repo(s) (%s), retrying every %.0fs up to a %.0f-minute ceiling, "
-                "abort-and-never-silently-advance if still failing.",
-                phase_num,
-                sorted(published),
-                len(targets),
-                ", ".join(name for name, _ in targets.values()),
-                poll_interval_s,
-                wait_minutes,
-            )
-        return dependency_readiness.await_gate_readiness(
-            list(targets.values()),
-            wait_minutes=wait_minutes,
-            poll_interval_s=poll_interval_s,
-            audit_repo_path=self.path,
-            published_packages=set(published),
-            candidate_repos=candidate_repos,
-        )
-
-    def _phase_readiness_targets(
-        self,
-        published: dict[str, str],
-        later_phases: list[dict[str, Any]],
-    ) -> tuple[dict[str, _ReleaseTarget], list[_ReleaseTarget]]:
-        """Build both the complete candidate universe and narrowed gate targets."""
-        targets: dict[str, _ReleaseTarget] = {}
-        candidate_repos: list[_ReleaseTarget] = []
-        candidate_paths: set[str] = set()
-        for later in later_phases:
-            for proj_name, p_path in later["projects_to_push"]:
-                _, validated_path = self._revalidate_release_target(
-                    proj_name,
-                    p_path,
-                    operation="gate-readiness candidate",
-                    require_directory=True,
-                )
-                if validated_path in candidate_paths:
-                    continue
-                candidate = (proj_name, validated_path)
-                candidate_repos.append(candidate)
-                candidate_paths.add(validated_path)
-                constraints = dependency_readiness.declared_fleet_constraints(
-                    validated_path, fleet_packages=set(published)
-                )
-                if constraints:
-                    targets[validated_path] = candidate
-        return targets, candidate_repos
 
     def load_projects_from_yaml(self, yaml_path: str) -> bool:
         """
@@ -8954,7 +5730,7 @@ class Git:
 
         except Exception as e:
             # Log the message, not just the type. Logging `error_type` alone made a
-            # real failure invisible: a phased push resolved 0 repos and exited 0
+            # real failure invisible: a bulk push resolved 0 repos and exited 0
             # ("nothing to push") because this loader had failed with a bare
             # `ValueError`, and the cause -- an unexpanded `${...}` placeholder in
             # the manifest -- was discarded here. A summary that says "Total: 0"

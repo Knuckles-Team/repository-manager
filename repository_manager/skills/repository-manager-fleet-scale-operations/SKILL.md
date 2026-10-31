@@ -14,7 +14,7 @@ description: >-
 license: MIT
 tags: [repository-manager, git, worktree, fleet, concurrency, capacity, audit]
 metadata:
-  author: Genius
+  author: Knuckles-Team
   version: '1.0.0'
 ---
 # Repository Manager — Fleet-Scale Operations
@@ -62,7 +62,7 @@ Two corollaries:
 - **Serialize the LEASE-class heavies.** `uv sync`/`uv lock`,
   `pre-commit --all-files`, and any venv swap are already LEASE-class *because*
   of this. Run them through the lease and let contenders defer:
-  `agent-connector-sdk lane lease --resource dependency-lock --operation relock -- uv lock`.
+  `scion-sdk lane lease --resource dependency-lock --operation relock -- uv lock`.
   Exit **75** = another lane holds it.
 - **Prune build artifacts at verify time, not at the end.** A shared cargo target
   dir has already hit `ENOSPC` mid-wave. Each lane builds into
@@ -72,7 +72,7 @@ Two corollaries:
 
 ```bash
 # one branch name across every workspace repo (or a named subset)
-rm_worktree_bulk_add(branch="lane/<wave>-<name>", repos="agent-connector-sdk,epistemic-graph")
+rm_worktree_bulk_add(branch="lane/<wave>-<name>", repos="scion-sdk,epistemic-graph")
 ```
 
 Then, per repository, adopt the isolation and prove it:
@@ -140,7 +140,7 @@ partitions all resolve through that repository's own `--git-common-dir`. So this
 is safe:
 
 ```bash
-repository-manager --merge-queue run --repo-path /path/to/agent-connector-sdk &
+repository-manager --merge-queue run --repo-path /path/to/scion-sdk &
 repository-manager --merge-queue run --repo-path /path/to/epistemic-graph &
 ```
 
@@ -169,7 +169,7 @@ destroyed ~20 minutes of a lane's work. Route every tree-mutating verb through
 the guard:
 
 ```bash
-agent-connector-sdk lane guard --reset <path> --owner <you>
+scion-sdk lane guard --reset <path> --owner <you>
 ```
 
 It refuses any tree holding uncommitted work you do not own. Skip that tree;

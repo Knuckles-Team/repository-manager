@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_connector_sdk.config import setting
+from scion_sdk.config import setting
 
 from repository_manager.mcp_tools.context import from_server
 
@@ -50,6 +50,7 @@ def register_project_management_tools(mcp: Any) -> None:
     from repository_manager.mcp_tools.lane import register_lane_tools
     from repository_manager.mcp_tools.merge_queue import register_merge_queue_tools
     from repository_manager.mcp_tools.projects import register_project_tools
+    from repository_manager.mcp_tools.rollout import register_rollout_tools
     from repository_manager.mcp_tools.worktree import register_worktree_tools
 
     context = from_server()
@@ -66,6 +67,8 @@ def register_project_management_tools(mcp: Any) -> None:
         register_docs_readiness_tools(mcp, context=context)
     if setting("GATESTOOL", True):
         register_gates_tools(mcp, context=context)
+    if setting("ROLLOUTTOOL", True):
+        register_rollout_tools(mcp, context=context)
 
 
 def register_development_surfaces_tools(mcp: Any) -> None:

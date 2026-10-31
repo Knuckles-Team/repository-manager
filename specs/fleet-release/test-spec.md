@@ -9,7 +9,7 @@
 | 05 | Drive Git, CLI, and MCP adapters against the same fake plan. | Same decision code, plan digest, and stage order across routes. |
 | 06 | Fail between artifact publish and downstream readiness, then retry. | Partial receipt and safe reconciliation; no duplicate tag or false success. |
 
-Run focused tests in `tests/test_workspace_release_dag.py`, `tests/test_workspace_release_plan.py`, `tests/test_phase_direction.py`, `tests/test_phased_push.py`, and `tests/test_phased_release_scope.py`. Add integration tests with temporary Git repositories and fake index/forge adapters. A contributor-controlled live rehearsal is supplementary, never a prerequisite to run ordinary PR checks. Preserve command output or CI URLs and exact commit SHA in the acceptance record.
+Run focused tests in `tests/test_workspace_release_dag.py`, `tests/test_workspace_release_plan.py`, and `tests/test_phase_direction.py`. Add integration tests with temporary Git repositories and fake index/forge adapters. A contributor-controlled live rehearsal is supplementary, never a prerequisite to run ordinary PR checks. Preserve command output or CI URLs and exact commit SHA in the acceptance record.
 
 Run `pre-commit run --all-files` where feasible, the repository's CCCC staged complexity gate (no new cyclomatic >10 or cognitive >15 function), and applicable repository quality checks. If jscpd or Dupehound is not configured here, record that gap and use focused duplication review rather than claiming those tools passed. KISS means one graph builder and one route admission path, no duplicated release authority.
 
@@ -26,3 +26,7 @@ evidence of dependency census completeness, release activation, or RM-RELEASE-R0
 ## Package tag admission
 
 RM-RELEASE-R008: tests/test_package_publication_workflow.py checks version tags versus branch pushes, independent main/PR CI, required tag admission, and delegation to the canonical exact-source release guard. Wrapper tests do not claim live PyPI publication.
+
+## Dependency rollout
+
+RM-RELEASE-R009: `tests/test_rollout.py` drives the rollout engine with a fake forge runner (git, gh, uv, pipelines-hook, pre-commit) and no network. It proves a dry-run writes no ledger and opens no PR; apply opens exactly one auto-merging (`--auto --rebase`) PR per repository with the patch bump, CHANGELOG and the regenerated `specs/*/status.json` staged by explicit path; a re-run is idempotent (no duplicate PR, no second relock or bump); an existing open PR is adopted; a pushed branch without a PR is opened without re-bumping; a lock that resolves below the floor fails the row and a re-run retries it; a floor already met is skipped; status names failing checks; release tags only after merge with main's floor met, skips an existing tag, and never re-tags; a `claude` commit identity is refused; the post-bump `uv lock` runs after the bump, hook-modified files are staged, and the default manifest path is the arbora runtime copy.

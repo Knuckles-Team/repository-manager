@@ -5,9 +5,9 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from agent_connector_sdk.mcp.action_dispatch import resolve_action
 from fastmcp import Context, FastMCP
 from pydantic import Field
+from scion_sdk.mcp.action_dispatch import resolve_action
 
 from repository_manager.development.fleet_release_gate import (
     require_legacy_release_route,
@@ -27,8 +27,7 @@ def _normalize_rm_projects_flags(
     summary: bool,
     force_revalidate: bool,
     commit_code: bool,
-    prune_worktrees: bool,
-) -> tuple[bool, bool, bool, bool, bool]:
+) -> tuple[bool, bool, bool, bool]:
     """Coerce each MCP-boundary flag to its documented default when a caller
     passed a non-bool value. Extracted verbatim from ``rm_projects``'s
     preamble — same defaults, same order.
@@ -41,9 +40,7 @@ def _normalize_rm_projects_flags(
         force_revalidate = False
     if not isinstance(commit_code, bool):
         commit_code = False
-    if not isinstance(prune_worktrees, bool):
-        prune_worktrees = False
-    return failed_only, summary, force_revalidate, commit_code, prune_worktrees
+    return failed_only, summary, force_revalidate, commit_code
 
 
 def _resolve_failed_only_repositories(
@@ -288,115 +285,6 @@ def _submit_commit_code_job(
     return bump_dependencies
 
 
-def _submit_bump_job(
-    adapter_context: McpToolContext,
-    git: Any,
-    bump_dependencies: list[str],
-    auto_bump: bool,
-    bump_part: str,
-    result_payload: dict[str, Any],
-) -> list[str]:
-    """Submit the auto_bump job when requested, and return the dependency
-    list the push should wait on (the bump job alone when submitted, else
-    the same ``bump_dependencies`` unchanged). Extracted verbatim from
-    ``rm_projects``.
-    """
-    if auto_bump:
-        progress = {
-            "current_phase": "Waiting for validation",
-            "progress": 0,
-            "phases": {},
-        }
-        bump_result = adapter_context.submit_job(
-            "maintain",
-            adapter_context.wait_for_jobs_and_run,
-            bump_dependencies,
-            True,
-            git.maintain_projects,
-            part=bump_part,
-            start_phase=1,
-            auto_start=True,
-            dry_run=False,
-            progress=progress,
-            _extra_job_data={"progress_detail": progress},
-        )
-        result_payload["bump_job_id"] = bump_result["job_id"]
-        return [bump_result["job_id"]]
-    return bump_dependencies
-
-
-def _submit_push_job(
-    adapter_context: McpToolContext,
-    git: Any,
-    push_dependencies: list[str],
-    auto_push: bool,
-    result_payload: dict[str, Any],
-) -> None:
-    """Submit the auto_push job when requested. Extracted verbatim from
-    ``rm_projects``.
-    """
-    if auto_push:
-        progress = {
-            "current_phase": "Waiting for dependencies",
-            "progress": 0,
-            "phases": {},
-        }
-        push_result = adapter_context.submit_job(
-            "phased_push",
-            adapter_context.wait_for_jobs_and_run,
-            push_dependencies,
-            True,
-            git.phased_push,
-            start_phase=1,
-            auto_start=True,
-            project_filter=None,
-            progress=progress,
-            _extra_job_data={"progress_detail": progress},
-        )
-        result_payload["push_job_id"] = push_result["job_id"]
-
-
-def _resolve_hygiene_dependencies(
-    result_payload: dict[str, Any], bump_dependencies: list[str]
-) -> list[str]:
-    """Pick worktree_hygiene's dependency: the push job if one was
-    submitted, else the bump job if one was submitted, else
-    ``bump_dependencies`` unchanged. Extracted verbatim from ``rm_projects``.
-    """
-    if "push_job_id" in result_payload:
-        return [result_payload["push_job_id"]]
-    if "bump_job_id" in result_payload:
-        return [result_payload["bump_job_id"]]
-    return bump_dependencies
-
-
-def _submit_worktree_hygiene_job(
-    adapter_context: McpToolContext,
-    git: Any,
-    auto_bump: bool,
-    auto_push: bool,
-    bump_dependencies: list[str],
-    prune_worktrees: bool,
-    result_payload: dict[str, Any],
-) -> None:
-    """Submit the post-release worktree_hygiene audit when a release step
-    ran. Extracted verbatim from ``rm_projects``.
-    """
-    if auto_bump or auto_push:
-        hygiene_dependencies = _resolve_hygiene_dependencies(
-            result_payload, bump_dependencies
-        )
-        hygiene_result = adapter_context.submit_job(
-            "worktree_hygiene",
-            adapter_context.wait_for_jobs_and_run,
-            hygiene_dependencies,
-            False,
-            git.worktree_hygiene,
-            prune=prune_worktrees,
-        )
-        result_payload["worktree_hygiene_job_id"] = hygiene_result["job_id"]
-
-
 def _build_validate_terse_summary(result_payload: dict[str, Any]) -> dict[str, Any]:
     """Build the compact roll-up returned when ``summary=True``. Extracted
     verbatim from ``rm_projects``.
@@ -408,12 +296,7 @@ def _build_validate_terse_summary(result_payload: dict[str, Any]) -> dict[str, A
         "completed_count": len(result_payload["completed"]),
         "queued_projects": list(result_payload["queued"].keys()),
     }
-    for key in (
-        "commit_job_id",
-        "bump_job_id",
-        "push_job_id",
-        "worktree_hygiene_job_id",
-    ):
+    for key in ("commit_job_id",):
         if key in result_payload:
             terse[key] = result_payload[key]
     terse["message"] = (
@@ -451,46 +334,12 @@ def register_project_tools(
             default=None,
             description="Comma-separated list of specific repositories to target.",
         ),
-        auto_bump: bool = Field(
-            default=False,
-            description=(
-                "Automatically run phased_bumpversion if validation passes. "
-                "Begins at the lowest phase that has repository changes (and "
-                "cascades to every later phase), skipping unchanged upstream "
-                "phases."
-            ),
-        ),
-        auto_push: bool = Field(
-            default=False,
-            description=(
-                "Automatically run phased_push if validation passes. Begins at "
-                "the lowest phase with unpushed work, skipping the inter-phase "
-                "waits of unchanged upstream phases."
-            ),
-        ),
-        bump_part: str = Field(
-            default="minor",
-            description="The part of the version to bump (e.g. minor, patch, major) if auto_bump is used.",
-        ),
-        prune_worktrees: bool = Field(
-            default=False,
-            description=(
-                "For 'validate' with auto_bump/auto_push: after the release, prune "
-                "session worktrees already merged into main (and dangling admin "
-                "pointers). DESTRUCTIVE. Default False — the release still runs "
-                "the audit and REPORTS the safe_to_prune/do_not_disturb "
-                "classification under 'worktree_hygiene_job_id' WITHOUT deleting "
-                "anything. Never touches active/in-flight or orphaned worktrees."
-            ),
-        ),
         commit_code: bool = Field(
             default=False,
             description=(
-                "For 'validate': after validation passes and BEFORE the version "
-                "bump, concurrently stage (git add -A), run pre-commit, and commit "
-                "feature code across ALL targeted repos. Ensures untracked/new "
-                "files are committed (not left for the push safety net). The bump "
-                "then waits on this step. Use with commit_message."
+                "For 'validate': after validation passes, concurrently stage "
+                "(git add -A), run pre-commit, and commit feature code across ALL "
+                "targeted repos. Use with commit_message."
             ),
         ),
         commit_message: str | None = Field(
@@ -534,9 +383,9 @@ def register_project_tools(
         """
         git = adapter_context.get_git_instance(threads=threads)
         del output_dir, generate_report, ctx
-        failed_only, summary, force_revalidate, commit_code, prune_worktrees = (
+        failed_only, summary, force_revalidate, commit_code = (
             _normalize_rm_projects_flags(
-                failed_only, summary, force_revalidate, commit_code, prune_worktrees
+                failed_only, summary, force_revalidate, commit_code
             )
         )
 
@@ -576,33 +425,13 @@ def register_project_tools(
             _submit_missing_validate_jobs(adapter_context, git, targets, result_payload)
             validation_job_ids = _collect_validation_job_ids(targets, result_payload)
 
-            bump_dependencies = _submit_commit_code_job(
+            _submit_commit_code_job(
                 adapter_context,
                 git,
                 targets,
                 validation_job_ids,
                 commit_code,
                 commit_message,
-                result_payload,
-            )
-            push_dependencies = _submit_bump_job(
-                adapter_context,
-                git,
-                bump_dependencies,
-                auto_bump,
-                bump_part,
-                result_payload,
-            )
-            _submit_push_job(
-                adapter_context, git, push_dependencies, auto_push, result_payload
-            )
-            _submit_worktree_hygiene_job(
-                adapter_context,
-                git,
-                auto_bump,
-                auto_push,
-                bump_dependencies,
-                prune_worktrees,
                 result_payload,
             )
 

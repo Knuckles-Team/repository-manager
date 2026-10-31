@@ -3,7 +3,7 @@
 The repository manager receives paths from a mutable manifest and from callers.
 Checking a path and later passing its spelling to ``git`` leaves a time-of-check
 to time-of-use window: a directory component can become a symlink after the
-check, or a checkout can be replaced while a phased plan is in flight.  This
+check, or a checkout can be replaced while a release plan is in flight.  This
 module keeps the operation boundary deliberately small:
 
 * every existing component is opened with ``O_NOFOLLOW``;
@@ -23,13 +23,13 @@ import contextlib
 import dataclasses
 import fnmatch
 import hashlib
-import json
 import os
 import re
 import stat
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+
+from repository_manager import portable_fs as pfs
 
 _PINNED_GIT_ENVIRONMENT = frozenset(
     {
@@ -127,7 +127,7 @@ def _mount_id_for_path(path: Path) -> int | None:
         return _mount_id_for_fd(descriptor)
     finally:
         with contextlib.suppress(OSError):
-            os.close(descriptor)
+            pfs.close(descriptor)
 
 
 def _mount_id_for_fd(fd: int) -> int | None:
@@ -168,7 +168,9 @@ def _directory_flags() -> int:
 
 def _read_flags() -> int:
     """Return read-only no-follow flags for an anchored regular file."""
-    return os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    return pfs.file_flags(
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    )
 
 
 def _path_components(path: Path) -> tuple[str, ...]:
@@ -178,13 +180,14 @@ def _path_components(path: Path) -> tuple[str, ...]:
     absolute = Path(os.path.abspath(path))
     if not absolute.is_absolute():
         raise OperationBoundaryError("operation path must be absolute")
-    return tuple(part for part in absolute.parts if part not in ("", os.sep))
+    # ``parts[0]`` is the anchor ("/" or "C:\\"); the root handle covers it.
+    return tuple(absolute.parts[1:])
 
 
 def _open_directory_at(parent_fd: int, component: str) -> int:
     """Open one directory component relative to an already-open directory."""
     try:
-        return os.open(component, _directory_flags(), dir_fd=parent_fd)
+        return pfs.open_directory(component, parent_fd)
     except OSError as exc:
         entry = _stat_at(parent_fd, component)
         if entry is not None and stat.S_ISLNK(entry.st_mode):
@@ -199,7 +202,7 @@ def _open_directory_at(parent_fd: int, component: str) -> int:
 def _stat_at(parent_fd: int, component: str) -> os.stat_result | None:
     """Stat one directory entry without following a final symlink."""
     try:
-        return os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+        return pfs.stat_entry(component, dir_fd=parent_fd)
     except FileNotFoundError:
         return None
     except OSError as exc:
@@ -255,13 +258,13 @@ class PinnedDirectory:
         """A child-visible path anchored to the open directory descriptor."""
         if self._closed:
             raise OperationBoundaryError("operation descriptor is already closed")
-        return f"/proc/self/fd/{self.fd}"
+        return pfs.fd_path(self.fd)
 
     @property
     def destination_path(self) -> str:
         """A clone destination anchored to the reserved target descriptor."""
         if self.target_fd is not None:
-            return f"/proc/self/fd/{self.target_fd}"
+            return pfs.fd_path(self.target_fd)
         if self.leaf is None:
             raise OperationBoundaryError("clone destination has no final component")
         return f"{self.proc_path}/{self.leaf}"
@@ -274,7 +277,7 @@ class PinnedDirectory:
         self._append_unique_descriptors(
             values, (*self.git_owned_fds, *self.common_owned_fds)
         )
-        return tuple(values)
+        return pfs.child_pass_fds(tuple(values))
 
     @staticmethod
     def _append_unique_descriptors(
@@ -297,7 +300,7 @@ class PinnedDirectory:
             return argv
         return [
             argv[0],
-            f"--git-dir=/proc/self/fd/{self.git_fd}",
+            f"--git-dir={pfs.fd_path(self.git_fd)}",
             f"--work-tree={self.proc_path}",
             *argv[1:],
         ]
@@ -458,7 +461,7 @@ class PinnedDirectory:
         finally:
             for descriptor in reversed(candidate_owned):
                 with contextlib.suppress(OSError):
-                    os.close(descriptor)
+                    pfs.close(descriptor)
 
     def clear_boundary_assertion(self) -> None:
         """Stop plan checks after an operation intentionally changes metadata."""
@@ -487,7 +490,7 @@ class PinnedDirectory:
         if _stat_at(self.fd, self.leaf) is not None:
             raise OperationBoundaryError("clone destination already exists")
         try:
-            os.mkdir(self.leaf, mode=0o755, dir_fd=self.fd)
+            pfs.mkdir(self.leaf, 0o755, dir_fd=self.fd)
         except FileExistsError as exc:
             raise OperationBoundaryError(
                 "clone destination appeared during reservation"
@@ -534,13 +537,13 @@ class PinnedDirectory:
             if descriptor in excluded:
                 continue
             with contextlib.suppress(OSError):
-                os.close(descriptor)
+                pfs.close(descriptor)
 
 
 def _identity_from_fd(fd: int, label: str) -> DirectoryIdentity:
     """Capture a directory fd identity and require an actual directory."""
     try:
-        result = os.fstat(fd)
+        result = pfs.fstat(fd)
     except OSError as exc:
         raise OperationBoundaryError(f"cannot inspect {label} descriptor") from exc
     if not stat.S_ISDIR(result.st_mode):
@@ -638,7 +641,7 @@ def open_directory(path: str | Path, *, create: bool = False) -> PinnedDirectory
     components = _path_components(candidate)
     absolute = Path(os.path.abspath(candidate))
     try:
-        root_fd = os.open(os.sep, _directory_flags())
+        root_fd = pfs.open_root()
     except OSError as exc:
         raise OperationBoundaryError("cannot open filesystem root") from exc
 
@@ -658,14 +661,14 @@ def open_directory(path: str | Path, *, create: bool = False) -> PinnedDirectory
 def _open_or_create_directory_at(parent_fd: int, component: str, create: bool) -> int:
     """Open one component, creating it relative to the pinned parent if needed."""
     try:
-        return os.open(component, _directory_flags(), dir_fd=parent_fd)
+        return pfs.open_directory(component, parent_fd)
     except FileNotFoundError:
         if not create:
             raise OperationBoundaryError(
                 f"directory component {component!r} does not exist"
             ) from None
         try:
-            os.mkdir(component, mode=0o755, dir_fd=parent_fd)
+            pfs.mkdir(component, 0o755, dir_fd=parent_fd)
         except FileExistsError:
             # A concurrent creator won the race; reopening with O_NOFOLLOW
             # still rejects a symlink replacement.
@@ -690,7 +693,7 @@ def _close_descriptors(descriptors: list[int] | tuple[int, ...]) -> None:
     """Close a descriptor collection while preserving the original failure."""
     for descriptor in reversed(descriptors):
         with contextlib.suppress(OSError):
-            os.close(descriptor)
+            pfs.close(descriptor)
 
 
 def _relative_components(root: PinnedDirectory, target: Path) -> tuple[str, ...]:
@@ -716,7 +719,7 @@ def pin_existing(root: PinnedDirectory, target: str | Path) -> PinnedDirectory:
     """Pin an existing target directory beneath ``root``."""
     components = _relative_components(root, Path(target))
     if not components:
-        duplicate = os.dup(root.fd)
+        duplicate = pfs.dup(root.fd)
         return PinnedDirectory(
             path=root.path,
             fd=duplicate,
@@ -747,7 +750,7 @@ def pin_existing(root: PinnedDirectory, target: str | Path) -> PinnedDirectory:
     except Exception:
         for descriptor in reversed(owned):
             with contextlib.suppress(OSError):
-                os.close(descriptor)
+                pfs.close(descriptor)
         raise
 
 
@@ -796,14 +799,14 @@ def pin_creation(
     try:
         for component in parent_components:
             try:
-                child_fd = os.open(component, _directory_flags(), dir_fd=current_fd)
+                child_fd = pfs.open_directory(component, current_fd)
             except FileNotFoundError:
                 if not create_parents:
                     raise OperationBoundaryError(
                         f"parent component {component!r} does not exist"
                     ) from None
                 try:
-                    os.mkdir(component, mode=0o755, dir_fd=current_fd)
+                    pfs.mkdir(component, 0o755, dir_fd=current_fd)
                 except FileExistsError:
                     pass
                 child_fd = _open_directory_at(current_fd, component)
@@ -827,7 +830,7 @@ def pin_creation(
     except Exception:
         for descriptor in reversed(owned):
             with contextlib.suppress(OSError):
-                os.close(descriptor)
+                pfs.close(descriptor)
         raise
 
 
@@ -854,19 +857,19 @@ def path_exists(root: PinnedDirectory, target: str | Path) -> bool:
     finally:
         for descriptor in reversed(descriptors):
             with contextlib.suppress(OSError):
-                os.close(descriptor)
+                pfs.close(descriptor)
 
 
 def read_at(directory_fd: int, name: str) -> bytes | None:
     """Read a regular file relative to a pinned directory without links."""
     try:
-        fd = os.open(name, _read_flags(), dir_fd=directory_fd)
+        fd = pfs.open_entry(name, _read_flags(), dir_fd=directory_fd)
     except FileNotFoundError:
         return None
     except OSError as exc:
         raise OperationBoundaryError(f"cannot read {name!r} safely") from exc
     try:
-        result = os.fstat(fd)
+        result = pfs.fstat(fd)
         if not stat.S_ISREG(result.st_mode):
             raise OperationBoundaryError(f"{name!r} is not a regular file")
         chunks: list[bytes] = []
@@ -877,7 +880,7 @@ def read_at(directory_fd: int, name: str) -> bytes | None:
             chunks.append(chunk)
         return b"".join(chunks)
     finally:
-        os.close(fd)
+        pfs.close(fd)
 
 
 def write_at(directory_fd: int, name: str, value: bytes, *, mode: int = 0o644) -> None:
@@ -906,7 +909,7 @@ def write_at(directory_fd: int, name: str, value: bytes, *, mode: int = 0o644) -
         _write_all(fd, value, name)
         os.fsync(fd)
     finally:
-        os.close(fd)
+        pfs.close(fd)
 
 
 def _writable_entry(directory_fd: int, name: str) -> os.stat_result | None:
@@ -924,14 +927,14 @@ def _writable_entry(directory_fd: int, name: str) -> os.stat_result | None:
 def _open_write_entry(directory_fd: int, name: str, flags: int, mode: int) -> int:
     """Open one regular entry with no-follow and return its descriptor."""
     try:
-        return os.open(name, flags, mode, dir_fd=directory_fd)
+        return pfs.open_entry(name, flags, mode, dir_fd=directory_fd)
     except OSError as exc:
         raise OperationBoundaryError(f"cannot write {name!r} safely") from exc
 
 
 def _assert_writable_fd(fd: int, existing: os.stat_result | None, name: str) -> None:
     """Prove the opened descriptor is the entry validated immediately before it."""
-    actual = os.fstat(fd)
+    actual = pfs.fstat(fd)
     if not stat.S_ISREG(actual.st_mode) or actual.st_nlink != 1:
         raise OperationBoundaryError(f"{name!r} changed before it was written")
     if existing is not None and (
@@ -988,7 +991,7 @@ def _open_relative_directory(
                 continue
             name = ".." if component == ".." else component
             try:
-                child_fd = os.open(name, _directory_flags(), dir_fd=current_fd)
+                child_fd = pfs.open_directory(name, current_fd)
             except OSError as exc:
                 raise OperationBoundaryError(
                     f"cannot open {label} metadata directory safely"
@@ -999,7 +1002,7 @@ def _open_relative_directory(
     except Exception:
         for descriptor in reversed(owned):
             with contextlib.suppress(OSError):
-                os.close(descriptor)
+                pfs.close(descriptor)
         raise
 
 
@@ -1124,13 +1127,13 @@ def _config_entry_snapshot(
         return identity, hashlib.sha256(value).hexdigest(), value
     finally:
         with contextlib.suppress(OSError):
-            os.close(descriptor)
+            pfs.close(descriptor)
 
 
 def _open_config_entry(directory_fd: int) -> int | None:
     """Open common Git config without following its final entry."""
     try:
-        return os.open("config", _read_flags(), dir_fd=directory_fd)
+        return pfs.open_entry("config", _read_flags(), dir_fd=directory_fd)
     except FileNotFoundError:
         return None
     except OSError as exc:
@@ -1152,7 +1155,7 @@ def _read_stable_config(descriptor: int) -> tuple[FileIdentity, bytes]:
 
 def _regular_file_identity(descriptor: int, mount_id: int | None) -> FileIdentity:
     """Capture validated regular-file metadata from one open descriptor."""
-    result = os.fstat(descriptor)
+    result = pfs.fstat(descriptor)
     if not stat.S_ISREG(result.st_mode) or result.st_nlink != 1:
         raise OperationBoundaryError("git common config is not a regular file")
     return FileIdentity.from_stat(result, mount_id)
@@ -1410,233 +1413,12 @@ def _assert_entry_identity(
         raise OperationBoundaryError(f"{label} metadata entry changed during admission")
 
 
-def _remote_origin_values(value: bytes | None, key: str) -> tuple[str, ...]:
-    """Read every origin remote value for ``key`` across repeated sections."""
-    return tuple(
-        entry_value
-        for section, subsection, entry_key, entry_value in _git_config_entries(value)
-        if section == "remote" and subsection == "origin" and entry_key == key
-    )
-
-
-def _remote_origin_value(value: bytes | None, key: str) -> str | None:
-    """Read the first origin remote value for ``key`` from Git config."""
-    values = _remote_origin_values(value, key)
-    return values[0] if values else None
-
-
-def _origin_from_git_config(value: bytes | None) -> str | None:
-    """Read the first ``remote \"origin\"`` fetch URL from Git config."""
-    return _remote_origin_value(value, "url")
-
-
-def _push_origin_from_git_config(value: bytes | None) -> str | None:
-    """Read the first ``remote \"origin\"`` push URL from Git config."""
-    return _remote_origin_value(value, "pushurl")
-
-
-def _metadata_snapshot(
-    checkout: PinnedDirectory,
-    git_entry: os.stat_result | None,
-) -> dict[str, Any] | None:
-    """Capture exact checkout metadata while its directory fd is pinned."""
-    if git_entry is None:
-        return None
-    entry_identity = _identity_for_entry(git_entry, checkout.fd)
-    if stat.S_ISLNK(git_entry.st_mode):
-        raise OperationBoundaryError("checkout .git entry is a symlink")
-    git_fd, owned, metadata_path = _metadata_directory(
-        checkout.fd,
-        git_entry,
-        str(checkout.path),
-        root_fd=checkout.root_fd,
-        root_path=checkout.root_path,
-        checkout_path=checkout.path,
-    )
-    try:
-        git_identity = _identity_from_fd(git_fd, "git worktree")
-        common_fd, common_owned, _common_path, _common_pointer_digest = (
-            _common_metadata_directory(
-                git_fd,
-                metadata_path,
-                checkout.root_fd,
-                checkout.root_path,
-                str(checkout.path),
-            )
-        )
-        try:
-            common_identity = _identity_from_fd(common_fd, "git common")
-            config_identity, config_digest, config = _config_entry_snapshot(common_fd)
-            _audit_local_git_config(config)
-            _reject_worktree_config(git_fd)
-            head = read_at(git_fd, "HEAD")
-            return {
-                "entry": entry_identity.as_dict(),
-                "worktree": git_identity.as_dict(),
-                "common": common_identity.as_dict(),
-                "config_digest": config_digest,
-                "config_identity": (
-                    config_identity.as_dict() if config_identity is not None else None
-                ),
-                "head_digest": _hash_bytes(head),
-                "origin": _origin_from_git_config(config),
-                "push_origin": _push_origin_from_git_config(config),
-            }
-        finally:
-            for descriptor in reversed(common_owned):
-                with contextlib.suppress(OSError):
-                    os.close(descriptor)
-    finally:
-        for descriptor in reversed(owned):
-            with contextlib.suppress(OSError):
-                os.close(descriptor)
-
-
-def snapshot_pinned_checkout(checkout: PinnedDirectory) -> dict[str, Any]:
-    """Capture identity and Git metadata from one pinned checkout."""
-    checkout.assert_path_identity()
-    checkout._ensure_git_metadata()
-    git_entry = _stat_at(checkout.fd, ".git")
-    return {
-        "path": str(checkout.path),
-        "checkout": checkout.identity.as_dict(),
-        "git": _metadata_snapshot(checkout, git_entry),
-    }
-
-
-def snapshot_workspace(
-    root_path: str | Path,
-    projects: list[tuple[str, str]],
-) -> dict[str, Any]:
-    """Snapshot root and exact project paths for an immutable release plan."""
-    with open_directory(root_path) as root:
-        root.assert_root_identity()
-        snapshots: list[dict[str, Any]] = []
-        for url, raw_path in projects:
-            raw_target = Path(raw_path).expanduser()
-            target = Path(os.path.abspath(raw_target))
-            if not path_exists(root, raw_target):
-                snapshots.append(
-                    {
-                        "url": str(url),
-                        "path": str(target),
-                        "exists": False,
-                        "checkout": None,
-                        "git": None,
-                    }
-                )
-                continue
-            with pin_existing(root, raw_target) as checkout:
-                snapshot = snapshot_pinned_checkout(checkout)
-                snapshots.append(
-                    {
-                        "url": str(url),
-                        "path": snapshot["path"],
-                        "exists": True,
-                        "checkout": snapshot["checkout"],
-                        "git": snapshot["git"],
-                    }
-                )
-        return {
-            "root": root.identity.as_dict(),
-            "projects": snapshots,
-        }
-
-
-def _receipt_name() -> str:
-    """Filename for the one durable release-plan consumption record."""
-    return ".repository-manager-release-plan.json"
-
-
-def read_release_plan_receipt(root: PinnedDirectory) -> dict[str, Any] | None:
-    """Read the durable anti-replay record beneath a pinned workspace root."""
-    raw = read_at(root.fd, _receipt_name())
-    if raw is None:
-        return None
-    try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise OperationBoundaryError("release-plan receipt is malformed") from exc
-    if not isinstance(value, dict):
-        raise OperationBoundaryError("release-plan receipt must be a mapping")
-    return value
-
-
 def _fsync_directory(directory_fd: int) -> None:
     """Durably flush a directory after an entry create, replace, or remove."""
     try:
-        os.fsync(directory_fd)
+        pfs.fsync_directory(directory_fd)
     except OSError as exc:
         raise OperationBoundaryError("cannot durably flush receipt directory") from exc
-
-
-def _atomic_write_at(
-    directory_fd: int, name: str, value: bytes, *, mode: int = 0o600
-) -> None:
-    """Write a regular entry through a durable same-directory replacement."""
-    if not name or Path(name).name != name or name in {".", ".."}:
-        raise OperationBoundaryError("anchored file name must be one path component")
-    temporary = f".{name}.{os.getpid()}.{id(value):x}.tmp"
-    temporary_fd: int | None = None
-    try:
-        temporary_fd = _open_write_entry(
-            directory_fd,
-            temporary,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
-            mode,
-        )
-        _assert_writable_fd(temporary_fd, None, temporary)
-        _write_all(temporary_fd, value, temporary)
-        os.fsync(temporary_fd)
-        os.close(temporary_fd)
-        temporary_fd = None
-        existing = _stat_at(directory_fd, name)
-        if existing is not None and (
-            stat.S_ISLNK(existing.st_mode)
-            or not stat.S_ISREG(existing.st_mode)
-            or existing.st_nlink != 1
-        ):
-            raise OperationBoundaryError(f"{name!r} is not a regular file")
-        try:
-            os.replace(
-                temporary,
-                name,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-            )
-        except OSError as exc:
-            raise OperationBoundaryError(f"cannot replace {name!r} safely") from exc
-        _fsync_directory(directory_fd)
-    finally:
-        if temporary_fd is not None:
-            with contextlib.suppress(OSError):
-                os.close(temporary_fd)
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(temporary, dir_fd=directory_fd)
-
-
-def _write_receipt_start_at(directory_fd: int, name: str, value: bytes) -> None:
-    """Create the initial receipt marker and durably flush its parent."""
-    write_at(directory_fd, name, value, mode=0o600)
-    _fsync_directory(directory_fd)
-
-
-def write_release_plan_receipt(
-    root: PinnedDirectory, value: dict[str, Any], *, atomic: bool = False
-) -> None:
-    """Persist one bounded release-plan receipt using a no-follow root fd.
-
-    The initial consumption marker is created and parent-directory flushed;
-    completion records use an atomic same-directory replacement before the
-    parent directory is flushed.
-    """
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    writers = {False: _write_receipt_start_at, True: _atomic_write_at}
-    writers[atomic](root.fd, _receipt_name(), encoded)
 
 
 def _cleanup_entry_identity(
@@ -1650,7 +1432,7 @@ def _cleanup_entry_identity(
         identity = _identity_from_fd(child_fd, f"cleanup {label}/{name}")
     finally:
         with contextlib.suppress(OSError):
-            os.close(child_fd)
+            pfs.close(child_fd)
     plain = DirectoryIdentity.from_stat(result)
     if (identity.device, identity.inode, identity.mode) != (
         plain.device,
@@ -1668,8 +1450,7 @@ def _cleanup_entries(
 ) -> list[tuple[str, os.stat_result, DirectoryIdentity]]:
     """List stable no-follow entries, rejecting links and unsupported nodes."""
     try:
-        with os.scandir(directory_fd) as iterator:
-            names = sorted(entry.name for entry in iterator)
+        names = sorted(pfs.scandir_names(directory_fd))
     except OSError as exc:
         raise OperationBoundaryError(
             f"cannot scan {label} without following links"
@@ -1757,7 +1538,7 @@ def _preflight_cleanup_tree(
             )
         finally:
             with contextlib.suppress(OSError):
-                os.close(child_fd)
+                pfs.close(child_fd)
     return plan
 
 
@@ -1790,7 +1571,7 @@ def _remove_cleanup_tree(
             else:
                 _assert_cleanup_entry(child_fd, child_name, child_identity, label)
                 try:
-                    os.unlink(child_name, dir_fd=child_fd)
+                    pfs.unlink(child_name, dir_fd=child_fd)
                 except OSError as exc:
                     raise OperationBoundaryError(
                         f"cannot remove cleanup file {child_name!r} safely"
@@ -1798,9 +1579,9 @@ def _remove_cleanup_tree(
         _assert_cleanup_entry(directory_fd, name, expected_identity, label)
     finally:
         with contextlib.suppress(OSError):
-            os.close(child_fd)
+            pfs.close(child_fd)
     try:
-        os.rmdir(name, dir_fd=directory_fd)
+        pfs.rmdir(name, dir_fd=directory_fd)
     except OSError as exc:
         raise OperationBoundaryError(
             f"cannot remove cleanup directory {name!r} safely"
@@ -1855,7 +1636,7 @@ def cleanup_pinned_directory(
             if root_match or matches(name, file_patterns):
                 _assert_cleanup_entry(parent_fd, name, identity, "file")
                 try:
-                    os.unlink(name, dir_fd=parent_fd)
+                    pfs.unlink(name, dir_fd=parent_fd)
                 except OSError as exc:
                     raise OperationBoundaryError(
                         f"cannot remove cleanup file {name!r} safely"
@@ -1898,7 +1679,7 @@ def cleanup_pinned_directory(
                     )
                 finally:
                     with contextlib.suppress(OSError):
-                        os.close(child_fd)
+                        pfs.close(child_fd)
 
     remove_at(
         directory.fd,
@@ -1907,22 +1688,6 @@ def cleanup_pinned_directory(
         relative_path=(),
     )
     directory.assert_operation_identity()
-
-
-def receipt_result_payload(results: list[Any]) -> list[dict[str, Any]]:
-    """Serialize model-like results without retaining command paths."""
-    payload: list[dict[str, Any]] = []
-    for result in results:
-        if hasattr(result, "model_dump"):
-            value = result.model_dump(mode="json")
-        elif isinstance(result, dict):
-            value = dict(result)
-        else:
-            raise OperationBoundaryError("release result cannot be persisted")
-        if not isinstance(value, dict):
-            raise OperationBoundaryError("release result payload must be a mapping")
-        payload.append(value)
-    return payload
 
 
 def _close_quietly(handle: PinnedDirectory) -> None:

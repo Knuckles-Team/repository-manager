@@ -25,12 +25,12 @@ start to rehydrate the in-memory :class:`~repository_manager.capacity.CapacityIn
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
 
+from repository_manager import portable_fs as pfs
 from repository_manager.capacity import HostCapacity, HostState, ResourceVector
 
 __all__ = ["CapacityStore"]
@@ -59,9 +59,7 @@ class CapacityStore:
     @staticmethod
     def _resolve_store_path(store_path: str | Path | None) -> str:
         if store_path is None:
-            state_root = Path(
-                os.getenv("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))
-            )
+            state_root = pfs.state_home()
             path = state_root / "repository-manager" / "capacity.sqlite3"
             path.parent.mkdir(parents=True, exist_ok=True)
             return str(path)

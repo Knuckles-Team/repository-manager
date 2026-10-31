@@ -17,7 +17,7 @@ description: >-
 license: MIT
 tags: [repository-manager, candidate, generation, certification, concepts, mcp]
 metadata:
-  author: Genius
+  author: Knuckles-Team
   version: '1.0.0'
 ---
 # Repository Manager — Candidate Certification

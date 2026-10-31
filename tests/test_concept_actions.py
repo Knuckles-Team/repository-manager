@@ -5,7 +5,7 @@ tool and the ``--concepts`` CLI family both reach for a default
 :class:`~repository_manager.concept_coordination.port.ConceptAuthorityPort`.
 This proves it resolves against the real, current authority-module location
 (:mod:`repository_manager.governance.concept_reservation`, moved here from
-``agent_connector_sdk`` by operator ruling) rather than the retired path, and
+``scion_sdk`` by operator ruling) rather than the retired path, and
 that its honest ``None`` result today comes from "no ``build_default_authority``
 factory published yet" -- not from a dead import of a module that no longer
 lives where the resolver used to look.
@@ -22,7 +22,7 @@ from repository_manager.concept_coordination.client import AUTHORITY_MODULE
 
 def test_authority_module_points_at_the_in_repo_governance_package() -> None:
     assert AUTHORITY_MODULE == "repository_manager.governance.concept_reservation"
-    # It genuinely imports -- the previous agent_connector_sdk path never did
+    # It genuinely imports -- the previous scion_sdk path never did
     # once RM-GOVERNANCE-R001 moved the module into this package.
     module = importlib.import_module(AUTHORITY_MODULE)
     assert hasattr(module, "NativeConceptReservationAuthority")

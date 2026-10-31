@@ -1,6 +1,6 @@
 """The repository-neutral seams added when governance moved here.
 
-agent-connector-sdk hard-coded itself into these modules (its package directory as
+scion-sdk hard-coded itself into these modules (its package directory as
 the only concept-marker root, its install location as the ledger fallback, its
 repo-relative registry paths, its package identity as the generated-view
 trigger). Each test pins the repository-neutral replacement.

@@ -6,10 +6,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from agent_connector_sdk.mcp.action_dispatch import resolve_action
-from agent_connector_sdk.mcp.concurrency import run_blocking
 from fastmcp import Context, FastMCP
 from pydantic import Field
+from scion_sdk.mcp.action_dispatch import resolve_action
+from scion_sdk.mcp.concurrency import run_blocking
 
 from repository_manager.mcp_tools.context import McpToolContext, from_server
 from repository_manager.mcp_tools.contracts import RM_WORKTREE_ACTIONS
@@ -229,9 +229,9 @@ def register_worktree_tools(
         )
         if isinstance(resolved, dict):
             return resolved
-        action = resolved
+        op: str = resolved
 
-        no_repo_handler = _NO_REPO_ACTIONS.get(action)
+        no_repo_handler = _NO_REPO_ACTIONS.get(op)
         if no_repo_handler is not None:
             no_repo_req = _NoRepoRequest(
                 repo=repo,
@@ -246,12 +246,12 @@ def register_worktree_tools(
         if repo is None or branch is None:
             return {
                 "ok": False,
-                "error": f"action '{action}' requires 'repo' and 'branch'",
+                "error": f"action '{op}' requires 'repo' and 'branch'",
             }
 
-        repo_branch_handler = _REPO_BRANCH_ACTIONS.get(action)
+        repo_branch_handler = _REPO_BRANCH_ACTIONS.get(op)
         if repo_branch_handler is None:
-            return {"ok": False, "error": f"unknown action: {action}"}
+            return {"ok": False, "error": f"unknown action: {op}"}
         repo_branch_req = _RepoBranchRequest(
             repo=repo,
             branch=branch,

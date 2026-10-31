@@ -23,6 +23,8 @@ from urllib.parse import SplitResult, urlsplit
 
 import yaml  # type: ignore[import-untyped]
 
+from repository_manager import portable_fs as pfs
+
 _ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _LOCAL_HOST_SUFFIXES = (".arpa", ".internal", ".lan", ".local", ".localhost")
 _PRIVATE_HOST_REFERENCE = re.compile(
@@ -44,8 +46,8 @@ _PRIVATE_IPV6_REFERENCE = re.compile(
     r"(?![0-9A-Fa-f:])"
 )
 _PORTABLE_ENVIRONMENT_REFERENCES = {
-    "CONNECTOR_WORKSPACE_ROOT",
-    "AGENT_UTILITIES_REPO_ORIGIN",
+    "REPOSITORY_MANAGER_WORKSPACE_ROOT",
+    "ARBORA_REPO_ORIGIN",
     "AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX",
 }
 _SECRET_FIELD_NAMES = {
@@ -127,9 +129,9 @@ class _DestinationSnapshot:
 def default_runtime_manifest_path() -> Path:
     """Return the exact XDG runtime manifest path without creating directories."""
 
-    config_home = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(config_home).expanduser() if config_home else Path.home() / ".config"
-    return base / "agent-connector-sdk" / "workspace.yml"
+    override = os.environ.get("ARBORA_CONFIG_DIR")
+    base = Path(override).expanduser() if override else pfs.config_home() / "arbora"
+    return base / "workspace.yml"
 
 
 def default_packaged_seed_path() -> Path:
@@ -325,7 +327,7 @@ def _portable_path(value: str, *, workspace_root: Path) -> str:
             "Canonical manifest contains an absolute path outside its workspace root"
         ) from exc
     suffix = relative.as_posix()
-    return "${CONNECTOR_WORKSPACE_ROOT}" + (f"/{suffix}" if suffix else "")
+    return "${REPOSITORY_MANAGER_WORKSPACE_ROOT}" + (f"/{suffix}" if suffix else "")
 
 
 def _portable_endpoint(value: str) -> str:
@@ -341,7 +343,7 @@ def _portable_endpoint(value: str) -> str:
             suffix += f"?{parsed.query}"
         if parsed.fragment:
             suffix += f"#{parsed.fragment}"
-        return f"${{AGENT_UTILITIES_REPO_ORIGIN}}{suffix}"
+        return f"${{ARBORA_REPO_ORIGIN}}{suffix}"
     if not host or parsed is None:
         raise WorkspaceManifestError("Cannot project a machine-local endpoint safely")
     label = _portable_host_label(host)
@@ -735,14 +737,7 @@ def _stage_write(destination: Path, content: bytes, mode: int) -> Path:
 
 
 def _fsync_directory(directory: Path) -> None:
-    try:
-        descriptor = os.open(directory, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    pfs.fsync_directory_path(directory)
 
 
 def _restore_snapshots(snapshots: list[_DestinationSnapshot]) -> bool:

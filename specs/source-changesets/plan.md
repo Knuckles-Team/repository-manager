@@ -3,7 +3,7 @@
 Governing spec: [spec.md](spec.md).
 
 Component: Source control
-Depends-on: [MEDULLA-SCM](https://github.com/Knuckles-Team/epistemic-graph/blob/main/specs/source-changesets/spec.md), [SCION-SCM](https://github.com/Knuckles-Team/agent-connector-sdk/blob/main/specs/SCION-SCM/spec.md)
+Depends-on: [MEDULLA-SCM](https://github.com/Knuckles-Team/medulla/blob/main/specs/source-changesets/spec.md), [SCION-SCM](https://github.com/Knuckles-Team/agent-connector-sdk/blob/main/specs/SCION-SCM/spec.md)
 References: [ARBORA-OPS](https://github.com/Knuckles-Team/arbora/blob/main/specs/hosted-api-operations/spec.md), [PIPE-GATES](https://github.com/Knuckles-Team/pipelines/blob/main/specs/gates/spec.md)
 
 ## Existing system and reuse

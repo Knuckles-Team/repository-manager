@@ -10,7 +10,7 @@ Blocker this records (for the open claim, not a guess to fill in): there is
 no real, non-fake :class:`~repository_manager.materialization.ports.ApprovalAuthority`
 or :class:`~repository_manager.materialization.ports.MaterializationReceiptStore`
 implementation anywhere in this repository or in its two dependencies
-(``agent-connector-sdk``, ``agent-connector-sdk``) today -- a repo-wide search for
+(``scion-sdk``, ``scion-sdk``) today -- a repo-wide search for
 ``ApprovalAuthority``, ``ApprovalProof``, ``MaterializationReceipt``, and
 ``receipt store`` across all three finds nothing beyond this package itself.
 RM-MATERIALIZE-001's own ``spec.md`` ("Boundaries") says why: "The external
@@ -22,7 +22,7 @@ a service that lives outside this repository's dependency closure -- most
 plausibly the graph/KG-backed governance layer referenced throughout this
 workspace (an approval-proof verification call and a receipt read/write call
 exposed as an MCP tool or RPC) -- and nothing in the current
-``agent-connector-sdk``/``agent-connector-sdk`` surface names that call today. The
+``scion-sdk``/``scion-sdk`` surface names that call today. The
 closest in-repo analog is :mod:`repository_manager.concept_coordination`'s
 claim/reservation authority (fenced, idempotency-keyed, create-if-absent),
 but it governs concept-ID claims, not patch approval or receipt delivery, and

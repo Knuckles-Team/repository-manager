@@ -12,13 +12,11 @@ clone that is merely present on disk cannot accidentally become eligible.
 from __future__ import annotations
 
 import argparse
-import copy
 import os
 import shutil
 import signal
 import subprocess  # nosec B404 - all commands are fixed argv
 import sys
-import tempfile
 import threading
 import time
 from collections import defaultdict
@@ -30,6 +28,7 @@ from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 
+from repository_manager import portable_fs as pfs
 from repository_manager.workspace_manifest import (
     WorkspaceManifestError,
     select_repositories,
@@ -44,8 +43,6 @@ DEFAULT_DRAIN_DEADLINE_SECONDS = 180
 # is admitted only until the global deadline and is reported as deferred.
 DEFAULT_GLOBAL_DRAIN_DEADLINE_SECONDS = 3600
 SYSTEMD_TIMEOUT_MARGIN_SECONDS = 60
-DEFAULT_HEAVY_TIMEOUT_SECONDS = 18000
-DEFAULT_HEAVY_GATE_TIMEOUT_SECONDS = 14400
 DEFAULT_LEASE_SAFETY_MARGIN_SECONDS = 600
 MAX_LEASE_TTL_SECONDS = 86400
 DEFAULT_MAX_QUEUE_AGE_SECONDS = 86400
@@ -62,7 +59,7 @@ KNOWN_STATES = TERMINAL_STATES | {QUEUED_STATE}
 # those inputs must never become merge-queue targets even if a future manifest
 # projection happens to describe one of them.
 EXCLUDED_MANIFEST_COMPONENTS = frozenset({"open-source-libraries"})
-_WORKSPACE_ROOT_REFERENCE = "${CONNECTOR_WORKSPACE_ROOT}"
+_WORKSPACE_ROOT_REFERENCE = "${REPOSITORY_MANAGER_WORKSPACE_ROOT}"
 
 
 class MergeQueueRunnerError(RuntimeError):
@@ -180,9 +177,9 @@ def _manifest_workspace_root(
     if not isinstance(value, str) or not value.strip():
         raise MergeQueueRunnerError(f"{source}: manifest path must be absolute")
     expanded = value.strip()
-    if expanded in {_WORKSPACE_ROOT_REFERENCE, "$CONNECTOR_WORKSPACE_ROOT"}:
+    if expanded in {_WORKSPACE_ROOT_REFERENCE, "$REPOSITORY_MANAGER_WORKSPACE_ROOT"}:
         expanded = str(configured_root)
-    elif "${" in expanded or "$CONNECTOR_WORKSPACE_ROOT" in expanded:
+    elif "${" in expanded or "$REPOSITORY_MANAGER_WORKSPACE_ROOT" in expanded:
         raise MergeQueueRunnerError(
             f"{source}: manifest path contains an unresolved environment reference"
         )
@@ -729,9 +726,27 @@ def _cgroup_violation(
     return None
 
 
+_ROOT_PROCESSES: dict[int, subprocess.Popen[str]] = {}
+
+
+def _procfs_available() -> bool:
+    """Whether Linux procfs can enumerate descendants (false on Windows)."""
+
+    return Path("/proc/self").exists()
+
+
+def _tracked_root_alive(pid: int) -> bool:
+    """Liveness of a launched child where procfs is unavailable."""
+
+    process = _ROOT_PROCESSES.get(pid)
+    return process is not None and process.poll() is None
+
+
 def _process_exists(pid: int) -> bool:
     """Return whether a process is still observable in procfs."""
 
+    if not _procfs_available():
+        return _tracked_root_alive(pid)
     return Path(f"/proc/{pid}").exists()
 
 
@@ -765,6 +780,9 @@ def _signal_process_tree(
 ) -> None:
     """Signal the process group and every descendant found in proc."""
 
+    if not _procfs_available() or not hasattr(os, "killpg"):
+        pfs.terminate_process_group(process, force=signum != signal.SIGTERM)
+        return
     observed.update(_process_tree(process.pid))
     try:
         os.killpg(process.pid, signum)
@@ -803,7 +821,7 @@ def _kill_process_group(
     _signal_process_tree(process, signal.SIGTERM, tracked)
     if _wait_for_process_tree(process, tracked, 10):
         return True
-    _signal_process_tree(process, signal.SIGKILL, tracked)
+    _signal_process_tree(process, pfs.force_signal(), tracked)
     return _wait_for_process_tree(process, tracked, 10)
 
 
@@ -843,15 +861,19 @@ def _launch_process(
     """Start one direct child process in its own process group."""
 
     try:
-        return subprocess.Popen(
+        process = subprocess.Popen(
             command,
             cwd=str(repository.path),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            start_new_session=True,
             env=env,
+            **pfs.new_group_kwargs(),
         )
+        for stale in [k for k, v in _ROOT_PROCESSES.items() if v.poll() is not None]:
+            del _ROOT_PROCESSES[stale]
+        _ROOT_PROCESSES[process.pid] = process
+        return process
     except OSError as exc:
         raise MergeQueueRunnerError(
             f"repository {repository.identifier!r} drain could not start: {exc}"
@@ -949,197 +971,6 @@ def drain_repository(
             f"{violations[0]}\n{output or ''}"
         )
     return DrainResult(repository, returncode, output)
-
-
-def _phased_push_command(workspace_root: Path, manifest: Path) -> list[str]:
-    """Build the one-lane direct-module command for heavy publication."""
-
-    return [
-        sys.executable,
-        "-m",
-        "repository_manager",
-        "--workspace",
-        str(workspace_root),
-        "--file",
-        str(manifest),
-        "--threads",
-        "1",
-        "--push",
-    ]
-
-
-def _project_manifest_repositories(
-    raw_repositories: object, *, prefix: tuple[str, ...], source: Path
-) -> list[object]:
-    """Copy repository declarations except explicitly excluded path components."""
-
-    if not isinstance(raw_repositories, list):
-        raise MergeQueueRunnerError(
-            f"{source}: repositories must be a list in generated projection"
-        )
-    repositories: list[object] = []
-    for entry in raw_repositories:
-        if not isinstance(entry, dict) or not isinstance(entry.get("url"), str):
-            raise MergeQueueRunnerError(
-                f"{source}: each repository must have a string url"
-            )
-        name = entry["url"].strip().rstrip("/").rsplit("/", 1)[-1]
-        name = name.removesuffix(".git")
-        identifier = "/".join((*prefix, name))
-        if frozenset(identifier.split("/")) & EXCLUDED_MANIFEST_COMPONENTS:
-            continue
-        repositories.append(copy.deepcopy(entry))
-    return repositories
-
-
-def _project_manifest_subdirectories(
-    raw_subdirectories: object, *, prefix: tuple[str, ...], source: Path
-) -> dict[str, Any]:
-    """Recursively copy non-reference workspace directory declarations."""
-
-    if not isinstance(raw_subdirectories, dict):
-        raise MergeQueueRunnerError(
-            f"{source}: subdirectories must be a mapping in generated projection"
-        )
-    subdirectories: dict[str, Any] = {}
-    for name, child in raw_subdirectories.items():
-        if not isinstance(name, str) or not name:
-            raise MergeQueueRunnerError(
-                f"{source}: subdirectory names must be non-empty strings"
-            )
-        child_prefix = (*prefix, name)
-        if frozenset(child_prefix) & EXCLUDED_MANIFEST_COMPONENTS:
-            continue
-        subdirectories[name] = _project_manifest_node(child, child_prefix, source)
-    return subdirectories
-
-
-def _project_manifest_node(
-    node: object, prefix: tuple[str, ...], source: Path
-) -> dict[str, Any]:
-    """Copy one manifest directory and recursively remove excluded inputs."""
-
-    if not isinstance(node, dict):
-        raise MergeQueueRunnerError(f"{source}: manifest directory must be a mapping")
-    projected = copy.deepcopy(node)
-    projected["repositories"] = _project_manifest_repositories(
-        node.get("repositories", []), prefix=prefix, source=source
-    )
-    projected["subdirectories"] = _project_manifest_subdirectories(
-        node.get("subdirectories", {}), prefix=prefix, source=source
-    )
-    return projected
-
-
-def _excluded_manifest_identifiers(
-    identifiers: Iterable[str], *, source: Path
-) -> tuple[str, ...]:
-    """Find excluded identifiers that would indicate projection drift."""
-
-    excluded = tuple(
-        identifier
-        for identifier in identifiers
-        if frozenset(identifier.split("/")) & EXCLUDED_MANIFEST_COMPONENTS
-    )
-    if excluded:
-        raise MergeQueueRunnerError(
-            f"{source}: generated phased-push projection retained excluded "
-            f"repositories: {', '.join(excluded)}"
-        )
-    return excluded
-
-
-def _eligible_manifest_projection(
-    data: dict[str, Any], *, source: Path
-) -> dict[str, Any]:
-    """Build the heavy lane's validated projection of the canonical manifest.
-
-    The canonical manifest remains the authority.  This projection only removes
-    entries classified as reference inputs (currently ``open-source-libraries``)
-    using the same path-component rule as queue discovery; it never invents a
-    second repository inventory.  Keeping the projection in a temporary
-    directory prevents the scheduler from mutating the canonical manifest or
-    leaving generated files in a workspace checkout.
-    """
-
-    projection = _project_manifest_node(data, (), source)
-    identifiers = _manifest_identifiers(projection, source)
-    _excluded_manifest_identifiers(identifiers, source=source)
-    return projection
-
-
-def run_phased_push(
-    workspace_root: str | Path,
-    *,
-    manifest: str | Path | None = None,
-    deadline_seconds: int = DEFAULT_HEAVY_TIMEOUT_SECONDS,
-    gate_timeout_seconds: int = DEFAULT_HEAVY_GATE_TIMEOUT_SECONDS,
-) -> int:
-    """Run the heavy phased-push child under the same cgroup supervisor.
-
-    The service owns one dedicated lane, while this process boundary verifies
-    every descendant remains in the service cgroup. This catches a gate that
-    tries to launch a Snap/uv scope instead of relying on ``KillMode`` alone.
-    """
-
-    if deadline_seconds <= 0 or gate_timeout_seconds <= 0:
-        raise MergeQueueRunnerError("heavy runner settings must be positive integers")
-    root = _configured_workspace_root(workspace_root)
-    manifest_path = _manifest_path(root, manifest)
-    # Validate the same canonical inventory as the queue mode before starting a
-    # heavy gate. A missing clone or manifest drift must not become a partial
-    # publication run.
-    declared_repositories(root, manifest=manifest_path)
-    manifest_data = _manifest_mapping(manifest_path)
-    projected_manifest = _eligible_manifest_projection(
-        manifest_data, source=manifest_path
-    )
-    # The child is deliberately launched with an explicit workspace root. Make
-    # the generated projection self-contained as well, so a canonical manifest
-    # using the portable ``${CONNECTOR_WORKSPACE_ROOT}`` reference does
-    # not depend on an ambient service environment variable.
-    projected_manifest["path"] = str(root)
-    repository = DeclaredRepository("phased-push", "phased-push", root)
-    env = os.environ.copy()
-    env.update(
-        {
-            "RM_GATE_TIMEOUT_SECONDS": str(gate_timeout_seconds),
-            "RM_GATE_MAX_WORKERS": "2",
-            "REPOSITORY_MANAGER_THREADS": "1",
-        }
-    )
-    expected_cgroup = _process_cgroup(os.getpid())
-    try:
-        with tempfile.TemporaryDirectory(
-            prefix="repository-manager-phased-push-"
-        ) as directory:
-            projected_path = Path(directory) / "workspace.yml"
-            projected_path.write_bytes(
-                yaml.safe_dump(projected_manifest, sort_keys=False).encode("utf-8")
-            )
-            process = _launch_process(
-                _phased_push_command(root, projected_path), repository, env=env
-            )
-            try:
-                output, returncode, violations = _run_monitored_process(
-                    process, repository, expected_cgroup, deadline_seconds
-                )
-            except (MergeQueueRunnerError, subprocess.SubprocessError) as exc:
-                _log(f"phased push FAILED: {exc}")
-                return 1
-    except (OSError, UnicodeError, yaml.YAMLError) as exc:
-        _log(f"phased push FAILED: generated manifest projection unavailable: {exc}")
-        return 1
-    if output:
-        print(output, end="" if output.endswith("\n") else "\n")
-    if violations:
-        _log(f"phased push FAILED: cgroup escape: {violations[0]}")
-        return 1
-    if returncode != 0:
-        _log(f"phased push FAILED with status {returncode}")
-        return 1
-    _log("phased push completed successfully")
-    return 0
 
 
 def _log(message: str) -> None:
@@ -1242,7 +1073,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--workspace-root",
-        default=os.environ.get("CONNECTOR_WORKSPACE_ROOT")
+        default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE_ROOT")
         or os.environ.get("REPOSITORY_MANAGER_WORKSPACE")
         or str(Path.cwd()),
         help="canonical workspace root containing workspace.yml",
@@ -1285,23 +1116,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--repository-manager-command",
         default=os.environ.get("REPOSITORY_MANAGER_COMMAND"),
         help="repository-manager executable used for each drain",
-    )
-    parser.add_argument(
-        "--phased-push",
-        action="store_true",
-        help="run the dedicated heavy phased-push child instead of the queue drain",
-    )
-    parser.add_argument(
-        "--heavy-deadline-seconds",
-        type=int,
-        default=None,
-        help="heavy phased-push wall-clock deadline",
-    )
-    parser.add_argument(
-        "--heavy-gate-timeout-seconds",
-        type=int,
-        default=None,
-        help="RM_GATE_TIMEOUT_SECONDS for the heavy phased-push child",
     )
     return parser
 
@@ -1428,31 +1242,6 @@ def _drain_selected(
     return exit_code
 
 
-def _run_phased_push_cli(args: argparse.Namespace) -> int:
-    """Resolve heavy-lane settings and run its direct child."""
-
-    try:
-        deadline_seconds = _optional_setting(
-            args.heavy_deadline_seconds,
-            "MERGE_QUEUE_HEAVY_DEADLINE_SECONDS",
-            DEFAULT_HEAVY_TIMEOUT_SECONDS,
-        )
-        gate_timeout_seconds = _optional_setting(
-            args.heavy_gate_timeout_seconds,
-            "RM_GATE_TIMEOUT_SECONDS",
-            DEFAULT_HEAVY_GATE_TIMEOUT_SECONDS,
-        )
-        return run_phased_push(
-            args.workspace_root,
-            manifest=args.manifest,
-            deadline_seconds=deadline_seconds,
-            gate_timeout_seconds=gate_timeout_seconds,
-        )
-    except MergeQueueRunnerError as exc:
-        _log(f"FATAL: {exc}")
-        return 78
-
-
 def _run_queue_cli(args: argparse.Namespace) -> int:
     """Resolve queue settings, discover eligible roots, and drain them."""
 
@@ -1481,8 +1270,6 @@ def _run_queue_cli(args: argparse.Namespace) -> int:
 def _run_mode(args: argparse.Namespace) -> int:
     """Dispatch one parsed invocation to its dedicated scheduler lane."""
 
-    if args.phased_push:
-        return _run_phased_push_cli(args)
     return _run_queue_cli(args)
 
 

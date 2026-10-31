@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repository-manager"
-version = "3.5.3"
+version = "3.5.7"
 description = "Manage your git projects"
 readme = "README.md"
 classifiers = [ "Development Status :: 5 - Production/Stable", "License :: Public Domain", "Environment :: Console", "Operating System :: POSIX :: Linux", "Programming Language :: Python :: 3",]
 requires-python = ">=3.12,<3.15"
-dependencies = [ "scion-sdk[mcp]>=0.5.9,<0.6.0", "psutil>=7.2.2", "requests>=2.34.2",]
+dependencies = [ "scion-sdk[mcp]>=0.6.4,<0.7.0", "psutil>=7.2.2", "requests>=2.34.2",]
 [[project.authors]]
 name = "Repository Maintainers"
 email = "maintainers@knuckles.team"
@@ -19,12 +19,12 @@ text = "MIT"
 
 [project.optional-dependencies]
 mcp = [
-    "scion-sdk[mcp]>=0.5.9,<0.6.0"]
+    "scion-sdk[mcp]>=0.6.4,<0.7.0"]
 
 all = [
     "pre-commit>=4.7.0",
     "bump2version>=1.0.1",
-    "scion-sdk[mcp]>=0.5.9,<0.6.0"
+    "scion-sdk[mcp]>=0.6.4,<0.7.0"
 ]
 
 test = [
@@ -60,7 +60,7 @@ repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "docs_rea
 [tool.uv]
 managed = true
 # fastmcp-slim ships no non-prerelease under the fastmcp>=4.0.0b1 floor
-# agent-connector-sdk[mcp] requires, and uv allows prereleases only when a
+# scion-sdk[mcp] requires, and uv allows prereleases only when a
 # root requirement names one.
 override-dependencies = [
     "fastmcp-slim[client,server]>=4.0.0b1",
@@ -105,5 +105,5 @@ ignore_words = ["unparseable"]
 exempt = ["specs/*", "specs/**/*"]
 
 # The one declared connector identity: the fleet name (SCION-CONNECTOR-CONTROL-R071).
-[project.entry-points."agent_connector_sdk.connector"]
+[project.entry-points."scion_sdk.connector"]
 repository-manager = "repository_manager"

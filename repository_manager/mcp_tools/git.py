@@ -12,11 +12,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
-from agent_connector_sdk.mcp.action_dispatch import resolve_action
-from agent_connector_sdk.mcp.concurrency import run_blocking
 from fastmcp import Context, FastMCP
 from fastmcp.utilities.logging import get_logger
 from pydantic import Field
+from scion_sdk.mcp.action_dispatch import resolve_action
+from scion_sdk.mcp.concurrency import run_blocking
 
 from repository_manager.development.fleet_release_gate import (
     require_legacy_release_route,
@@ -44,15 +44,6 @@ def _resolve_project_dirs(
 
 
 @dataclass
-class PhasedPushArgs:
-    """Parameters specific to the 'phased_push' action."""
-
-    phase: int | None
-    target_project: str | None
-    auto_start: bool
-
-
-@dataclass
 class GitActionArgs:
     """Bundled request parameters shared across the dict-dispatched actions."""
 
@@ -61,7 +52,6 @@ class GitActionArgs:
     projects: str | None = None
     message: str | None = None
     run_precommit: bool = True
-    phased: PhasedPushArgs | None = None
 
 
 async def _handle_raw(
@@ -207,29 +197,6 @@ async def _handle_commit_code(
     )
 
 
-async def _handle_phased_push(
-    adapter_context: McpToolContext, git: Any, args: GitActionArgs
-) -> Any:
-    require_legacy_release_route("push")
-    phased = args.phased or PhasedPushArgs(
-        phase=1, target_project=None, auto_start=True
-    )
-    progress: dict[str, Any] = {
-        "current_phase": "Initializing Pushes",
-        "progress": 0,
-        "phases": {},
-    }
-    return adapter_context.submit_job(
-        "phased_push",
-        git.phased_push,
-        start_phase=phased.phase or 1,
-        project_filter=phased.target_project,
-        auto_start=phased.auto_start,
-        progress=progress,
-        _extra_job_data={"progress_detail": progress},
-    )
-
-
 _ACTION_HANDLERS: dict[
     str, Callable[[McpToolContext, Any, GitActionArgs], Awaitable[Any]]
 ] = {
@@ -242,7 +209,6 @@ _ACTION_HANDLERS: dict[
     "commit": _handle_commit,
     "pre_commit": _handle_pre_commit,
     "commit_code": _handle_commit_code,
-    "phased_push": _handle_phased_push,
 }
 
 
@@ -264,8 +230,7 @@ def register_git_operations_tools(
     async def rm_git(
         action: str = Field(
             description=(
-                "Action: 'clone', 'enumerate', 'pull', 'push', 'phased_push', "
-                "'add', 'commit', 'pre_commit', 'commit_code', 'status', or "
+                "Action: 'clone', 'enumerate', 'pull', 'push', 'add', 'commit', 'pre_commit', 'commit_code', 'status', or "
                 "'cancel'. "
                 "Use 'status' with job_id to poll any submitted rm_git job. "
                 "Use 'cancel' with job_id to cancel a queued job; a running job "
@@ -285,22 +250,6 @@ def register_git_operations_tools(
         path: str | None = Field(default=None, description="Path to execute in."),
         threads: int | None = Field(
             default=None, description="Parallel workers for bulk operations."
-        ),
-        phase: int | None = Field(
-            default=1, description="Starting phase number for 'phased_push'. Default 1."
-        ),
-        target_project: str | None = Field(
-            default=None,
-            description="Optional specific project to push for 'phased_push'.",
-        ),
-        auto_start: bool = Field(
-            default=True,
-            description=(
-                "For 'phased_push': begin at the lowest phase with unpushed work "
-                "instead of always 'phase', skipping the inter-phase waits of "
-                "unchanged upstream phases. Default True; set False to start at "
-                "'phase'. Ignored when 'target_project' is set."
-            ),
         ),
         projects: str | None = Field(
             default=None,
@@ -327,9 +276,6 @@ def register_git_operations_tools(
         ),
     ) -> GitResult | str | dict[str, Any]:
         """Typed bulk Git operations; arbitrary host commands are prohibited."""
-        if not isinstance(auto_start, bool):
-            auto_start = True
-
         resolved = resolve_action(action, RM_GIT_ACTIONS, service="repository-manager")
         if isinstance(resolved, dict):
             return resolved
@@ -365,9 +311,6 @@ def register_git_operations_tools(
             projects=projects,
             message=message,
             run_precommit=run_precommit,
-            phased=PhasedPushArgs(
-                phase=phase, target_project=target_project, auto_start=auto_start
-            ),
         )
         handler = _ACTION_HANDLERS.get(action)
         if handler is not None:

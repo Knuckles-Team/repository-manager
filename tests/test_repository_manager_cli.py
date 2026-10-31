@@ -21,10 +21,6 @@ def mock_sys_argv():
     return _mock_argv
 
 
-def test_cli_maintain_calls_bumpversion(mock_git, mock_sys_argv):
-    with mock_sys_argv(["--maintain", "--dry-run"]):
-        main()
-        mock_git.phased_bumpversion.assert_called_once()
 
 
 def test_cli_clone(mock_git, mock_sys_argv):
@@ -43,6 +39,6 @@ def test_cli_fleet_evidence_refuses_before_git_construction(tmp_path, mock_sys_a
     reference = tmp_path / "reference.json"
     reference.write_text("{}")
     with patch("repository_manager.repository_manager.Git") as git_factory:
-        with mock_sys_argv(["--fleet-evidence-check", str(reference), "--push"]):
+        with mock_sys_argv(["--fleet-evidence-check", str(reference), "--pull"]):
             assert main() == 2
         git_factory.assert_not_called()

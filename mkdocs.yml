@@ -1,5 +1,5 @@
 site_name: "repository-manager"
-site_description: "Manage your git projects — a CLI / API / MCP server / A2A agent for bulk Git operations, phased multi-repository releases, and cross-repository graph intelligence in the agent-connector-sdk ecosystem."
+site_description: "Manage your git projects — a CLI / API / MCP server / A2A agent for bulk Git operations, resumable fleet dependency rollouts, and cross-repository graph intelligence in the scion-sdk ecosystem."
 site_url: "https://knuckles-team.github.io/repository-manager/"
 repo_name: "Knuckles-Team/repository-manager"
 repo_url: "https://github.com/Knuckles-Team/repository-manager"
@@ -92,8 +92,7 @@ nav:
   - Configuration schemas and migration: config-schema-migration.md
   - Deployment: deployment.md
   - Usage (API / CLI / MCP): usage.md
-  - Phased Maintenance: phased_maintenance.md
-  - Phased Push: phased_push.md
+  - Dependency rollout: rollout.md
   - Merge Queue (universal): merge-queue.md
   - Fleet merge-queue runner: merge-queue-runner.md
   - Adapter boundaries: adapter-extraction.md

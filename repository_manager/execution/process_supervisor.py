@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
+from repository_manager import portable_fs as pfs
+
 
 class ProcessLike(Protocol):
     """Subset of ``subprocess.Popen`` used by the supervisor and fakes."""
@@ -106,10 +108,7 @@ class ProcessSupervisor:
             "close_fds": True,
             "text": False,
         }
-        if os.name == "posix":
-            kwargs["start_new_session"] = True
-        else:
-            kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        kwargs.update(pfs.new_group_kwargs())
         return self._popen_factory(tuple(argv), **kwargs)
 
     def terminate(self, process: ProcessLike) -> TerminationReport:
@@ -135,7 +134,7 @@ class ProcessSupervisor:
         # process-group membership and output pipes.
         self._wait_until_exit(process, self.termination_grace_seconds)
         try:
-            self._signal_group(process, signal.SIGKILL)
+            self._signal_group(process, pfs.force_signal())
             kill_sent = True
         except ProcessLookupError:
             pass
@@ -160,7 +159,12 @@ class ProcessSupervisor:
         )
 
     def _signal_group(self, process: ProcessLike, sig: int) -> None:
-        if os.name == "posix":
+        if pfs.is_windows() or not hasattr(os, "killpg"):
+            if sig == signal.SIGTERM:
+                process.terminate()
+            else:
+                process.kill()
+        else:
             try:
                 os.killpg(os.getpgid(process.pid), sig)
             except ProcessLookupError:
@@ -170,10 +174,6 @@ class ProcessSupervisor:
                     process.terminate()
                 else:
                     process.kill()
-        elif sig == signal.SIGTERM:
-            process.terminate()
-        else:
-            process.kill()
 
     def _wait_until_exit(self, process: ProcessLike, timeout: float) -> bool:
         deadline = float(self._monotonic()) + timeout

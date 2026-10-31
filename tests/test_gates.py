@@ -362,11 +362,9 @@ def test_manual_stage_runs_only_explicit_release_hook(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Live proof: `hook_ids` narrows a run to specific declared hooks -- the exact
-# mechanism `dependency_readiness.await_gate_readiness` (CONCEPT:RM-DEP-READY
-# Layer 2, phased_push's gate-driven phase-transition barrier) relies on to
-# retry ONE fast network-bound hook instead of a repo's entire heavy suite
-# (pytest, mypy, ...) on every poll. No mocking of pre-commit itself.
+# Live proof: `hook_ids` narrows a run to specific declared hooks, so a caller
+# can run ONE fast network-bound hook instead of a repo's entire heavy suite
+# (pytest, mypy, ...). No mocking of pre-commit itself.
 # ---------------------------------------------------------------------------
 
 

@@ -6,6 +6,7 @@ import warnings
 from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -81,7 +82,11 @@ def _repository(repository_id: str = "repository:test") -> RepositoryIdentity:
     return RepositoryIdentity(
         contract_version=CONTRACT_VERSION,
         repository_id=repository_id,
-        canonical_path="/home/app/workspace/agent-packages/agents/repository-manager",
+        canonical_path=str(
+            Path(
+                "/home/app/workspace/agent-packages/agents/repository-manager"
+            ).resolve()
+        ),
         configured_roots=(),
         origin=None,
     )

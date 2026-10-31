@@ -31,6 +31,7 @@ stash push/pop elsewhere in this shared ``.git`` can never cross with it.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -40,10 +41,35 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from scion_sdk.file_lock import lock_exclusive, unlock
+
+from repository_manager import portable_fs as pfs
 from repository_manager import prune_guard, stash_guard
 from repository_manager.canonical_guard import guarded_canonical_mutation
 
 logger = logging.getLogger(__name__)
+
+WORKTREE_ADD_LOCK_FILENAME = "repository-manager-worktree-add.lock"
+
+
+@contextlib.contextmanager
+def _worktree_add_lock(canonical: str):
+    """Hold a blocking exclusive lock on ``canonical``'s worktree registry."""
+    git_dir = os.path.join(canonical, ".git")
+    if not os.path.isdir(git_dir):
+        yield
+        return
+    fd = os.open(
+        os.path.join(git_dir, WORKTREE_ADD_LOCK_FILENAME), os.O_CREAT | os.O_RDWR, 0o644
+    )
+    try:
+        lock_exclusive(fd)
+        try:
+            yield
+        finally:
+            unlock(fd)
+    finally:
+        os.close(fd)
 
 
 @dataclass(frozen=True)
@@ -95,9 +121,7 @@ class GitLike(Protocol):
     ) -> Any: ...
 
 
-_XDG_STATE_HOME = os.getenv(
-    "XDG_STATE_HOME", os.path.join(os.path.expanduser("~"), ".local", "state")
-)
+_XDG_STATE_HOME = str(pfs.state_home())
 WORKTREE_ROOT = os.path.abspath(
     os.path.expanduser(
         os.getenv(
@@ -334,7 +358,12 @@ class WorktreeManager:
                 f"git worktree add {shlex.quote(wt)} -b {shlex.quote(branch)} "
                 f"{shlex.quote(base)}"
             )
-        return self._run(cmd, canonical)
+        # Concurrent `git worktree add` calls against one repository race inside
+        # git itself (one reads another's half-written .git/worktrees/<name>/
+        # commondir and fails). Serialize them per repository with a blocking
+        # cross-process lock so parallel lanes queue instead of failing.
+        with _worktree_add_lock(canonical):
+            return self._run(cmd, canonical)
 
     def _apply_wip_to_worktree(
         self, wt: str, stash_ref: str | None

@@ -115,7 +115,10 @@ def _read_bounded_regular_file(path: Path, limit: int) -> bytes:
 
     descriptor: int | None = None
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+        )
         file_stat = os.fstat(descriptor)
         if not stat.S_ISREG(file_stat.st_mode):
             raise BuildQueueError(f"file is not regular: {path}")
@@ -180,7 +183,11 @@ def _open_legacy_destination_descriptor(destination: Path) -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
     return os.open(
         destination,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_TRUNC
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0),
         0o600,
     )
 
@@ -207,7 +214,10 @@ def _copy_legacy_file_no_follow(
     source_descriptor: int | None = None
     destination_descriptor: int | None = None
     try:
-        source_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        source_descriptor = os.open(
+            source,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+        )
         source_stat = os.fstat(source_descriptor)
         _validate_legacy_source_stat(source, source_stat, max_bytes)
         destination_descriptor = _open_legacy_destination_descriptor(destination)
@@ -577,7 +587,7 @@ def _resolve_git_identity_root(resolved: Path) -> Path:
 
 
 def _find_workspace_root(identity_root: Path) -> Path | None:
-    configured = os.environ.get("CONNECTOR_WORKSPACE_ROOT")
+    configured = os.environ.get("REPOSITORY_MANAGER_WORKSPACE_ROOT")
     candidates = [Path(configured).expanduser().resolve()] if configured else []
     candidates.extend(
         parent
@@ -1003,7 +1013,10 @@ def _sha256_file(path: Path, *, max_bytes: int | None = None) -> str:
     digest = hashlib.sha256()
     descriptor: int | None = None
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+        )
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = None
             _checksum_open_file(handle, digest, path, max_bytes)

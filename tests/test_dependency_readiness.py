@@ -3,7 +3,7 @@
 Covers both layers off the SAME primitives -- no network in these tests: every
 test supplies a fake :class:`~repository_manager.dependency_readiness.IndexBackend`
 so behavior is proven deterministically, and the live-index proof (does this
-correctly fail against agent-connector-sdk' real, currently-unsatisfiable
+correctly fail against scion-sdk' real, currently-unsatisfiable
 ``epistemic-graph`` constraint, and pass for a satisfiable one) is demonstrated
 separately, out of band, against the real PyPI index.
 """
@@ -17,7 +17,6 @@ from typing import cast
 import pytest
 
 from repository_manager import dependency_readiness as dr
-from repository_manager.scan_models import HookResult, RepoScanResult
 
 
 class _FakeBackend:
@@ -247,7 +246,7 @@ def test_fleet_package_names_excludes_infra_subdirectories(tmp_path):
     """A `services/`-tree repo (e.g. a Docker stack literally named `langfuse`)
     must never collide with an unrelated third-party PyPI package of the same
     name -- this was caught live: `services/langfuse.git` (a Docker Swarm
-    stack) vs. the third-party `langfuse` SDK agent-connector-sdk depends on."""
+    stack) vs. the third-party `langfuse` SDK scion-sdk depends on."""
     manifest = tmp_path / "workspace.yml"
     manifest.write_text(
         """
@@ -285,11 +284,11 @@ maintenance:
   phases:
     - phase: 1
       name: solo
-      project: agent-connector-sdk
+      project: scion-sdk
 """
         )
         names = dr.fleet_package_names(manifest)
-        assert "agent-connector-sdk" in names
+        assert "scion-sdk" in names
 
 
 @pytest.mark.parametrize(
@@ -297,7 +296,7 @@ maintenance:
     [
         "subdirectories: invalid\n",
         "maintenance:\n  phases:\n    - null\n",
-        "maintenance:\n  phases:\n    - projects: agent-connector-sdk\n",
+        "maintenance:\n  phases:\n    - projects: scion-sdk\n",
         (
             "subdirectories:\n"
             "  agent-packages:\n"
@@ -316,7 +315,7 @@ maintenance:
             "    repositories:\n"
             "      - url: ' https://example.invalid/org/epistemic-graph.git'\n"
         ),
-        "maintenance:\n  phases:\n    - projects: [org/agent-connector-sdk]\n",
+        "maintenance:\n  phases:\n    - projects: [org/scion-sdk]\n",
     ],
 )
 def test_malformed_manifest_is_typed_blocking_state(
@@ -413,7 +412,7 @@ def test_check_tree_fails_on_unsatisfiable_fleet_constraint(tmp_path, monkeypatc
     (tmp_path / "pyproject.toml").write_text(
         """
 [project]
-name = "agent-connector-sdk"
+name = "scion-sdk"
 dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
 """
     )
@@ -430,7 +429,7 @@ def test_check_tree_passes_for_satisfiable_constraint(tmp_path):
     (tmp_path / "pyproject.toml").write_text(
         """
 [project]
-name = "agent-connector-sdk"
+name = "scion-sdk"
 dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
 """
     )
@@ -456,7 +455,7 @@ dependencies = ["requests>=2.0"]
 
 
 # --------------------------------------------------------------------------- #
-# hook_declared -- lets Layer 2 (await_gate_readiness) tell "not yet adopted"
+# hook_declared -- lets a caller tell "not yet adopted"
 # apart from "adopted and genuinely failing".
 # --------------------------------------------------------------------------- #
 
@@ -489,7 +488,7 @@ def test_override_bypasses_failure_but_is_never_silent(tmp_path, monkeypatch, ca
     (tmp_path / "pyproject.toml").write_text(
         """
 [project]
-name = "agent-connector-sdk"
+name = "scion-sdk"
 dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
 """
     )
@@ -523,7 +522,7 @@ def test_no_override_env_var_means_no_bypass(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text(
         """
 [project]
-name = "agent-connector-sdk"
+name = "scion-sdk"
 dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
 """
     )
@@ -533,60 +532,6 @@ dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
     )
     assert report.ok is False
     assert report.overridden is False
-
-
-# --------------------------------------------------------------------------- #
-# await_gate_readiness -- Layer 2, the phased_push wave barrier. Gate-driven:
-# each retry RUNS the downstream repo's own pre-push gate (scripted via an
-# injected `run_gate`, never a real pre-commit invocation here) instead of
-# polling the package index directly -- see test_gates.py /
-# test_pre_push_gate.py for real, unmocked `run_gate_stage` proof, and
-# test_phased_push.py for the wave-level (multi-phase) proof.
-# --------------------------------------------------------------------------- #
-
-
-class _Clock:
-    """Deterministic fake clock + sleep so a 30-minute barrier is provable
-    without waiting 30 real minutes."""
-
-    def __init__(self):
-        self.t = 0.0
-        self.slept: list[float] = []
-
-    def now(self):
-        return self.t
-
-    def sleep(self, seconds):
-        self.slept.append(seconds)
-        self.t += seconds
-
-
-def _gate_result(*, success: bool, detail: str = "") -> RepoScanResult:
-    """A scripted `run_gate_stage`-shaped result for the HOOK_ID hook."""
-    output = f"  [{'OK' if success else 'UNSATISFIED'}] {detail}" if detail else ""
-    return RepoScanResult(
-        repo_path="irrelevant",
-        success=success,
-        exit_code=0 if success else 1,
-        hooks=[HookResult(hook_id=dr.HOOK_ID, passed=success, output=output)],
-        stage="manual",
-    )
-
-
-def test_release_barrier_runs_manual_readiness_hook(monkeypatch):
-    """Release checks the index explicitly; an ordinary pre-push does not."""
-    from repository_manager import gates
-
-    calls = []
-    expected = _gate_result(success=True)
-
-    def run_gate(repo_path, stage, *, hook_ids):
-        calls.append((repo_path, stage, hook_ids))
-        return expected
-
-    monkeypatch.setattr(gates, "run_gate_stage", run_gate)
-    assert dr._default_run_gate("/release/repo") is expected
-    assert calls == [("/release/repo", "manual", [dr.HOOK_ID])]
 
 
 def test_repository_readiness_hook_is_manual_only():
@@ -604,187 +549,6 @@ def test_repository_readiness_hook_is_manual_only():
         if hook["id"] == dr.HOOK_ID
     )
     assert hook["stages"] == ["manual"]
-
-
-def test_await_gate_readiness_resumes_early_once_satisfied(monkeypatch):
-    """The downstream repo's gate passes on the SECOND attempt -- must return
-    well before the deadline, not wait out the full `wait_minutes` budget."""
-    clock = _Clock()
-    monkeypatch.setattr(dr, "hook_declared", lambda repo_path: True)
-    attempts = {"n": 0}
-
-    def run_gate(repo_path):
-        attempts["n"] += 1
-        if attempts["n"] < 2:
-            return _gate_result(
-                success=False,
-                detail="epistemic-graph declares >=2.23.2 but only 2.23.0 is available",
-            )
-        return _gate_result(success=True)
-
-    outcome = dr.await_gate_readiness(
-        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
-        wait_minutes=30,
-        poll_interval_s=30,
-        run_gate=run_gate,
-        sleep=clock.sleep,
-        now=clock.now,
-    )
-    assert outcome.ok is True
-    assert clock.t < 30 * 60  # resumed early, nowhere near the 30-minute budget
-    assert attempts["n"] == 2
-    assert outcome.targets_checked == ["agent-connector-sdk"]
-
-
-def test_await_gate_readiness_aborts_when_deadline_passes_unsatisfied(monkeypatch):
-    """The gate names the failing repo AND the underlying constraint, never
-    just 'failed'."""
-    clock = _Clock()
-    monkeypatch.setattr(dr, "hook_declared", lambda repo_path: True)
-
-    def run_gate(repo_path):
-        return _gate_result(
-            success=False,
-            detail="epistemic-graph declares >=2.23.2 but only 2.23.0 is available",
-        )
-
-    outcome = dr.await_gate_readiness(
-        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
-        wait_minutes=2,
-        poll_interval_s=1,
-        run_gate=run_gate,
-        sleep=clock.sleep,
-        now=clock.now,
-    )
-    assert outcome.ok is False
-    assert outcome.overridden is False
-    assert outcome.failures[0].repo_name == "agent-connector-sdk"
-    assert "epistemic-graph" in outcome.failures[0].detail
-    assert clock.t >= 2 * 60  # genuinely waited out the full ceiling before giving up
-
-
-def test_await_gate_readiness_override_bypasses_abort_loudly(
-    tmp_path, monkeypatch, capsys
-):
-    clock = _Clock()
-    monkeypatch.setattr(dr, "hook_declared", lambda repo_path: True)
-    monkeypatch.setenv(dr.OVERRIDE_ENV_VAR, "operator accepted the risk")
-
-    def run_gate(repo_path):
-        return _gate_result(success=False, detail="still unsatisfiable")
-
-    outcome = dr.await_gate_readiness(
-        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
-        wait_minutes=1,
-        poll_interval_s=1,
-        run_gate=run_gate,
-        sleep=clock.sleep,
-        now=clock.now,
-        audit_repo_path=tmp_path,
-    )
-    assert outcome.ok is True
-    assert outcome.overridden is True
-    printed = capsys.readouterr().err
-    assert "OVERRIDDEN" in printed
-    assert "operator accepted the risk" in printed
-
-
-def test_await_gate_readiness_no_targets_returns_immediately():
-    clock = _Clock()
-    outcome = dr.await_gate_readiness(
-        [], wait_minutes=30, sleep=clock.sleep, now=clock.now
-    )
-    assert outcome.ok is True
-    assert outcome.waited_s == 0.0
-    assert clock.slept == []  # never even ran the gate once
-
-
-def test_await_gate_readiness_blocks_when_hook_not_adopted(monkeypatch):
-    """A downstream repo that declares a fleet constraint but has not adopted
-    the dependency-readiness hook cannot be gate-verified -- it must BLOCK,
-    never silently pass (fleet rollout of the hook is gradual)."""
-    clock = _Clock()
-    monkeypatch.setattr(dr, "hook_declared", lambda repo_path: False)
-    calls = {"n": 0}
-
-    def run_gate(repo_path):
-        calls["n"] += 1
-        return _gate_result(success=True)
-
-    outcome = dr.await_gate_readiness(
-        [("legacy-agent", "/fake/legacy-agent")],
-        wait_minutes=0.02,  # a ~1.2s ceiling is enough to prove it never blocks forever
-        poll_interval_s=1,
-        run_gate=run_gate,
-        sleep=clock.sleep,
-        now=clock.now,
-    )
-    assert outcome.ok is False
-    assert "has not adopted" in outcome.failures[0].detail
-    assert calls["n"] == 0  # never even asked to run the gate for an unverifiable repo
-
-
-def test_await_gate_readiness_backs_off_exponentially(monkeypatch):
-    """Retry intervals double (bounded by max_interval_s) rather than
-    hammering every downstream repo's gate every `poll_interval_s`."""
-    clock = _Clock()
-    monkeypatch.setattr(dr, "hook_declared", lambda repo_path: True)
-
-    def run_gate(repo_path):
-        return _gate_result(success=False, detail="still unsatisfiable")
-
-    dr.await_gate_readiness(
-        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
-        wait_minutes=10,
-        poll_interval_s=30,
-        max_interval_s=120,
-        run_gate=run_gate,
-        sleep=clock.sleep,
-        now=clock.now,
-    )
-    assert clock.slept[0] == 30
-    assert clock.slept[1] == 60
-    assert clock.slept[2] == 120
-    assert clock.slept[3] == 120  # capped, not 240
-
-
-@pytest.mark.parametrize(
-    ("wait_minutes", "poll_interval_s", "max_interval_s", "message"),
-    [
-        (float("nan"), 1.0, 1.0, "wait_minutes must be finite"),
-        (float("inf"), 1.0, 1.0, "wait_minutes must be finite"),
-        (1440.1, 1.0, 1.0, "wait_minutes must be <= 1440"),
-        (1e308, 1.0, 1.0, "wait_minutes must be <= 1440"),
-        (-1.0, 1.0, 1.0, "wait_minutes must be non-negative"),
-        (1.0, 0.0, 1.0, "poll_interval_s must be strictly positive"),
-        (1.0, float("nan"), 1.0, "poll_interval_s must be finite"),
-        (1.0, float("inf"), 1.0, "poll_interval_s must be finite"),
-        (1.0, 1.0, 0.0, "max_interval_s must be strictly positive"),
-        (1.0, 1.0, float("inf"), "max_interval_s must be finite"),
-    ],
-)
-def test_await_gate_readiness_rejects_unbounded_timing_inputs(
-    wait_minutes, poll_interval_s, max_interval_s, message
-):
-    calls = {"gate": 0, "sleep": 0}
-
-    def run_gate(_path):
-        calls["gate"] += 1
-        return _gate_result(success=False)
-
-    def sleep(_seconds):
-        calls["sleep"] += 1
-
-    with pytest.raises(ValueError, match=message):
-        dr.await_gate_readiness(
-            [("repo", "/fake/repo")],
-            wait_minutes=wait_minutes,
-            poll_interval_s=poll_interval_s,
-            max_interval_s=max_interval_s,
-            run_gate=run_gate,
-            sleep=sleep,
-        )
-    assert calls == {"gate": 0, "sleep": 0}
 
 
 # --------------------------------------------------------------------------- #
@@ -832,7 +596,7 @@ def test_main_exits_nonzero_on_unsatisfiable(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text(
         """
 [project]
-name = "agent-connector-sdk"
+name = "scion-sdk"
 dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
 """
     )
@@ -1117,266 +881,6 @@ def test_check_constraint_reports_yanked_but_would_match_on_unsatisfied():
     assert result.yanked_but_would_match == ["2.23.2"]
     assert "2.23.2" in result.detail
     assert "yanked" in result.detail
-
-
-# --------------------------------------------------------------------------- #
-# cross_check_targets -- independently recomputed, never reusing the
-# caller's own narrowing.
-# --------------------------------------------------------------------------- #
-
-
-def _write_pyproject(path, *, name, deps):
-    path.mkdir(parents=True, exist_ok=True)
-    deps_toml = ", ".join(f'"{d}"' for d in deps)
-    (path / "pyproject.toml").write_text(
-        f"""
-[project]
-name = "{name}"
-dependencies = [{deps_toml}]
-"""
-    )
-
-
-def test_cross_check_targets_finds_repo_excluded_from_targets(tmp_path):
-    covered = tmp_path / "covered"
-    _write_pyproject(
-        covered, name="agent-connector-sdk", deps=["epistemic-graph>=2.23.2"]
-    )
-    missed = tmp_path / "missed"
-    _write_pyproject(missed, name="another-repo", deps=["epistemic-graph>=2.0.0"])
-
-    targets = [("agent-connector-sdk", str(covered))]
-    candidate_repos = [
-        ("agent-connector-sdk", str(covered)),
-        ("another-repo", str(missed)),
-    ]
-
-    missing = dr.cross_check_targets(
-        targets, published_packages={"epistemic-graph"}, candidate_repos=candidate_repos
-    )
-    assert missing == [("another-repo", str(missed))]
-
-
-def test_cross_check_targets_empty_when_every_dependent_is_covered(tmp_path):
-    covered = tmp_path / "covered"
-    _write_pyproject(
-        covered, name="agent-connector-sdk", deps=["epistemic-graph>=2.23.2"]
-    )
-    targets = [("agent-connector-sdk", str(covered))]
-
-    missing = dr.cross_check_targets(
-        targets, published_packages={"epistemic-graph"}, candidate_repos=targets
-    )
-    assert missing == []
-
-
-def test_cross_check_targets_ignores_repos_not_naming_the_package(tmp_path):
-    unrelated = tmp_path / "unrelated"
-    _write_pyproject(unrelated, name="unrelated-repo", deps=["requests>=2.0"])
-
-    missing = dr.cross_check_targets(
-        [],
-        published_packages={"epistemic-graph"},
-        candidate_repos=[("unrelated-repo", str(unrelated))],
-    )
-    assert missing == []
-
-
-# --------------------------------------------------------------------------- #
-# await_gate_readiness -- targets cross-check wired in as a hard, immediate
-# abort (never entering the retry loop).
-# --------------------------------------------------------------------------- #
-
-
-def test_await_gate_readiness_aborts_immediately_on_targets_incomplete(tmp_path):
-    missed = tmp_path / "missed"
-    _write_pyproject(missed, name="another-repo", deps=["epistemic-graph>=2.0.0"])
-    clock = _Clock()
-    calls = {"n": 0}
-
-    def run_gate(repo_path):
-        calls["n"] += 1
-        return _gate_result(success=True)
-
-    outcome = dr.await_gate_readiness(
-        [],
-        wait_minutes=5,
-        run_gate=run_gate,
-        sleep=clock.sleep,
-        now=clock.now,
-        published_packages={"epistemic-graph"},
-        candidate_repos=[("another-repo", str(missed))],
-    )
-    assert outcome.ok is False
-    assert outcome.attempts == 0
-    assert outcome.waited_s == 0.0
-    assert outcome.failures[0].reason == "TARGETS_INCOMPLETE"
-    assert "TARGETS_INCOMPLETE" in outcome.failures[0].detail
-    assert calls["n"] == 0  # never even entered the retry loop
-
-
-def test_await_gate_readiness_targets_cross_check_skipped_by_default(monkeypatch):
-    """Backward compatibility: a caller that does not pass published_packages/
-    candidate_repos observes the pre-existing behavior exactly (no cross-check
-    performed at all)."""
-    clock = _Clock()
-    monkeypatch.setattr(dr, "hook_declared", lambda repo_path: True)
-
-    def run_gate(repo_path):
-        return _gate_result(success=True)
-
-    outcome = dr.await_gate_readiness(
-        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
-        wait_minutes=5,
-        run_gate=run_gate,
-        sleep=clock.sleep,
-        now=clock.now,
-    )
-    assert outcome.ok is True
-
-
-# --------------------------------------------------------------------------- #
-# await_gate_readiness -- the forge_status CI-run barrier, ahead of the
-# index-polling retry loop.
-# --------------------------------------------------------------------------- #
-
-
-class _FakeForgeBackend:
-    def __init__(self, status):
-        self.status = status
-        self.calls = []
-
-    def latest_run_for_ref(self, owner, repo, ref):
-        self.calls.append((owner, repo, ref))
-        return self.status
-
-
-def test_await_gate_readiness_ci_run_failed_aborts_before_any_gate_call(monkeypatch):
-    clock = _Clock()
-    monkeypatch.setattr(dr, "hook_declared", lambda repo_path: True)
-    calls = {"n": 0}
-
-    def run_gate(repo_path):
-        calls["n"] += 1
-        return _gate_result(success=True)
-
-    forge_backend = _FakeForgeBackend(
-        dr.forge_status.RunStatus(
-            state="completed",
-            conclusion="failure",
-            url="https://github.com/o/r/actions/runs/1",
-            started_at=None,
-        )
-    )
-    outcome = dr.await_gate_readiness(
-        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
-        wait_minutes=5,
-        run_gate=run_gate,
-        sleep=clock.sleep,
-        now=clock.now,
-        forge_backend=forge_backend,
-        forge_owner="o",
-        forge_repo="r",
-        forge_ref="v1.0.0",
-    )
-    assert outcome.ok is False
-    assert outcome.failures[0].reason == "CI_RUN_FAILED"
-    assert "https://github.com/o/r/actions/runs/1" in outcome.failures[0].detail
-    assert calls["n"] == 0  # never even polled the downstream gate
-    assert forge_backend.calls == [("o", "r", "v1.0.0")]
-
-
-def test_await_gate_readiness_ci_run_success_falls_through_to_gate_polling(monkeypatch):
-    clock = _Clock()
-    monkeypatch.setattr(dr, "hook_declared", lambda repo_path: True)
-
-    def run_gate(repo_path):
-        return _gate_result(success=True)
-
-    forge_backend = _FakeForgeBackend(
-        dr.forge_status.RunStatus(
-            state="completed", conclusion="success", url=None, started_at=None
-        )
-    )
-    outcome = dr.await_gate_readiness(
-        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
-        wait_minutes=5,
-        run_gate=run_gate,
-        sleep=clock.sleep,
-        now=clock.now,
-        forge_backend=forge_backend,
-        forge_owner="o",
-        forge_repo="r",
-        forge_ref="v1.0.0",
-    )
-    assert outcome.ok is True
-
-
-def test_await_gate_readiness_ci_run_unknown_degrades_to_gate_polling(monkeypatch):
-    clock = _Clock()
-    monkeypatch.setattr(dr, "hook_declared", lambda repo_path: True)
-
-    def run_gate(repo_path):
-        return _gate_result(success=True)
-
-    forge_backend = _FakeForgeBackend(
-        dr.forge_status.RunStatus(
-            state="unknown", conclusion=None, url=None, started_at=None
-        )
-    )
-    outcome = dr.await_gate_readiness(
-        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
-        wait_minutes=5,
-        run_gate=run_gate,
-        sleep=clock.sleep,
-        now=clock.now,
-        forge_backend=forge_backend,
-        forge_owner="o",
-        forge_repo="r",
-        forge_ref="v1.0.0",
-    )
-    assert outcome.ok is True
-
-
-def test_await_gate_readiness_ci_run_in_progress_waits_then_concludes(monkeypatch):
-    """The CI wait shares the SAME clock/deadline as the main retry loop --
-    proven here by the clock actually advancing while state='in_progress'."""
-    clock = _Clock()
-    monkeypatch.setattr(dr, "hook_declared", lambda repo_path: True)
-
-    def run_gate(repo_path):
-        return _gate_result(success=True)
-
-    statuses = [
-        dr.forge_status.RunStatus(
-            state="in_progress", conclusion=None, url=None, started_at=None
-        ),
-        dr.forge_status.RunStatus(
-            state="completed", conclusion="success", url=None, started_at=None
-        ),
-    ]
-
-    class _SeqForgeBackend:
-        def __init__(self, seq):
-            self._seq = list(seq)
-
-        def latest_run_for_ref(self, owner, repo, ref):
-            return self._seq.pop(0) if len(self._seq) > 1 else self._seq[0]
-
-    outcome = dr.await_gate_readiness(
-        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
-        wait_minutes=5,
-        poll_interval_s=1,
-        run_gate=run_gate,
-        sleep=clock.sleep,
-        now=clock.now,
-        forge_backend=_SeqForgeBackend(statuses),
-        forge_owner="o",
-        forge_repo="r",
-        forge_ref="v1.0.0",
-    )
-    assert outcome.ok is True
-    assert clock.slept  # genuinely waited for the CI run to conclude
 
 
 # --------------------------------------------------------------------------- #

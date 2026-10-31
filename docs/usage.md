@@ -13,7 +13,7 @@ small, and each can be toggled independently with its environment variable.
 | Module | Toggle | Default | Action-routed methods |
 |---|---|---|---|
 | Misc | `MISCTOOL` | `True` | health check and miscellaneous helpers |
-| Git Operations | `GIT_OPERATIONSTOOL` | `True` | `clone`, `pull`, `push`, `phased_push` (legacy `raw` is permanently retired) |
+| Git Operations | `GIT_OPERATIONSTOOL` | `True` | `clone`, `pull`, `push` (legacy `raw` is permanently retired) |
 | Workspace Management | `WORKSPACE_MANAGEMENTTOOL` | `True` | `list`, `list_branches`, `maintain`, `remediate`, `save`, `setup`, `template` |
 | Project Management | `PROJECT_MANAGEMENT_TOOL` | `True` | `build`, `install`, `validate`, `validate_status` |
 
@@ -21,7 +21,7 @@ Example agent prompts that map onto these tools:
 
 - *"List every project in the workspace."* → `workspace_management list`
 - *"Pull the latest changes for all repositories."* → `git_operations pull`
-- *"Validate the workspace, then run a phased push of the agents."* → `project_management validate` + `git_operations phased_push`
+- *"Roll scion-sdk 0.6.4 to every connector."* → `rm_rollout` (`plan`, `apply`, `status`, `release`)
 
 ## As a Python API
 
@@ -42,10 +42,10 @@ branches = git.list_branches()  # name -> current branch
 
 # Bulk operations
 git.pull_projects()  # pull every managed repository
-git.clone_projects(["agent-connector-sdk"])  # clone selected projects
+git.clone_projects(["scion-sdk"])  # clone selected projects
 
 # Validation
-result = git.validate_single_project(project_map["agent-connector-sdk"])
+result = git.validate_single_project(project_map["scion-sdk"])
 ```
 
 Load a workspace from its declarative `workspace.yml`:
@@ -53,7 +53,7 @@ Load a workspace from its declarative `workspace.yml`:
 ```python
 import os
 
-git = Git(path=os.environ["CONNECTOR_WORKSPACE_ROOT"])
+git = Git(path=os.environ["REPOSITORY_MANAGER_WORKSPACE_ROOT"])
 git.setup_from_yaml(os.environ["WORKSPACE_YML"])  # use the XDG-managed manifest
 ```
 
@@ -78,20 +78,19 @@ repository-manager --clone
 repository-manager --pull
 ```
 
-The autonomous release harness runs a validation → bump → maintain → push sequence
-that aborts on the first failure:
+`--validate` runs a full pre-release validation across the workspace.
+
+To roll a dependency floor across the fleet (one pull request per repository,
+auto-merge, resumable ledger, tag after merge), use the `rollout` command:
 
 ```bash
-repository-manager --validate --bump patch --maintain --push
+repository-manager rollout --dependency scion-sdk --floor 0.6.4 --dry-run
+repository-manager rollout --dependency scion-sdk --floor 0.6.4
+repository-manager rollout status --dependency scion-sdk --floor 0.6.4
+repository-manager rollout release --dependency scion-sdk --floor 0.6.4
 ```
 
-- **`--validate`** runs a full pre-release validation; subsequent steps abort on failure.
-- **`--bump [patch|minor|major]`** bumps semantic versions.
-- **`--maintain`** propagates version changes through the five-phase dependency tree.
-- **`--push`** runs a parallelized, phase-gated Git push; phase transitions are decided by running downstream repos' own pre-push gates, with `wait_minutes` as the retry ceiling (CONCEPT:RM-DEP-READY — see `docs/phased_push.md`). Phase 5 is restricted to manifest-classified, PyPI-buildable agent repositories and fails closed for infrastructure or incomplete metadata.
-
-The phased mechanics are documented in detail in
-[Phased Maintenance](phased_maintenance.md) and [Phased Push](phased_push.md).
+See [Dependency rollout](rollout.md).
 
 ### Lane lifecycle (`CONCEPT:RM-LANE-DOCTOR`)
 
@@ -102,7 +101,7 @@ executable rather than a convention:
 ```bash
 # Open a lane: a worktree PLUS a partitioned cargo target dir, pytest basetemp,
 # TMPDIR and PRE_COMMIT_HOME -- and a preflight that proves the isolation.
-repository-manager --lane start --lane-repo agent-connector-sdk --lane-branch lane/my-change
+repository-manager --lane start --lane-repo scion-sdk --lane-branch lane/my-change
 
 # Adopt the environment in your shell.
 eval "$(repository-manager --lane env --lane-path . --lane-shell)"
@@ -215,8 +214,8 @@ flowchart LR
 For a development bootstrap, the root `workspace.yml` is the only authority.
 The Arbora XDG copy retains its canonical bytes, including private runtime
 values. This package's `workspace.yml` is a separate portable projection: the
-workspace root becomes `${CONNECTOR_WORKSPACE_ROOT}`, private URL origins
-become `${AGENT_UTILITIES_REPO_ORIGIN}`, and private service suffixes become
+workspace root becomes `${REPOSITORY_MANAGER_WORKSPACE_ROOT}`, private URL origins
+become `${ARBORA_REPO_ORIGIN}`, and private service suffixes become
 `${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}`. The gate rejects embedded URL
 credentials, secret fields, and absolute paths outside the declared workspace
 before either destination can be written.
@@ -262,7 +261,7 @@ profiles:
 selectors:
   core:
     include:
-      - agent-packages/agent-connector-sdk
+      - agent-packages/scion-sdk
       - agent-packages/agents/repository-manager
 ```
 
@@ -282,3 +281,12 @@ A manifest with no requested profile or selector exposes every declared
 repository. Automation should consume the reported `selected_repositories`
 identifiers directly; do not collapse them to basenames when the manifest
 contains duplicate names.
+
+## Default workspace definition
+
+With no `-f` and no `WORKSPACE_YML`, `DEFAULT_WORKSPACE_YML` is the packaged seed
+`repository_manager/workspace.yml`; `--setup` and `--clone` provision from it. The runtime
+copy at `~/.config/arbora/workspace.yml` is used only by manifest synchronisation
+(`workspace_manifest`), never as an implicit override of the packaged default. The seed
+reads `${REPOSITORY_MANAGER_WORKSPACE_ROOT}` (workspace root) and `${ARBORA_REPO_ORIGIN}`
+(private git origin).

@@ -32,8 +32,8 @@ from repository_manager.governance.concept_reservation import (
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    (tmp_path / "agent_connector_sdk").mkdir()
-    (tmp_path / "agent_connector_sdk" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "scion_sdk").mkdir()
+    (tmp_path / "scion_sdk" / "__init__.py").write_text("", encoding="utf-8")
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "concepts.yaml").write_text(
         yaml.safe_dump({"concepts": []}), encoding="utf-8"
@@ -55,7 +55,7 @@ def request(
     return reservation_request(
         concept_id,
         tenant_id=tenant,
-        repository="agent-connector-sdk",
+        repository="scion-sdk",
         lane="rmdd-16",
         owner=owner,
         request_key=key,
@@ -617,8 +617,8 @@ def test_expiry_requires_time_and_records_expiry_timestamp() -> None:
 
 def test_reconciliation_is_bounded_and_rejects_stuck_cursor(tmp_path: Path) -> None:
     repo_root = tmp_path
-    (repo_root / "agent_connector_sdk").mkdir()
-    (repo_root / "agent_connector_sdk" / "__init__.py").write_text("", encoding="utf-8")
+    (repo_root / "scion_sdk").mkdir()
+    (repo_root / "scion_sdk" / "__init__.py").write_text("", encoding="utf-8")
     (repo_root / "docs").mkdir()
     (repo_root / "docs" / "concepts.yaml").write_text(
         yaml.safe_dump({"concepts": []}), encoding="utf-8"
@@ -668,7 +668,7 @@ def test_materialization_is_retryable_and_reconciliation_is_read_only(
     assert result.matches == (reserved.concept_id,)
     assert result.missing_projection == ()
 
-    marker = repo / "agent_connector_sdk" / "feature.py"
+    marker = repo / "scion_sdk" / "feature.py"
     marker.write_text(f"# CONCEPT:{reserved.concept_id}\n", encoding="utf-8")
     after_marker = reconcile_projection(
         authority, tenant_ref=reserved.tenant_ref, repo_root=repo

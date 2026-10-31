@@ -1,19 +1,18 @@
 # Versioned fleet merge-queue runner
 
-`repository-manager-install-merge-queue-runner` installs the fast queue runner,
-its timer, and the separate heavy phased-push lane from the same release as
-repository-manager:
+`repository-manager-install-merge-queue-runner` installs the fast queue runner
+and its timer from the same release as repository-manager:
 
 ```bash
 repository-manager-install-merge-queue-runner \
   --workspace-root /home/app/workspace
 ```
 
-Installation writes the executable and all four units through same-directory
+Installation writes the executable and both units through same-directory
 temporary files, checks every installed payload against its rendered source
 SHA-256, then runs `systemctl --user daemon-reload`. If a write or reload
 fails, the destinations are restored to their pre-install contents. The
-installer does not enable or start either timer; inspect the hash report first,
+installer does not enable or start the timer; inspect the hash report first,
 then opt in explicitly:
 
 ```mermaid
@@ -24,13 +23,10 @@ flowchart LR
     queues --> child[Repo-scoped queue child]
     child --> lease[Lease TTL beyond wall deadline]
     child --> cgroup[Cgroup/process-tree verification]
-    push_timer[Heavy phased-push timer] --> push["Direct Python module, one thread"]
-    push --> heavy[Dedicated heavy resource/deadline envelope]
 ```
 
 ```bash
 systemctl --user enable --now merge-queue-runner.timer
-systemctl --user enable --now phased-push-runner.timer
 ```
 
 The runner reads the canonical `workspace.yml` under the configured workspace
@@ -66,7 +62,7 @@ invokes the existing repo-scoped `reconciliation-merge` lease via:
 
 The fast timer passes both `--queue-no-prune` and `--queue-no-push`: it performs
 the repo's fast differential merge gates and local landing only. Publication is
-durably visible as `landed_unpushed` and belongs to the heavy phased-push timer;
+durably visible as `landed_unpushed` and is left to the operator;
 the existing direct queue API keeps its default push-on-land behavior for
 operators that explicitly request it. Exit 75 is a normal lease deferral;
 other non-zero child statuses are reported as failures. The user service
@@ -91,18 +87,7 @@ left unattempted. The installed unit sets `TimeoutStartSec` to the global
 deadline plus a 60-second stop margin. This is a supervisor safety ceiling,
 not a way to disable the per-gate deadlines declared in each `.mergequeue.yaml`.
 
-The phased-push unit is intentionally separate: it invokes the versioned
-runner, which starts `<installed-python> -m repository_manager --workspace
-<root> --file <validated-generated-manifest> --threads 1 --push` directly and
-checks the entire descendant process tree. The generated manifest is derived
-from canonical `workspace.yml` and removes only the declared reference-input
-components (including `open-source-libraries`); missing canonical roots still
-fail before the child starts. It has a default 18,000-second unit
-deadline and `RM_GATE_TIMEOUT_SECONDS=14400`. Its `MemoryHigh=15G`,
-`MemoryMax=16G`, `MemorySwapMax=1G`, `CPUQuota=400%`, and `TasksMax=512` are
-reserved for the heavy lane that previously exceeded the queue unit's 12G
-limit. The fast queue lane remains at `MemoryMax=6G`, `CPUQuota=200%`, and
-`TasksMax=256`.
+The fast queue lane runs at `MemoryMax=6G`, `CPUQuota=200%`, and `TasksMax=256`.
 
 The runner derives a repo-scoped lease TTL that is longer than the wall-clock
 deadline (by a 10-minute safety margin) and passes it to the child as
@@ -115,7 +100,7 @@ receipts with `ttl_seconds`, `acquired_at`, and `expires_at`, and the same
 records are emitted through the repository-manager logger for fleet telemetry.
 
 For a portable projection, pass `--manifest` explicitly and set
-`CONNECTOR_WORKSPACE_ROOT`; the projection must still declare that same
+`REPOSITORY_MANAGER_WORKSPACE_ROOT`; the projection must still declare that same
 root (an unresolved or mismatched `path` is a manifest-drift error). The
 installed unit embeds the workspace root and age/timeout bounds, so the timer
 does not depend on its current working directory.

@@ -9,13 +9,13 @@ Manage the operator's git projects
 
 ## Enterprise Readiness
 
-All agents in the ecosystem inherit enterprise-grade infrastructure from `agent-connector-sdk`:
+All agents in the ecosystem inherit enterprise-grade infrastructure from `scion-sdk`:
 
 | Feature | Status | Source |
 |:--------|:-------|:-------|
-| **JWT/OIDC Authentication** | ✅ Built-in | `agent-connector-sdk` — Authlib JWKS + API key middleware |
-| **OpenTelemetry Instrumentation** | ✅ Built-in | `agent-connector-sdk` — OTLP export, FastAPI auto-instrumentation |
-| **HashiCorp Vault Integration** | ✅ Built-in | `agent-connector-sdk` — `secret://`, `env://`, `vault://` URI schemes |
+| **JWT/OIDC Authentication** | ✅ Built-in | `scion-sdk` — Authlib JWKS + API key middleware |
+| **OpenTelemetry Instrumentation** | ✅ Built-in | `scion-sdk` — OTLP export, FastAPI auto-instrumentation |
+| **HashiCorp Vault Integration** | ✅ Built-in | `scion-sdk` — `secret://`, `env://`, `vault://` URI schemes |
 | **Audit Logging** | ✅ Built-in | Append-only compliance trail with 30+ action types (CONCEPT:AU-OS.governance.wasm-micro-agent-sandbox) |
 | **Token Usage Analytics** | ✅ Built-in | 4-bucket tracking with budget alerting (CONCEPT:AU-OS.governance.wasm-micro-agent-sandbox) |
 | **Prompt Injection Defense** | ✅ Built-in | 25+ pattern scanner + jailbreak taxonomy (CONCEPT:AU-OS.config.secrets-authentication) |
@@ -30,9 +30,9 @@ This project implements or inherits the following ecosystem concepts:
 
 | Concept ID | Description | Source |
 |:-----------|:------------|:-------|
-| ECO-4.1 | MCP & Universal Skills | `agent-connector-sdk` (inherited) |
-| KG-2.0 | Active Knowledge Graph | `agent-connector-sdk` (inherited) |
-| OS-5.0 | Agent OS Kernel | `agent-connector-sdk` (inherited) |
+| ECO-4.1 | MCP & Universal Skills | `scion-sdk` (inherited) |
+| KG-2.0 | Active Knowledge Graph | `scion-sdk` (inherited) |
+| OS-5.0 | Agent OS Kernel | `scion-sdk` (inherited) |
 
 > 📖 **Full Registry**: See [`scion-sdk/docs/overview.md`](https://github.com/Knuckles-Team/scion-sdk/blob/main/docs/overview.md) for the complete 5-Pillar concept index.
 

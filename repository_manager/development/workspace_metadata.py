@@ -292,7 +292,10 @@ def _read_bounded_file(path: Path, limits: MetadataLimits) -> bytes:
     if candidate.is_symlink():
         raise MetadataError(f"metadata file must not be a symlink: {candidate.name}")
     try:
-        descriptor = os.open(candidate, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            candidate,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+        )
     except OSError as exc:
         raise MetadataError(
             f"metadata file could not be opened: {candidate.name}"

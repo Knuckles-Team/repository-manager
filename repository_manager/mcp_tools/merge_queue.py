@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_connector_sdk.mcp.action_dispatch import resolve_action
-from agent_connector_sdk.mcp.concurrency import run_blocking
 from fastmcp import Context, FastMCP
 from pydantic import Field
+from scion_sdk.mcp.action_dispatch import resolve_action
+from scion_sdk.mcp.concurrency import run_blocking
 
 from repository_manager.mcp_tools.context import McpToolContext
 from repository_manager.mcp_tools.contracts import RM_MERGE_QUEUE_ACTIONS
@@ -66,8 +66,8 @@ def register_merge_queue_tools(
             default=True,
             description=(
                 "Publish a landed base through the repository's gated push path. "
-                "Set false for the fast queue timer; the phased-push scheduler "
-                "then owns publication."
+                "Set false for the fast queue timer; publication is then "
+                "a separate, explicit push."
             ),
         ),
         ctx: Context | None = Field(
@@ -79,12 +79,12 @@ def register_merge_queue_tools(
         The canonical driver of parallel development: lanes take worktrees, work,
         then hand branches here, and the queue gates them **as merged**,
         fast-forwards the base, and prunes the worktree and branch. Set ``push``
-        false when a scheduler must leave publication to phased push.
+        false when a scheduler must leave publication to a separate push.
 
         **The queue does not know what a gate is.** Gates are declared in the
         target repository's own ``.mergequeue.yaml`` — a command, a tier, a
         timeout, and how to compare its result against the base ref.
-        agent-connector-sdk declares pytest + ruff + its contract scripts;
+        scion-sdk declares pytest + ruff + its contract scripts;
         epistemic-graph declares ``cargo check --all-features`` + clippy; a docs
         repo could declare only a link check. A repository with no declaration is
         REFUSED rather than defaulted, because "declared no gates" and "has no
@@ -107,7 +107,7 @@ def register_merge_queue_tools(
         the repo's own gated push path (``_gate_before_push`` + ``push_project``
         — the same pre-commit gates and GH013/divergent-remote handling a manual
         push gets). With ``push`` false, publication is deliberately deferred to
-        the phased-push scheduler. A push failure never fails the landing —
+        a separate push. A push failure never fails the landing —
         ``landed: true, pushed: false`` is a legitimate, visible intermediate
         state; check ``push_error`` on the outcome for why. The queue's own
         ``run`` summary also reports ``pushed``/``landed_unpushed`` counts.

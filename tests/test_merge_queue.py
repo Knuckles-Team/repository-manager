@@ -6,7 +6,7 @@ of either would prove nothing about it.
 
 The headline test is :func:`test_a_rust_repo_lands_through_the_queue_with_a_cargo_gate`:
 it stands up a genuine cargo crate, declares ``cargo check --all-features`` as
-its only gate, and lands a candidate through the same code path agent-connector-sdk
+its only gate, and lands a candidate through the same code path scion-sdk
 would use with pytest. That is the whole claim of this module — that the queue
 does not know what a gate IS — and it is checked, not asserted.
 """
@@ -88,7 +88,8 @@ _CURRENT_LANE_REGISTRY: LaneRegistry | None = None
 
 @pytest.fixture(autouse=True)
 def _authorized_test_lane_registry(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> Iterator[LaneRegistry]:
     global _CURRENT_LANE_REGISTRY
     monkeypatch.setenv("AU_LANE_TEMP_ROOT", str(tmp_path / "lanes"))
@@ -251,7 +252,12 @@ def _cargo_runs() -> bool:
     if shutil.which("cargo") is None:
         return False
     try:
-        return subprocess.run(["cargo", "--version"], capture_output=True, timeout=60).returncode == 0
+        return (
+            subprocess.run(
+                ["cargo", "--version"], capture_output=True, timeout=60
+            ).returncode
+            == 0
+        )
     except (OSError, subprocess.SubprocessError):
         return False
 
@@ -259,9 +265,11 @@ def _cargo_runs() -> bool:
 # ---------------------------------------------------------------------------
 # THE GENERICITY PROOF — a Rust repository, gated by cargo, end to end
 # ---------------------------------------------------------------------------
-@pytest.mark.skipif(not _cargo_runs(), reason="cargo is not installed or not runnable here")
+@pytest.mark.skipif(
+    not _cargo_runs(), reason="cargo is not installed or not runnable here"
+)
 def test_a_rust_repo_lands_through_the_queue_with_a_cargo_gate(tmp_path: Path) -> None:
-    """A cargo repo lands through the SAME queue agent-connector-sdk uses with pytest.
+    """A cargo repo lands through the SAME queue scion-sdk uses with pytest.
 
     This is the evidence that the capability was mis-homed: epistemic-graph has
     no merge queue at all today, and its lane had to hand-apply the discipline.
@@ -337,7 +345,9 @@ def test_a_rust_repo_lands_through_the_queue_with_a_cargo_gate(tmp_path: Path) -
     assert "type error" not in log
 
 
-@pytest.mark.skipif(not _cargo_runs(), reason="cargo is not installed or not runnable here")
+@pytest.mark.skipif(
+    not _cargo_runs(), reason="cargo is not installed or not runnable here"
+)
 def test_the_cargo_gate_is_differential_not_absolute(tmp_path: Path) -> None:
     """A candidate touching an ALREADY-BROKEN crate still lands — behaviour 1.
 
@@ -1185,7 +1195,7 @@ def test_duplicate_gate_names_are_rejected(tmp_path: Path) -> None:
                 "gates": [
                     {"name": "x", "command": ["true"]},
                     {"name": "x", "command": ["false"]},
-                ]
+                ],
             }
         )
 
@@ -1442,7 +1452,7 @@ def test_the_mcp_tool_is_registered_and_declares_every_action() -> None:
 
     # Register against a bare FastMCP rather than `get_mcp_instance()`: the full
     # server factory is currently unbuildable in this environment for a reason
-    # that has nothing to do with this tool (`agent_connector_sdk.mcp.tasks_extension`
+    # that has nothing to do with this tool (`scion_sdk.mcp.tasks_extension`
     # imports `MCPError` from `mcp.shared.exceptions`, which the installed `mcp`
     # spells `McpError`). `tests/test_mcp_registration.py` already owns and
     # reports that rule — one rule, one message — so this test pins ITS OWN
@@ -1505,7 +1515,7 @@ def test_the_cli_returns_75_when_the_lease_is_held(
 # D-RMD-1 — the queue reported `landed` while the base ref never moved
 #
 # The original defect merged into whatever HEAD was, not into the declared base.
-# In agent-connector-sdk the canonical checkout always sits on `main`, so "merge into
+# In scion-sdk the canonical checkout always sits on `main`, so "merge into
 # HEAD" coincidentally equalled "land on base" and seven audited landings were
 # genuinely correct -- luck, not correctness. These tests remove the luck.
 # ---------------------------------------------------------------------------
@@ -1733,7 +1743,7 @@ def test_landing_still_works_when_canonical_IS_on_the_base(shell_repo: Path) -> 
     assert _run("git rev-parse HEAD", shell_repo) == outcome["to"]
 
 
-def test_queue_fast_drain_can_defer_publication_without_invoking_heavy_push(
+def test_queue_fast_drain_can_defer_publication_without_pushing(
     shell_repo: Path,
 ) -> None:
     """The timer's no-push mode lands locally and leaves publication visible."""
@@ -1751,7 +1761,7 @@ def test_queue_fast_drain_can_defer_publication_without_invoking_heavy_push(
 
     assert outcome["landed"] is True
     assert outcome["pushed"] is False
-    assert "dedicated phased-push scheduler" in outcome["push_error"]
+    assert "publication is a separate, explicit push" in outcome["push_error"]
     push_project.assert_not_called()
 
 

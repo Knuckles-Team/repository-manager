@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sqlite3
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -20,6 +19,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Protocol, runtime_checkable
 
+from . import portable_fs as pfs
 from .lane_quota import LaneQuota, LaneQuotaDecision, LaneQuotaPolicy
 from .lane_record import (
     ACTIVE_STATES,
@@ -796,12 +796,7 @@ class LaneRegistry:
     @staticmethod
     def _resolve_store_path(store_path: str | Path | None) -> str:
         if store_path is None:
-            state_root = Path(
-                os.getenv(
-                    "XDG_STATE_HOME",
-                    str(Path.home() / ".local" / "state"),
-                )
-            )
+            state_root = pfs.state_home()
             path = state_root / "repository-manager" / "lanes.sqlite3"
             path.parent.mkdir(parents=True, exist_ok=True)
             return str(path)

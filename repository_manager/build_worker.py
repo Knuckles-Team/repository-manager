@@ -71,7 +71,10 @@ def _read_bounded_regular_file(path: Path, limit: int) -> bytes:
 
     descriptor: int | None = None
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+        )
         file_stat = os.fstat(descriptor)
         if not stat.S_ISREG(file_stat.st_mode):
             raise BuildWorkerError("build config is not a regular file")
@@ -558,7 +561,7 @@ def _terminal_matches(
 
 
 class GraphBuildAuthority:
-    """Production adapter over the existing Agent Connector SDK WorkItem verbs."""
+    """Production adapter over the existing Scion SDK WorkItem verbs."""
 
     def __init__(
         self,

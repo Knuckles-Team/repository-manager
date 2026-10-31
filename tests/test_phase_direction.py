@@ -30,7 +30,7 @@ from repository_manager.cli_commands.phase_direction import (
 )
 from tests.conftest import isolated_git_subprocess_env
 
-AU = "agent-packages/agent-connector-sdk"
+AU = "agent-packages/scion-sdk"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _MANIFEST = """
@@ -41,7 +41,7 @@ subdirectories:
   agent-packages:
     repositories:
       - url: https://example.invalid/org/epistemic-graph.git
-      - url: https://example.invalid/org/agent-connector-sdk.git
+      - url: https://example.invalid/org/scion-sdk.git
       - url: https://example.invalid/org/arbora.git
     subdirectories:
       agents:
@@ -55,13 +55,15 @@ maintenance:
   phases:
     - {{phase: 1, projects: [pipelines]}}
     - {{phase: 2, projects: [epistemic-graph]}}
-    - {{phase: 4, projects: [agent-connector-sdk{extra_phase_project}]}}
+    - {{phase: 4, projects: [scion-sdk{extra_phase_project}]}}
     - {{phase: 5, projects: [arbora]}}
     - {{phase: 7, bulk_push: true}}
 """
 
 
-def _manifest(root: Path, *, extra_top: str = "", extra_phase_project: str = "") -> Path:
+def _manifest(
+    root: Path, *, extra_top: str = "", extra_phase_project: str = ""
+) -> Path:
     path = root / "workspace.yml"
     path.write_text(
         _MANIFEST.format(extra_top=extra_top, extra_phase_project=extra_phase_project)
@@ -119,9 +121,7 @@ def _init_repo_with_remote(path: Path, remote_url: str) -> Path:
     return path
 
 
-def _here(
-    root: Path | None, manifest: Path, start: Path
-) -> dr.PhaseDirectionReport:
+def _here(root: Path | None, manifest: Path, start: Path) -> dr.PhaseDirectionReport:
     return dr.check_phase_direction_here(manifest, workspace_root=root, start=start)
 
 
@@ -130,9 +130,9 @@ def _here(
 
 def test_phase4_runtime_dependency_on_phase5_package_fails(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
-    _pyproject(tmp_path, AU, "agent-connector-sdk", 'dependencies = ["arbora>=1.0"]\n')
+    _pyproject(tmp_path, AU, "scion-sdk", 'dependencies = ["arbora>=1.0"]\n')
 
-    report = _check(tmp_path, manifest, "agent-connector-sdk")
+    report = _check(tmp_path, manifest, "scion-sdk")
 
     assert report.ok is False
     assert report.errors == []
@@ -155,8 +155,8 @@ def test_phase4_runtime_dependency_on_phase5_package_fails(tmp_path: Path) -> No
     assert payload["violation_counts"]["runtime"] == 1
 
     # The same repository without that one edge passes: the edge was the cause.
-    _pyproject(tmp_path, AU, "agent-connector-sdk", "dependencies = []\n")
-    assert _check(tmp_path, manifest, "agent-connector-sdk").ok is True
+    _pyproject(tmp_path, AU, "scion-sdk", "dependencies = []\n")
+    assert _check(tmp_path, manifest, "scion-sdk").ok is True
 
 
 # (b) --------------------------------------------------------------------------
@@ -164,17 +164,19 @@ def test_phase4_runtime_dependency_on_phase5_package_fails(tmp_path: Path) -> No
 
 def test_same_phase_and_earlier_phase_edges_pass(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
-    _pyproject(tmp_path, AU, "agent-connector-sdk", 'dependencies = ["epistemic-graph[full]>=2"]\n')
+    _pyproject(
+        tmp_path, AU, "scion-sdk", 'dependencies = ["epistemic-graph[full]>=2"]\n'
+    )
     _pyproject(
         tmp_path,
         "agent-packages/agents/agent-a",
         "agent-a",
-        'dependencies = ["agent-connector-sdk>=1", "agent-b>=0.1", "requests"]\n',
+        'dependencies = ["scion-sdk>=1", "agent-b>=0.1", "requests"]\n',
     )
     _source(
         tmp_path,
         "agent-packages/agents/agent-a/agent_a/server.py",
-        "import agent_b\nfrom agent_connector_sdk.mcp import serve\nimport epistemic_graph.client\n",
+        "import agent_b\nfrom scion_sdk.mcp import serve\nimport epistemic_graph.client\n",
     )
     _pyproject(tmp_path, "agent-packages/agents/agent-b", "agent-b")
     # A `services/` stack is infra, never in scope — even with no phase.
@@ -247,10 +249,10 @@ def test_later_phase_import_fails_in_production_but_is_test_class_in_tests(
     tmp_path: Path,
 ) -> None:
     manifest = _manifest(tmp_path)
-    _pyproject(tmp_path, AU, "agent-connector-sdk")
+    _pyproject(tmp_path, AU, "scion-sdk")
     _source(
         tmp_path,
-        f"{AU}/agent_connector_sdk/host.py",
+        f"{AU}/scion_sdk/host.py",
         "# import arbora  (a comment: no import)\n"
         "from .arbora import local_module\n"
         "text = 'import arbora'\n"
@@ -258,22 +260,24 @@ def test_later_phase_import_fails_in_production_but_is_test_class_in_tests(
         "from arbora.gateway import Gateway\n",
     )
 
-    report = _check(tmp_path, manifest, "agent-connector-sdk")
+    report = _check(tmp_path, manifest, "scion-sdk")
 
     assert report.ok is False
     assert report.errors == []
     assert [(e.edge_class, e.location, e.blocking) for e in report.violations] == [
-        ("import", f"{AU}/agent_connector_sdk/host.py:5", True)
+        ("import", f"{AU}/scion_sdk/host.py:5", True)
     ]
 
-    (tmp_path / AU / "agent_connector_sdk" / "host.py").unlink()
+    (tmp_path / AU / "scion_sdk" / "host.py").unlink()
     _source(tmp_path, f"{AU}/tests/unit/test_host.py", "import arbora\n")
     _source(tmp_path, f"{AU}/conftest.py", "from arbora import fixtures\n")
 
-    report = _check(tmp_path, manifest, "agent-connector-sdk")
+    report = _check(tmp_path, manifest, "scion-sdk")
 
     assert report.ok is True, report.as_dict()
-    assert sorted((e.edge_class, e.location, e.blocking) for e in report.violations) == [
+    assert sorted(
+        (e.edge_class, e.location, e.blocking) for e in report.violations
+    ) == [
         ("test-import", f"{AU}/conftest.py:1", False),
         ("test-import", f"{AU}/tests/unit/test_host.py:1", False),
     ]
@@ -297,10 +301,10 @@ def test_literal_dynamic_import_of_later_phase_fails(
     tmp_path: Path, source: str
 ) -> None:
     manifest = _manifest(tmp_path)
-    _pyproject(tmp_path, AU, "agent-connector-sdk")
-    _source(tmp_path, f"{AU}/agent_connector_sdk/host.py", source)
+    _pyproject(tmp_path, AU, "scion-sdk")
+    _source(tmp_path, f"{AU}/scion_sdk/host.py", source)
 
-    report = _check(tmp_path, manifest, "agent-connector-sdk")
+    report = _check(tmp_path, manifest, "scion-sdk")
 
     assert report.ok is False
     assert report.errors == []
@@ -312,16 +316,16 @@ def test_literal_dynamic_import_of_later_phase_fails(
 
 def test_nonliteral_dynamic_import_is_not_invented_as_an_edge(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
-    _pyproject(tmp_path, AU, "agent-connector-sdk")
+    _pyproject(tmp_path, AU, "scion-sdk")
     _source(
         tmp_path,
-        f"{AU}/agent_connector_sdk/host.py",
+        f"{AU}/scion_sdk/host.py",
         "import importlib\n"
         'module_name = "graph_" + "os"\n'
         "importlib.import_module(module_name)\n",
     )
 
-    report = _check(tmp_path, manifest, "agent-connector-sdk")
+    report = _check(tmp_path, manifest, "scion-sdk")
 
     assert report.ok is True, report.as_dict()
     assert report.edges == []
@@ -329,11 +333,11 @@ def test_nonliteral_dynamic_import_is_not_invented_as_an_edge(tmp_path: Path) ->
 
 def test_unparseable_source_naming_a_fleet_package_is_blocking(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
-    _pyproject(tmp_path, AU, "agent-connector-sdk")
-    _source(tmp_path, f"{AU}/agent_connector_sdk/broken.py", "import arbora(\n")
-    _source(tmp_path, f"{AU}/agent_connector_sdk/unrelated.py", "def broken(:\n")
+    _pyproject(tmp_path, AU, "scion-sdk")
+    _source(tmp_path, f"{AU}/scion_sdk/broken.py", "import arbora(\n")
+    _source(tmp_path, f"{AU}/scion_sdk/unrelated.py", "def broken(:\n")
 
-    report = _check(tmp_path, manifest, "agent-connector-sdk")
+    report = _check(tmp_path, manifest, "scion-sdk")
 
     assert report.ok is False
     assert [Path(e.declared_by).name for e in report.errors] == ["broken.py"]
@@ -342,13 +346,13 @@ def test_unparseable_source_naming_a_fleet_package_is_blocking(tmp_path: Path) -
 
 def test_nested_checkouts_and_build_output_are_not_scanned(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
-    _pyproject(tmp_path, AU, "agent-connector-sdk")
+    _pyproject(tmp_path, AU, "scion-sdk")
     _source(tmp_path, f"{AU}/vendor/other/.git/HEAD", "ref: refs/heads/main\n")
     _source(tmp_path, f"{AU}/vendor/other/mod.py", "import arbora\n")
     for skipped in ("build", ".venv", "target-isolated", "pkg.egg-info"):
         _source(tmp_path, f"{AU}/{skipped}/mod.py", "import arbora\n")
 
-    report = _check(tmp_path, manifest, "agent-connector-sdk")
+    report = _check(tmp_path, manifest, "scion-sdk")
 
     assert report.ok is True, report.as_dict()
     assert report.edges == []
@@ -364,10 +368,10 @@ def test_optional_extra_and_dependency_group_edges_are_classified_and_fail(
     _pyproject(
         tmp_path,
         AU,
-        "agent-connector-sdk",
+        "scion-sdk",
         "dependencies = []\n"
         "[project.optional-dependencies]\n"
-        'serving = ["agent-connector-sdk", "arbora>=1"]\n'
+        'serving = ["scion-sdk", "arbora>=1"]\n'
         "[dependency-groups]\n"
         'dev = ["pytest", {include-group = "lint"}, "arbora"]\n'
         'lint = ["ruff"]\n'
@@ -375,7 +379,7 @@ def test_optional_extra_and_dependency_group_edges_are_classified_and_fail(
         'dev-dependencies = ["arbora"]\n',
     )
 
-    report = _check(tmp_path, manifest, "agent-connector-sdk")
+    report = _check(tmp_path, manifest, "scion-sdk")
 
     assert report.ok is False
     assert report.errors == []
@@ -395,9 +399,9 @@ def test_optional_extra_and_dependency_group_edges_are_classified_and_fail(
 
 def test_malformed_dependency_group_is_typed_blocking_state(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
-    _pyproject(tmp_path, AU, "agent-connector-sdk", '[dependency-groups]\ndev = "pytest"\n')
+    _pyproject(tmp_path, AU, "scion-sdk", '[dependency-groups]\ndev = "pytest"\n')
 
-    report = _check(tmp_path, manifest, "agent-connector-sdk")
+    report = _check(tmp_path, manifest, "scion-sdk")
 
     assert report.ok is False
     assert "dependency group 'dev' must be a list" in report.errors[0].detail
@@ -436,7 +440,7 @@ def test_malformed_phase_plan_is_an_error_not_a_pass(
 
 def _violating_workspace(tmp_path: Path) -> Path:
     manifest = _manifest(tmp_path)
-    _pyproject(tmp_path, AU, "agent-connector-sdk", 'dependencies = ["arbora>=1.0"]\n')
+    _pyproject(tmp_path, AU, "scion-sdk", 'dependencies = ["arbora>=1.0"]\n')
     return manifest
 
 
@@ -447,11 +451,11 @@ def test_dispatch_and_rm_gates_route_report_the_same_violation(tmp_path: Path) -
         "phase_direction",
         manifest_path=str(manifest),
         workspace_root=str(tmp_path),
-        repositories=["agent-connector-sdk"],
+        repositories=["scion-sdk"],
     )
     routed = gate_runner.dispatch(
         "phase_direction",
-        repos="agent-connector-sdk",
+        repos="scion-sdk",
         manifest_path=str(manifest),
         workspace_root=str(tmp_path),
     )
@@ -467,13 +471,13 @@ def test_cli_adapter_prints_json_and_exits_nonzero(tmp_path: Path, capsys) -> No
     args = argparse.Namespace(
         file=str(manifest),
         workspace=str(tmp_path),
-        phase_direction_repository=["agent-connector-sdk"],
+        phase_direction_repository=["scion-sdk"],
     )
 
     assert run_phase_direction_cli(args) == 1
     assert json.loads(capsys.readouterr().out)["blocking_violation_count"] == 1
 
-    _pyproject(tmp_path, AU, "agent-connector-sdk")
+    _pyproject(tmp_path, AU, "scion-sdk")
     assert run_phase_direction_cli(args) == 0
 
 
@@ -515,27 +519,27 @@ def test_cli_flag_exits_before_any_git_factory_call(tmp_path: Path, capsys) -> N
 
 def test_infer_from_canonical_checkout_matches_the_named_check(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
-    checkout = _pyproject(tmp_path, AU, "agent-connector-sdk", 'dependencies = ["arbora>=1.0"]\n')
-    _init_repo_with_remote(checkout, "https://example.invalid/org/agent-connector-sdk.git")
+    checkout = _pyproject(tmp_path, AU, "scion-sdk", 'dependencies = ["arbora>=1.0"]\n')
+    _init_repo_with_remote(checkout, "https://example.invalid/org/scion-sdk.git")
 
     report = _here(tmp_path, manifest, checkout)
 
     assert report.errors == []
-    assert [
-        (r.repository, r.name, r.phase, r.status) for r in report.repositories
-    ] == [(AU, "agent-connector-sdk", 4, "checked")]
+    assert [(r.repository, r.name, r.phase, r.status) for r in report.repositories] == [
+        (AU, "scion-sdk", 4, "checked")
+    ]
     assert [e.to_package for e in report.violations] == ["arbora"]
     assert report.ok is False
 
     # Matches the workspace-wide, name-selected check exactly.
-    named = _check(tmp_path, manifest, "agent-connector-sdk")
+    named = _check(tmp_path, manifest, "scion-sdk")
     assert report.as_dict() == named.as_dict()
 
 
 def test_infer_from_canonical_checkout_with_no_violation_passes(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
-    checkout = _pyproject(tmp_path, AU, "agent-connector-sdk")
-    _init_repo_with_remote(checkout, "https://example.invalid/org/agent-connector-sdk.git")
+    checkout = _pyproject(tmp_path, AU, "scion-sdk")
+    _init_repo_with_remote(checkout, "https://example.invalid/org/scion-sdk.git")
 
     report = _here(tmp_path, manifest, checkout)
 
@@ -552,8 +556,10 @@ def test_infer_from_linked_worktree_resolves_to_canonical_identity(
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     manifest = _manifest(workspace_root)
-    checkout = _pyproject(workspace_root, AU, "agent-connector-sdk", 'dependencies = ["arbora>=1.0"]\n')
-    _init_repo_with_remote(checkout, "https://example.invalid/org/agent-connector-sdk.git")
+    checkout = _pyproject(
+        workspace_root, AU, "scion-sdk", 'dependencies = ["arbora>=1.0"]\n'
+    )
+    _init_repo_with_remote(checkout, "https://example.invalid/org/scion-sdk.git")
     # `git worktree add` checks out the branch's COMMITTED tree, not whatever
     # untracked files happen to sit in the canonical checkout -- commit the
     # pyproject.toml so the linked worktree created below actually has it.
@@ -564,7 +570,7 @@ def test_infer_from_linked_worktree_resolves_to_canonical_identity(
     # under the workspace path (`/home/app/worktrees/<repo>/<branch>`).
     worktree_root = tmp_path / "worktrees"
     worktree_root.mkdir()
-    worktree_path = worktree_root / "agent-connector-sdk" / "some-branch"
+    worktree_path = worktree_root / "scion-sdk" / "some-branch"
     _git(
         ["worktree", "add", str(worktree_path), "-b", "some-branch"],
         checkout,
@@ -575,7 +581,7 @@ def test_infer_from_linked_worktree_resolves_to_canonical_identity(
 
     assert report.errors == []
     assert report.repositories[0].repository == AU
-    assert report.repositories[0].name == "agent-connector-sdk"
+    assert report.repositories[0].name == "scion-sdk"
     assert report.repositories[0].status == "checked"
     assert [e.to_package for e in report.violations] == ["arbora"]
 
@@ -620,17 +626,15 @@ def test_not_a_git_checkout_is_a_hard_error(tmp_path: Path) -> None:
 def test_only_the_resolved_repositorys_edges_are_reported(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
     au_checkout = _pyproject(
-        tmp_path, AU, "agent-connector-sdk", 'dependencies = ["arbora>=1.0"]\n'
+        tmp_path, AU, "scion-sdk", 'dependencies = ["arbora>=1.0"]\n'
     )
-    _init_repo_with_remote(au_checkout, "https://example.invalid/org/agent-connector-sdk.git")
+    _init_repo_with_remote(au_checkout, "https://example.invalid/org/scion-sdk.git")
 
     # A SIBLING repository with its OWN, DIFFERENT violation (phase 5 ->
     # phase 7's agent-a) -- must never leak into a report scoped to
-    # agent-connector-sdk.
+    # scion-sdk.
     gos_identifier = "agent-packages/arbora"
-    _pyproject(
-        tmp_path, gos_identifier, "arbora", 'dependencies = ["agent-a>=1.0"]\n'
-    )
+    _pyproject(tmp_path, gos_identifier, "arbora", 'dependencies = ["agent-a>=1.0"]\n')
 
     report = _here(tmp_path, manifest, au_checkout)
 
@@ -659,8 +663,8 @@ def test_resolution_ignores_inherited_git_repository_pointer_env(
     subprocess level.
     """
     manifest = _manifest(tmp_path)
-    checkout = _pyproject(tmp_path, AU, "agent-connector-sdk")
-    _init_repo_with_remote(checkout, "https://example.invalid/org/agent-connector-sdk.git")
+    checkout = _pyproject(tmp_path, AU, "scion-sdk")
+    _init_repo_with_remote(checkout, "https://example.invalid/org/scion-sdk.git")
 
     decoy = _init_repo_with_remote(
         tmp_path / "decoy-real-repo", "https://example.invalid/org/decoy.git"
@@ -672,7 +676,7 @@ def test_resolution_ignores_inherited_git_repository_pointer_env(
 
     assert report.errors == []
     assert report.repositories[0].repository == AU
-    assert report.repositories[0].name == "agent-connector-sdk"
+    assert report.repositories[0].name == "scion-sdk"
     assert report.ok is True
 
 
@@ -683,10 +687,8 @@ def test_dispatch_and_rm_gates_route_report_the_same_here_result(
     tmp_path: Path,
 ) -> None:
     manifest = _manifest(tmp_path)
-    checkout = _pyproject(
-        tmp_path, AU, "agent-connector-sdk", 'dependencies = ["arbora>=1.0"]\n'
-    )
-    _init_repo_with_remote(checkout, "https://example.invalid/org/agent-connector-sdk.git")
+    checkout = _pyproject(tmp_path, AU, "scion-sdk", 'dependencies = ["arbora>=1.0"]\n')
+    _init_repo_with_remote(checkout, "https://example.invalid/org/scion-sdk.git")
 
     direct = dr.dispatch(
         "phase_direction_here", manifest_path=str(manifest), start=str(checkout)
@@ -705,16 +707,14 @@ def test_cli_here_adapter_infers_and_exits_nonzero_on_violation(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     manifest = _manifest(tmp_path)
-    checkout = _pyproject(
-        tmp_path, AU, "agent-connector-sdk", 'dependencies = ["arbora>=1.0"]\n'
-    )
-    _init_repo_with_remote(checkout, "https://example.invalid/org/agent-connector-sdk.git")
+    checkout = _pyproject(tmp_path, AU, "scion-sdk", 'dependencies = ["arbora>=1.0"]\n')
+    _init_repo_with_remote(checkout, "https://example.invalid/org/scion-sdk.git")
     args = argparse.Namespace(file=str(manifest), phase_direction_start=str(checkout))
 
     assert run_phase_direction_here_cli(args) == 1
     assert json.loads(capsys.readouterr().out)["blocking_violation_count"] == 1
 
-    _pyproject(tmp_path, AU, "agent-connector-sdk")
+    _pyproject(tmp_path, AU, "scion-sdk")
     assert run_phase_direction_here_cli(args) == 0
 
 
@@ -722,10 +722,8 @@ def test_cli_here_flag_exits_before_any_git_factory_call(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     manifest = _manifest(tmp_path)
-    checkout = _pyproject(
-        tmp_path, AU, "agent-connector-sdk", 'dependencies = ["arbora>=1.0"]\n'
-    )
-    _init_repo_with_remote(checkout, "https://example.invalid/org/agent-connector-sdk.git")
+    checkout = _pyproject(tmp_path, AU, "scion-sdk", 'dependencies = ["arbora>=1.0"]\n')
+    _init_repo_with_remote(checkout, "https://example.invalid/org/scion-sdk.git")
     git_factory = MagicMock()
     runtime = CliRuntime(
         git_factory=git_factory,
@@ -787,10 +785,8 @@ def test_packaged_hook_entry_argv_infers_and_reports_a_real_violation(
     argv = shlex.split(hook["entry"])
 
     manifest = _manifest(tmp_path)
-    checkout = _pyproject(
-        tmp_path, AU, "agent-connector-sdk", 'dependencies = ["arbora>=1.0"]\n'
-    )
-    _init_repo_with_remote(checkout, "https://example.invalid/org/agent-connector-sdk.git")
+    checkout = _pyproject(tmp_path, AU, "scion-sdk", 'dependencies = ["arbora>=1.0"]\n')
+    _init_repo_with_remote(checkout, "https://example.invalid/org/scion-sdk.git")
 
     runtime = CliRuntime(
         git_factory=MagicMock(),

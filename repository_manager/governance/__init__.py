@@ -1,6 +1,6 @@
 """Development governance: lane arbitration and concept-ID coordination.
 
-Moved here from ``agent_connector_sdk.governance`` by operator ruling:
+Moved here from ``scion_sdk.governance`` by operator ruling:
 repository-manager is the development-governance tool, so it owns
 
 * :mod:`.lanes` — the shared-resource arbitration classes (partition, lease,
@@ -16,7 +16,7 @@ repository-manager is the development-governance tool, so it owns
 * :mod:`.promotion` — how far the deployed ref lags ``main`` (merge is not deploy);
 * :mod:`.cli` — the ``repository-manager-governance`` command surface.
 
-The merge queue that also lived in ``agent_connector_sdk.governance`` was not
+The merge queue that also lived in ``scion_sdk.governance`` was not
 moved: :mod:`repository_manager.merge_queue` is its generalized successor, and a
 repository opts in with a root ``.mergequeue.yaml``.
 """

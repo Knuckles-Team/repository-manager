@@ -722,7 +722,7 @@ def test_worktree_hygiene_prune_removes_only_merged(tmp_path, monkeypatch):
 
 
 # ── prune safety (CONCEPT:RM-PRUNE-GUARD, registry D-FE-9) ────────────────────
-# D-FE-9: an `agent-connector-sdk`-scoped sweep removed a live lane's worktree AND
+# D-FE-9: an `scion-sdk`-scoped sweep removed a live lane's worktree AND
 # ran `git branch -D` on its ref, leaving its commits reachable only as dangling
 # objects. The branch was genuinely merged at that instant — the lane had merged
 # an intermediate chunk back to main and kept working — so "merged" was never
@@ -963,8 +963,11 @@ def test_sync_rebases_onto_local_main_not_stale_origin_main(repo, tmp_path):
     assert result["base_ref"] == "refs/heads/main"
 
     log = subprocess.run(
-        "git log --format=%H", shell=True, cwd=made["path"],
-        capture_output=True, text=True,
+        "git log --format=%H",
+        shell=True,
+        cwd=made["path"],
+        capture_output=True,
+        text=True,
     ).stdout
     assert landed_sha in log.splitlines(), (
         "sync() must carry forward a commit that only exists on local main"
@@ -981,14 +984,20 @@ def test_old_stale_origin_rebase_would_have_dropped_the_landed_commit(repo, tmp_
     # the exact OLD implementation: fetch, then rebase onto origin/<base>.
     _run("git fetch origin main", made["path"])
     old_rebase = subprocess.run(
-        "git rebase origin/main", shell=True, cwd=made["path"],
-        capture_output=True, text=True,
+        "git rebase origin/main",
+        shell=True,
+        cwd=made["path"],
+        capture_output=True,
+        text=True,
     )
     assert old_rebase.returncode == 0, old_rebase.stdout + old_rebase.stderr
 
     log = subprocess.run(
-        "git log --format=%H", shell=True, cwd=made["path"],
-        capture_output=True, text=True,
+        "git log --format=%H",
+        shell=True,
+        cwd=made["path"],
+        capture_output=True,
+        text=True,
     ).stdout
     assert landed_sha not in log.splitlines(), (
         "this reproduces the defect: the OLD rebase-onto-origin/main target "

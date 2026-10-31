@@ -224,7 +224,19 @@ BASE_PROVIDED: frozenset[str] = frozenset(
 # Shell control-flow keywords: never a command themselves, and (other than
 # do/then/else/(/{) they do not put the NEXT token in command position
 # either -- e.g. the loop variable/list after `for`/`in` is not a command.
-_STRUCTURAL_NO_TRIGGER = {"for", "in", "while", "until", "if", "elif", "case", "esac", "fi", "done", "!"}
+_STRUCTURAL_NO_TRIGGER = {
+    "for",
+    "in",
+    "while",
+    "until",
+    "if",
+    "elif",
+    "case",
+    "esac",
+    "fi",
+    "done",
+    "!",
+}
 _STRUCTURAL_TRIGGER = {"do", "then", "else"}
 # `{` opens a brace command-group exactly like `(` opens a subshell -- both
 # put the next token in command position (e.g. `cmd || { echo err; exit 1; }`,
@@ -306,7 +318,9 @@ def _docker_invocation_is_daemon_independent(entry_text: str) -> bool:
     non_flags = [t for t in rest if not t.startswith("-")]
     if not non_flags or non_flags[0] != "compose":
         return False
-    return any(t in _DOCKER_DAEMON_INDEPENDENT_COMPOSE_SUBCOMMANDS for t in non_flags[1:])
+    return any(
+        t in _DOCKER_DAEMON_INDEPENDENT_COMPOSE_SUBCOMMANDS for t in non_flags[1:]
+    )
 
 
 # binary -> per-site policy function. Only "docker" has one today; see the
@@ -396,8 +410,17 @@ def _command_tokens(script: str) -> list[str]:
 
 
 def _escape_shell_metacharacters(script: str) -> str:
-    escape_names = {"(": "LPAREN", ")": "RPAREN", "{": "LBRACE", "}": "RBRACE", ";": "SEMI", "|": "PIPE"}
-    return re.sub(r"\\([(){};|])", lambda m: f"ESCAPED_{escape_names[m.group(1)]}_CHAR", script)
+    escape_names = {
+        "(": "LPAREN",
+        ")": "RPAREN",
+        "{": "LBRACE",
+        "}": "RBRACE",
+        ";": "SEMI",
+        "|": "PIPE",
+    }
+    return re.sub(
+        r"\\([(){};|])", lambda m: f"ESCAPED_{escape_names[m.group(1)]}_CHAR", script
+    )
 
 
 def _shlex_tokenize(script: str) -> list[str] | None:
@@ -614,7 +637,10 @@ def scan_fleet(fleet_root: Path) -> ScanResult:
 def _probe_image(image: str, binaries: list[str]) -> dict[str, bool | None]:
     if not binaries:
         return {}
-    check = " ".join(f"command -v {b} >/dev/null 2>&1 && echo {b}=OK || echo {b}=MISSING;" for b in binaries)
+    check = " ".join(
+        f"command -v {b} >/dev/null 2>&1 && echo {b}=OK || echo {b}=MISSING;"
+        for b in binaries
+    )
     try:
         proc = subprocess.run(
             ["docker", "run", "--rm", image, "sh", "-c", check],
@@ -624,10 +650,15 @@ def _probe_image(image: str, binaries: list[str]) -> dict[str, bool | None]:
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        print(f"ERROR: could not run image probe against {image}: {exc}", file=sys.stderr)
+        print(
+            f"ERROR: could not run image probe against {image}: {exc}", file=sys.stderr
+        )
         sys.exit(2)
     if proc.returncode != 0 and not proc.stdout:
-        print(f"ERROR: `docker run` against {image} failed:\n{proc.stderr}", file=sys.stderr)
+        print(
+            f"ERROR: `docker run` against {image} failed:\n{proc.stderr}",
+            file=sys.stderr,
+        )
         sys.exit(2)
     verdicts: dict[str, bool | None] = {}
     for line in proc.stdout.splitlines():
@@ -649,7 +680,7 @@ def _probe_dockerfile(dockerfile: Path, binaries: list[str]) -> dict[str, bool |
 
 def _find_fleet_root(start: Path) -> Path | None:
     """Walk upward for the `agent-packages` root (has both `agents/` and
-    `agent-connector-sdk/`). NOT a fixed `parents[N]` index: this script's own
+    `scion-sdk/`). NOT a fixed `parents[N]` index: this script's own
     directory depth from the fleet root is only `scripts/repository-manager/
     agents/agent-packages` in the CANONICAL checkout. A git worktree (this
     repo's own recommended isolation pattern, `git worktree add
@@ -659,28 +690,34 @@ def _find_fleet_root(start: Path) -> Path | None:
     real `agent-packages`) rather than failing loudly, which is exactly the
     under-detection failure mode this whole script exists to avoid. Mirrors
     the same upward-search idiom `agent-webui`'s own system hooks already
-    use to locate `agent-connector-sdk/scripts` from an arbitrary checkout depth.
+    use to locate `scion-sdk/scripts` from an arbitrary checkout depth.
     """
     d = start
     while d != d.parent:
-        if (d / "agent-connector-sdk").is_dir() and (d / "agents").is_dir():
+        if (d / "scion-sdk").is_dir() and (d / "agents").is_dir():
             return d
         d = d.parent
     return None
 
 
-def _build_arg_parser(default_fleet_root: Path | None, default_dockerfile: Path) -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def _build_arg_parser(
+    default_fleet_root: Path | None, default_dockerfile: Path
+) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
         "--fleet-root",
         type=Path,
         default=default_fleet_root,
         required=default_fleet_root is None,
         help="agent-packages root. Auto-detected by walking up from this script "
-        "for a directory containing both agents/ and agent-connector-sdk/; pass "
+        "for a directory containing both agents/ and scion-sdk/; pass "
         "explicitly if that search fails (e.g. a partial/sparse checkout).",
     )
-    parser.add_argument("--image", default=None, help="Probe a built image via `docker run` (CI mode).")
+    parser.add_argument(
+        "--image", default=None, help="Probe a built image via `docker run` (CI mode)."
+    )
     parser.add_argument(
         "--dockerfile",
         type=Path,
@@ -705,21 +742,31 @@ def _parse_and_validate_args(
 
 
 def _resolve_verdicts(
-    parser: argparse.ArgumentParser, args: argparse.Namespace, required_binaries: list[str]
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    required_binaries: list[str],
 ) -> tuple[str, dict[str, bool | None]]:
     if args.image:
-        return f"image probe ({args.image})", _probe_image(args.image, required_binaries)
+        return f"image probe ({args.image})", _probe_image(
+            args.image, required_binaries
+        )
     dockerfile = args.dockerfile.resolve()
     if not dockerfile.is_file():
         parser.error(f"--dockerfile {dockerfile} does not exist")
-    return f"static Dockerfile scan ({dockerfile})", _probe_dockerfile(dockerfile, required_binaries)
+    return f"static Dockerfile scan ({dockerfile})", _probe_dockerfile(
+        dockerfile, required_binaries
+    )
 
 
-def _print_scan_header(fleet_root: Path, mode: str, required_binaries: list[str]) -> None:
+def _print_scan_header(
+    fleet_root: Path, mode: str, required_binaries: list[str]
+) -> None:
     print(f"# rm_gates toolchain coverage — fleet root: {fleet_root}")
     print(f"# mode: {mode}")
-    print(f"# {len(required_binaries)} distinct toolchain(s) declared by language: system "
-          f"hooks / mergequeue gates fleet-wide\n")
+    print(
+        f"# {len(required_binaries)} distinct toolchain(s) declared by language: system "
+        f"hooks / mergequeue gates fleet-wide\n"
+    )
 
 
 def _binary_verdict_status(
@@ -728,7 +775,9 @@ def _binary_verdict_status(
     """Return (status, gap_sites, is_hard_failure, is_structural_gap)."""
     if verdict is True:
         policy = DAEMON_DEPENDENCE_POLICY.get(binary)
-        gap_sites = [u for u in uses if not policy(u.full_text)] if policy is not None else []
+        gap_sites = (
+            [u for u in uses if not policy(u.full_text)] if policy is not None else []
+        )
         if gap_sites:
             return "GAP", gap_sites, False, True
         return "OK", [], False, False
@@ -752,11 +801,13 @@ def _print_binary_report(
     if gap_sites:
         gap_desc = ", ".join(f"{u.source_file}::{u.site_id}" for u in gap_sites[:3])
         gap_more = f" (+{len(gap_sites) - 3} more)" if len(gap_sites) > 3 else ""
-        print(f"          STRUCTURAL GAP, BY DECISION: {binary} is installed (CLI present), "
-              f"but this specific invocation needs a live daemon this image deliberately does "
-              f"NOT provide (mounting the host socket / a DinD sidecar grants effective host "
-              f"root -- an operator decision, not a default). Not covered by \"OK\": {gap_desc}"
-              f"{gap_more}")
+        print(
+            f"          STRUCTURAL GAP, BY DECISION: {binary} is installed (CLI present), "
+            f"but this specific invocation needs a live daemon this image deliberately does "
+            f"NOT provide (mounting the host socket / a DinD sidecar grants effective host "
+            f'root -- an operator decision, not a default). Not covered by "OK": {gap_desc}'
+            f"{gap_more}"
+        )
 
 
 def _report_binaries(
@@ -767,7 +818,9 @@ def _report_binaries(
     for binary in required_binaries:
         uses = result.required[binary]
         verdict = verdicts.get(binary)
-        status, gap_sites, is_hard_failure, is_gap = _binary_verdict_status(binary, uses, verdict)
+        status, gap_sites, is_hard_failure, is_gap = _binary_verdict_status(
+            binary, uses, verdict
+        )
         hard_failure = hard_failure or is_hard_failure
         structural_gap = structural_gap or is_gap
         _print_binary_report(binary, uses, status, gap_sites)
@@ -777,11 +830,13 @@ def _report_binaries(
 def _report_unclassified(result: ScanResult) -> bool:
     if not result.unclassified:
         return False
-    print(f"\n{len(result.unclassified)} UNCLASSIFIED command(s) — a language: system hook or "
-          f"mergequeue gate invokes something outside both TOOLCHAIN_BINARIES and BASE_PROVIDED. "
-          f"This fails LOUD rather than silently assuming the command is harmless (that silent "
-          f"assumption is the exact failure mode that let the node/pnpm gap ship). Add the "
-          f"binary to one of the two allowlists in this script, with a justification, to clear it.")
+    print(
+        f"\n{len(result.unclassified)} UNCLASSIFIED command(s) — a language: system hook or "
+        f"mergequeue gate invokes something outside both TOOLCHAIN_BINARIES and BASE_PROVIDED. "
+        f"This fails LOUD rather than silently assuming the command is harmless (that silent "
+        f"assumption is the exact failure mode that let the node/pnpm gap ship). Add the "
+        f"binary to one of the two allowlists in this script, with a justification, to clear it."
+    )
     seen: set[tuple[str, str]] = set()
     for u in result.unclassified:
         key = (u.token, u.source_file)
@@ -797,11 +852,13 @@ def _final_verdict(hard_failure: bool, structural_gap: bool) -> int:
         print("\nFAIL — see MISSING/UNKNOWN/UNCLASSIFIED above.")
         return 1
     if structural_gap:
-        print("\nPASS WITH DOCUMENTED GAP(S) — every declared toolchain that CAN be safely "
-              "provided in-container is covered; the GAP(S) above are a deliberate, reviewed "
-              "decision (not an oversight), left for an operator to resolve (mount a socket, add "
-              "a DinD sidecar, or declare the hook out-of-scope for in-container execution) rather "
-              "than silently satisfied by installing a CLI that cannot actually run the hook.")
+        print(
+            "\nPASS WITH DOCUMENTED GAP(S) — every declared toolchain that CAN be safely "
+            "provided in-container is covered; the GAP(S) above are a deliberate, reviewed "
+            "decision (not an oversight), left for an operator to resolve (mount a socket, add "
+            "a DinD sidecar, or declare the hook out-of-scope for in-container execution) rather "
+            "than silently satisfied by installing a CLI that cannot actually run the hook."
+        )
         return 3
     print("\nPASS — every declared toolchain is covered.")
     return 0
@@ -809,7 +866,9 @@ def _final_verdict(hard_failure: bool, structural_gap: bool) -> int:
 
 def main() -> int:
     here = Path(__file__).resolve()
-    default_dockerfile = here.parents[1] / "docker" / "Dockerfile"  # repository-manager/docker/Dockerfile
+    default_dockerfile = (
+        here.parents[1] / "docker" / "Dockerfile"
+    )  # repository-manager/docker/Dockerfile
     default_fleet_root = _find_fleet_root(here)
     parser = _build_arg_parser(default_fleet_root, default_dockerfile)
     args, fleet_root = _parse_and_validate_args(parser, default_dockerfile)

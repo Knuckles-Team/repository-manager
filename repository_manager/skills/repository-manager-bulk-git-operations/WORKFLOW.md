@@ -1,6 +1,6 @@
 # Repository Manager Bulk Git Operations
 
-Bulk, parallel git operations across a whole workspace of repositories via the repository-manager MCP server — clone, pull, push, add, commit, pre-commit, phased push, and enumerate every repo across a GitLab instance / GitHub org into an ingest manifest (which also natively ingests them into the knowledge graph as typed :GitRepository nodes). Raw host git commands are permanently retired and always refused. Use when the agent must operate over many repos at once or discover the full repo inventory. Do NOT use for single-session worktree branches (repository-manager-worktree-orchestration) or per-project install/validate/version bumps (repository-manager-workspace-validation).
+Bulk, parallel git operations across a whole workspace of repositories via the repository-manager MCP server — clone, pull, push, add, commit, pre-commit, and enumerate every repo across a GitLab instance / GitHub org into an ingest manifest (which also natively ingests them into the knowledge graph as typed :GitRepository nodes). Raw host git commands are permanently retired and always refused. Use when the agent must operate over many repos at once or discover the full repo inventory. Do NOT use for single-session worktree branches (repository-manager-worktree-orchestration) or per-project install/validate/version bumps (repository-manager-workspace-validation).
 
 # Repository Manager — Bulk Git Operations
 
@@ -11,7 +11,6 @@ run as background jobs; poll them via the job status path.
 ## When to use
 - Clone / pull / push / add / commit across many repos in parallel.
 - Run pre-commit hooks or a gated `commit_code` (hooks then commit) across projects.
-- Phased push (push respecting inter-repo dependency phases).
 - `enumerate` every repository across a GitLab instance / GitHub org into an ingest
   manifest — and natively ingest them into the KG as `:GitRepository` nodes.
 
@@ -41,7 +40,7 @@ Connect via the `mcp-client` skill against the **`repository-manager`** MCP serv
 ## Tools & actions
 | Tool group | Per-operation tools |
 |----------------|---------|
-| `rm_git_*` | `rm_git_raw`, `rm_git_clone`, `rm_git_enumerate`, `rm_git_pull`, `rm_git_push`, `rm_git_phased_push`, `rm_git_add`, `rm_git_commit`, `rm_git_pre_commit`, `rm_git_commit_code`, `rm_git_status`, `rm_git_cancel` |
+| `rm_git_*` | `rm_git_raw`, `rm_git_clone`, `rm_git_enumerate`, `rm_git_pull`, `rm_git_push`, `rm_git_add`, `rm_git_commit`, `rm_git_pre_commit`, `rm_git_commit_code`, `rm_git_status`, `rm_git_cancel` |
 
 ### Key parameters
 - `command` — the VCS selector (`gitlab`|`github`) for `enumerate`. (`raw` also reads
@@ -51,7 +50,6 @@ Connect via the `mcp-client` skill against the **`repository-manager`** MCP serv
 - `message` — commit message for `commit` / `commit_code`.
 - `run_precommit` — for `commit_code`: run hooks before committing (default true).
 - `job_id` — required for `status` and `cancel`; use the id returned by a submitted `rm_git_*` job.
-- `phase` / `auto_start` / `target_project` — control `phased_push`.
 
 ## Recipes
 Pull every repo in the workspace:
@@ -60,7 +58,7 @@ rm_git_pull()
 ```
 Commit code across two repos with pre-commit hooks first:
 ```
-rm_git_commit_code(projects="agent-connector-sdk,gitlab-api", message="chore: sweep", run_precommit=true)
+rm_git_commit_code(projects="scion-sdk,gitlab-api", message="chore: sweep", run_precommit=true)
 ```
 Enumerate an entire GitLab instance (also KG-ingests as :GitRepository nodes):
 ```
@@ -72,7 +70,7 @@ rm_git_enumerate(command="github", projects="my-org,another-org")
 ```
 
 ## Gotchas
-- `clone`/`pull`/`push`/`commit`/`pre_commit`/`commit_code`/`phased_push` return a **job id** and run in
+- `clone`/`pull`/`push`/`commit`/`pre_commit`/`commit_code` return a **job id** and run in
   the background — poll with `rm_git_status(job_id="<id>")` rather than expecting inline results.
 - Do not submit `add` and `commit` as separate dependent jobs; use `commit_code` for its ordered
   stage → gate → commit operation.

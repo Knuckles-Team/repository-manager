@@ -16,7 +16,7 @@ description: >-
 license: MIT
 tags: [repository-manager, lifecycle, lane, worktree, merge-queue, entrypoint, mcp]
 metadata:
-  author: Genius
+  author: Knuckles-Team
   version: '1.0.0'
 ---
 # Repository Manager — Development Lifecycle
@@ -62,7 +62,7 @@ says so explicitly rather than inventing one — see step 3.
 |---|---|---|
 | **1. plan** | Decide the unit of work. If it introduces a new `CONCEPT:` marker, reserve the id first so no sibling lane collides on it. | `rm_concepts_reserve(...)` — see `repository-manager-concept-coordination` for the full field list and the **fail-closed today** caveat below. Not every unit of work needs this step; skip it when no new concept id is being introduced. |
 | **2. start** | Open an isolated worktree with partitioned build/test/hook state, and *prove* the isolation instead of asserting it. | `rm_lane_start(repo=<repo>, branch=<branch>, base="main")`. Prefer this over a bare `rm_worktree_add()` — `rm_lane_*` composes the worktree with lane-doctor's partition checks. |
-| **3. heartbeat** | ★ **There is no `heartbeat` action.** A submitted background job (`rm_git_*`/`rm_projects_*`/`rm_workspace_*`) carries an internal `heartbeat_at` that the server advances automatically whenever the job's *observable progress* changes — polling `status`/`validate_status`/`maintain_status` is what keeps a long job from being reaped as stale (`RM_JOB_STALE_SECONDS`, default 1800s). For interactive work there is nothing to call at all — just keep working and poll the status action of whatever job you submitted. | `rm_git_status(job_id=...)` / `rm_projects_validate_status(job_id=...)` / `rm_workspace_maintain_status(job_id=...)`, called periodically while a job runs. |
+| **3. heartbeat** | ★ **There is no `heartbeat` action.** A submitted background job (`rm_git_*`/`rm_projects_*`/`rm_workspace_*`) carries an internal `heartbeat_at` that the server advances automatically whenever the job's *observable progress* changes — polling `status`/`validate_status` is what keeps a long job from being reaped as stale (`RM_JOB_STALE_SECONDS`, default 1800s). For interactive work there is nothing to call at all — just keep working and poll the status action of whatever job you submitted. | `rm_git_status(job_id=...)` / `rm_projects_validate_status(job_id=...)` , called periodically while a job runs. |
 | **4. check** | Diagnose the lane when something behaves impossibly, or before submitting. Answers in under a second and mutates nothing. | `rm_lane_doctor(path=<worktree>)` |
 | **5. submit** | Preflight (blocking on the doctor checks), then hand the branch to the serialized, per-repository merge queue. This is not a to-do item — a scheduler drains the queue independently. | `rm_lane_finish(path=<worktree>, base="main")` → internally reaches `rm_merge_queue_enqueue(...)` |
 | **6. status** | Watch the queue land (or reject) the candidate. Never hand-merge because this looks slow. | `rm_merge_queue_status(repo_path=<worktree>)` |
@@ -72,7 +72,7 @@ says so explicitly rather than inventing one — see step 3.
 flowchart TD
     P["1. plan<br/>optionally rm_concepts_reserve"] --> S["2. start<br/>rm_lane_start"]
     S --> W["work in the worktree"]
-    W -->|"long job running"| H["3. heartbeat is automatic —<br/>poll status/validate_status/maintain_status"]
+    W -->|"long job running"| H["3. heartbeat is automatic —<br/>poll status/validate_status"]
     H --> W
     W --> C{"4. check<br/>rm_lane_doctor"}
     C -->|"fail"| W

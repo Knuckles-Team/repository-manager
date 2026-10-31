@@ -122,9 +122,6 @@ def test_open_switch_alone_cannot_supply_source_universe_proof(tmp_path, monkeyp
         lambda git: git.bump_version("patch", path="missing"),
         lambda git: git.bulk_bump("patch"),
         lambda git: git.update_dependency("missing", "a", "1.2.3"),
-        lambda git: git.phased_bumpversion(),
-        lambda git: git.phased_push(),
-        lambda git: git.validate_and_release(auto_push=True),
     ],
 )
 def test_open_cutover_refuses_legacy_git_routes_before_effect(

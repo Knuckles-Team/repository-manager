@@ -1,13 +1,13 @@
 """A **repo-agnostic** serialized merge queue — the mechanism, with the gates
 declared per repository (CONCEPT:RM-MERGE-QUEUE).
 
-**Why this lives here and not in agent-connector-sdk.** The queue's *mechanism* —
+**Why this lives here and not in scion-sdk.** The queue's *mechanism* —
 an append-only candidate store, differential gating against a base ref,
 regenerate-on-land, a guarded prune, one serializing lease, optimistic batching
 with bisection — has nothing to do with Python, pytest, ruff, or
-``agent_connector_sdk``. It is git discipline. The *gates* are the only
+``scion_sdk``. It is git discipline. The *gates* are the only
 project-specific part, and they were the only part hard-coded. So
-``agent_connector_sdk.governance.merge_queue`` could serve exactly one repository,
+``scion_sdk.governance.merge_queue`` could serve exactly one repository,
 and the proof is empirical: **epistemic-graph has no merge queue at all**, and
 the engine lane had to hand-apply the discipline by memory (verify the *merged
 tree* with ``cargo check --all-features``, fast-forward only, never merge in the
@@ -21,13 +21,13 @@ queue layer was mis-homed. This module is that layer, made generic.
 run one and compare its result against the base ref. A gate is a row in the
 repository's own ``.mergequeue.yaml`` (see :class:`QueueConfig`): a command, a
 tier, a timeout, and *how to compare* its output against the base
-(:class:`GateSpec.compare`). ``agent-connector-sdk`` declares pytest + ruff + its
+(:class:`GateSpec.compare`). ``scion-sdk`` declares pytest + ruff + its
 contract scripts; ``epistemic-graph`` declares ``cargo check --all-features`` +
 clippy; a docs repo could declare nothing but a link check. Adding a gate is a
 config row, never a change to this module.
 
 **The five hard-won behaviours ported verbatim from
-``agent_connector_sdk.governance.merge_queue``**, each because it was paid for once
+``scion_sdk.governance.merge_queue``**, each because it was paid for once
 already:
 
 1. **Differential gating** (:func:`compute_gate_baseline`,
@@ -100,6 +100,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
+from repository_manager import portable_fs as pfs
 from repository_manager.candidate_generation import (
     CandidateGenerationError,
     CandidateSnapshot,
@@ -140,7 +141,7 @@ from repository_manager.test_commands import ensure_no_fail_fast
 CONFIG_FILENAME = ".mergequeue.yaml"
 
 #: The LEASE that serializes a drain. Deliberately the SAME resource name
-#: ``agent_connector_sdk.governance.merge_queue`` holds, so an au queue runner and a
+#: ``scion_sdk.governance.merge_queue`` holds, so an au queue runner and a
 #: repository-manager runner can never drain the same repository at once during
 #: the migration. It is repo-scoped in ``lane_resources.yaml``, so each
 #: repository gets its own instance for free.
@@ -847,8 +848,8 @@ def enqueue(
             "store automatically (~every 5 minutes, across agent-packages/, "
             "services/, images/, and the infra roots): it gates the candidate "
             "DIFFERENTIALLY against the base and fast-lands it. The timer does "
-            "not run the heavy pre-push gate or publish; the separate "
-            "`phased-push-runner.timer` owns publication. You do not need to "
+            "not run the heavy pre-push gate or publish; publication is a "
+            "separate, explicit push. You do not need to "
             "run anything yourself — "
             "watch it with `repository-manager --merge-queue status "
             "--repo-path .`. Do NOT hand-drain with `--merge-queue run`: "
@@ -1671,11 +1672,11 @@ def _attach_repo_venv(canonical: Path, snapshot: Path) -> None:
     """
     source = canonical / ".venv"
     target = snapshot / ".venv"
-    if target.exists() or target.is_symlink() or not source.is_dir():
+    if target.exists() or pfs.is_link(target) or not source.is_dir():
         return
     if not _run_git(["check-ignore", "-q", ".venv"], snapshot).ok:
         return
-    target.symlink_to(source.resolve(), target_is_directory=True)
+    pfs.create_dir_link(target, source.resolve())
 
 
 # ---------------------------------------------------------------------------
@@ -2644,8 +2645,7 @@ def _deferred_push_result() -> dict[str, Any]:
         "pushed": False,
         "push_error": (
             "push deferred by the merge-queue scheduler; the fast drain "
-            "lands locally and the dedicated phased-push scheduler owns "
-            "publication"
+            "lands locally and publication is a separate, explicit push"
         ),
     }
 
@@ -2675,19 +2675,13 @@ def _push_landed_base_now(
     some other branch — a bisect, an operator poking around, a merge in
     progress), pushing through that checkout would push the WRONG branch, so
     the push is deliberately DEFERRED rather than guessed at: ``pushed: False``
-    with a reason, never silent, never a guess. A later ``phased_push`` (or a
-    manual push once the canonical is back on ``base``) picks it up.
+    with a reason, never silent, never a guess. A later push once the canonical is
+    back on ``base`` picks it up.
 
     Sync, not batched: this pushes the ONE repo :func:`land` just fast-forwarded,
-    immediately, inline with the landing call. ``phased_push``'s phase ordering
-    exists for the fleet-wide *release* workflow (coordinated version-bump
-    pushes across interdependent packages, where a downstream repo's pin must
-    not reach a remote before the upstream version it names does) — a plain
-    merge-queue landing publishes a branch's own commits, not a version bump, so
-    there is no cross-repo pin for immediate publication to violate. Should the
-    queue ever land version-bump commits, that is the moment to route through
-    ``phased_push`` instead; forcing every landing through fleet-wide phase
-    bookkeeping today would be scope the defect never asked for.
+    immediately, inline with the landing call. A plain merge-queue landing
+    publishes a branch's own commits, not a fleet-wide dependency-floor raise
+    (that lands through pull requests via ``repository-manager rollout``).
 
     A push failure never fails the landing — the local ref genuinely did
     fast-forward, and reporting that as a failure too would misrepresent what
@@ -2703,7 +2697,7 @@ def _push_landed_base_now(
             "push_error": (
                 f"canonical checkout is not on {base} (landed via compare-and-swap "
                 "update-ref); push deferred to avoid pushing whichever branch that "
-                "checkout has checked out -- push_project/phased_push against the "
+                "checkout has checked out -- push_project against the "
                 f"canonical checkout once it is back on {base}"
             ),
         }
@@ -2912,7 +2906,7 @@ def land(
     D-RMD-1 — **the bug this function is written against, and why it was
     invisible.** This used to run ``git merge --ff-only <commit>`` in the
     canonical checkout, which merges into whatever ``HEAD`` happens to be, not
-    into ``base``. In agent-connector-sdk the canonical checkout always sits on
+    into ``base``. In scion-sdk the canonical checkout always sits on
     ``main``, so "merge into HEAD" *coincidentally* equalled "land on base" and
     seven consecutive landings were audited as genuinely correct. That is luck,
     not correctness, and the coincidence breaks precisely where this queue is
@@ -3599,7 +3593,7 @@ def run_queue(
     another runner holds ``reconciliation-merge`` for this repository — deferring
     is the correct outcome and the caller must make it explicit, exactly as every
     other LEASE-class resource here. The lease is repo-scoped, so draining
-    agent-connector-sdk and epistemic-graph concurrently is safe by construction.
+    scion-sdk and epistemic-graph concurrently is safe by construction.
     ``lease_ttl_seconds`` is bounded independently from gate worker limits and
     is reported with acquired/deadline/released receipts in the result.
     """
@@ -3726,7 +3720,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--no-push",
         action="store_true",
-        help="land through fast gates but defer publication to phased push",
+        help="land through fast gates but defer publication to a separate push",
     )
     p.add_argument("--lease-ttl-seconds", type=int, default=None)
     args = p.parse_args(argv)

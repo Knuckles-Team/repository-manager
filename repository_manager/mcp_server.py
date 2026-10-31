@@ -27,11 +27,11 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from agent_connector_sdk.config import load_config, setting
-from agent_connector_sdk.mcp.content import ConnectorContent
-from agent_connector_sdk.mcp.server import create_mcp_server
-from agent_connector_sdk.mcp.tool_surface import register_tool_surface
-from agent_connector_sdk.utilities import to_integer
+from scion_sdk.config import load_config, setting
+from scion_sdk.mcp.content import ConnectorContent
+from scion_sdk.mcp.server import create_mcp_server
+from scion_sdk.mcp.tool_surface import register_tool_surface
+from scion_sdk.utilities import to_integer
 
 from repository_manager.action_split import register_split_action_tools
 from repository_manager.mcp_tools import (
@@ -60,7 +60,9 @@ __version__ = _distribution_version("repository-manager")
 
 DEFAULT_WORKSPACE = setting(
     "REPOSITORY_MANAGER_WORKSPACE",
-    setting("WORKSPACE_PATH", os.getenv("CONNECTOR_WORKSPACE_ROOT", os.getcwd())),
+    setting(
+        "WORKSPACE_PATH", os.getenv("REPOSITORY_MANAGER_WORKSPACE_ROOT", os.getcwd())
+    ),
 )
 DEFAULT_THREADS = to_integer(setting("REPOSITORY_MANAGER_THREADS", "12"))
 DEFAULT_WORKSPACE_YML = setting("WORKSPACE_YML", "workspace.yml")
@@ -352,7 +354,7 @@ def _latest_jobs() -> dict[str, dict[str, Any]]:
     latest job per repo means a repo reflects only its current state, and stale
     'running' jobs from a superseded cascade stop inflating the running count.
 
-    Workspace-wide orchestration jobs (phased bump/push, etc.) carry no
+    Workspace-wide orchestration jobs (clone, commit_code, etc.) carry no
     ``repo_name`` and are each preserved verbatim. (CONCEPT:RM-TOPOLOGY)
     """
     latest_by_repo: dict[str, tuple[str, dict[str, Any]]] = {}
@@ -434,8 +436,7 @@ def _reap_job_if_stale(
     future = _job_futures.get(job_id)
     if future is not None and not future.done():
         # A live worker/pending Future is stronger liveness evidence than
-        # wall age. This is essential for phased_push, whose configured
-        # inter-phase wait alone can legitimately reach 30 minutes.
+        # wall age.
         return
     heartbeat = j.get("heartbeat_at") or j.get("started_at") or j.get("submitted_at")
     if not heartbeat:
@@ -464,7 +465,7 @@ def _reap_stale_jobs(max_age_seconds: float | None = None) -> None:
     oversized concurrent sweep) can otherwise sit in 'running' forever, making
     the roll-up look permanently frozen (e.g. ``626 completed / 45 running``
     unchanged for many minutes). A pending/running Future is authoritative
-    liveness evidence regardless of age; observable phased progress advances a
+    liveness evidence regardless of age; observable progress advances a
     heartbeat. Only a record with neither is eligible for age-based reaping.
     This is a DISPLAY/accounting safety net — it does not kill an underlying
     operation. Env-tunable via
@@ -833,12 +834,12 @@ def _resolve_repo_dir(git: Git, spec: str) -> str:
 
     Honors the workspace's **nested** layout. The workspace.yml groups repos
     under subdirectories (e.g. ``agent-packages/agents/data-science-mcp``), so a
-    bare name like ``agent-connector-sdk`` lives at
-    ``<ws>/agent-packages/agent-connector-sdk`` — NOT the flat ``<ws>/agent-connector-sdk``.
+    bare name like ``scion-sdk`` lives at
+    ``<ws>/agent-packages/scion-sdk`` — NOT the flat ``<ws>/scion-sdk``.
     ``validate`` already resolves via ``project_map``; the per-repo git
     sub-actions (pull/push/add/commit) historically flat-joined ``git.path + name``
     and so hit ``[Errno 2] No such file or directory`` on every nested repo (e.g.
-    a standalone ``push projects=agent-connector-sdk`` failing while ``validate``
+    a standalone ``push projects=scion-sdk`` failing while ``validate``
     of the same repo passed). This makes path resolution consistent across
     actions by consulting ``project_map`` for bare names.
 
@@ -860,6 +861,13 @@ def _resolve_repo_dir(git: Git, spec: str) -> str:
         if os.path.basename(ap) == base:
             return ap
     return flat
+
+
+def _is_within(path: str, root: str) -> bool:
+    """Whether ``path`` is ``root`` or beneath it (case-folded on Windows)."""
+    path = os.path.normcase(path)
+    root = os.path.normcase(root)
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
 def _resolve_commit_code_target(path: str) -> tuple[str | None, str | None]:
@@ -885,9 +893,7 @@ def _resolve_commit_code_target(path: str) -> tuple[str | None, str | None]:
 
     resolved = os.path.abspath(os.path.expanduser(path))
     roots = [os.path.abspath(DEFAULT_WORKSPACE), WORKTREE_ROOT]
-    if not any(
-        resolved == root or resolved.startswith(root + os.sep) for root in roots
-    ):
+    if not any(_is_within(resolved, root) for root in roots):
         return None, (
             f"path {resolved!r} is outside the configured workspace roots "
             f"({', '.join(roots)}); refusing to commit_code there"

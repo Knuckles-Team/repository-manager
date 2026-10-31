@@ -68,13 +68,15 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from agent_connector_sdk.config import setting
+from scion_sdk.config import setting
 
 # R-07: file_lock is the cross-platform chokepoint for advisory file locking
 # (POSIX fcntl.flock / Windows kernel32 LockFileEx via ctypes); stdlib-only,
-# no new deps. No agent-connector-sdk equivalent exists yet (SDK gap) --
-# keep this one agent_connector_sdk import.
-from agent_connector_sdk.file_lock import lock_exclusive, unlock
+# no new deps. No scion-sdk equivalent exists yet (SDK gap) --
+# keep this one scion_sdk import.
+from scion_sdk.file_lock import lock_exclusive, unlock
+
+from repository_manager import portable_fs as pfs
 
 ARBITRATION_DIRNAME = "agent-lanes"
 DEFAULT_LEASE_TTL_SECONDS = 1_800
@@ -1031,11 +1033,11 @@ def resource_scope(name: str) -> str:
 
 
 #: The host state namespace every lease/fragment writer shares. It keeps the
-#: name this module had before it moved from agent-connector-sdk to
+#: name this module had before it moved from scion-sdk to
 #: repository-manager: a lease is only exclusive while every holder
 #: resolves the SAME lock file, so renaming the namespace would split one
 #: arbitration domain into two for as long as an older writer is still running.
-ARBITRATION_STATE_NAMESPACE = "agent-connector-sdk"
+ARBITRATION_STATE_NAMESPACE = "scion-sdk"
 
 
 def workspace_arbitration_dir() -> Path:
@@ -1316,13 +1318,30 @@ def _validate_existing_output(target: Path) -> None:
         )
 
 
-def _output_open_flags(truncate: bool) -> int:
+def _no_follow_flag(refusal: str) -> int:
+    """``O_NOFOLLOW`` where it exists.
+
+    Windows has no such flag; its callers already ``lstat``-reject symlinks and
+    reparse points before opening, so the flag contributes ``0`` there.  Any
+    other platform without it still refuses.
+    """
     no_follow = getattr(os, "O_NOFOLLOW", None)
-    if no_follow is None:
-        raise LaneArbitrationError(
-            "output_path cannot be opened safely: no-follow is unavailable"
-        )
-    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | no_follow
+    if no_follow is not None:
+        return no_follow
+    if pfs.is_windows():
+        return 0
+    raise LaneArbitrationError(f"{refusal}: no-follow is unavailable")
+
+
+def _output_open_flags(truncate: bool) -> int:
+    no_follow = _no_follow_flag("output_path cannot be opened safely")
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_BINARY", 0)
+        | no_follow
+    )
     return flags if truncate else flags | os.O_APPEND
 
 
@@ -1987,13 +2006,14 @@ LeaseIdentity = tuple[int, int]
 
 
 def _lease_publication_flags() -> int:
-    no_follow = getattr(os, "O_NOFOLLOW", None)
-    if no_follow is None:
-        raise LaneArbitrationError(
-            "lease publication cannot be made safely: no-follow is unavailable"
-        )
+    no_follow = _no_follow_flag("lease publication cannot be made safely")
     return (
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | no_follow
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_BINARY", 0)
+        | no_follow
     )
 
 
