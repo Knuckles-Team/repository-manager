@@ -12,6 +12,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from repository_manager import portable_fs as pfs
 from repository_manager.merge_queue_runner import (
     DEFAULT_DRAIN_DEADLINE_SECONDS,
     DEFAULT_GLOBAL_DRAIN_DEADLINE_SECONDS,
@@ -309,14 +310,7 @@ def _stage(path: Path, content: bytes, mode: int) -> Path:
 
 
 def _fsync_directory(path: Path) -> None:
-    try:
-        descriptor = os.open(path, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    pfs.fsync_directory_path(path)
 
 
 def _snapshot(path: Path) -> _Snapshot:

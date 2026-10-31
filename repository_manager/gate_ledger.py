@@ -44,7 +44,6 @@ therefore means "not observed failing", which is emphatically not the same as
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import uuid
 from collections.abc import Mapping, Sequence
@@ -52,6 +51,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any
+
+from repository_manager import portable_fs as pfs
 
 __all__ = [
     "GATE_LEDGER_SCHEMA_VERSION",
@@ -249,9 +250,7 @@ class GateLedger:
     @staticmethod
     def _resolve_store_path(store_path: str | Path | None) -> str:
         if store_path is None:
-            state_root = Path(
-                os.getenv("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))
-            )
+            state_root = pfs.state_home()
             path = state_root / "repository-manager" / "gate_ledger.sqlite3"
             path.parent.mkdir(parents=True, exist_ok=True)
             return str(path)

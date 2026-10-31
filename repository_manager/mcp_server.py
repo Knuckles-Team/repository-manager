@@ -864,6 +864,13 @@ def _resolve_repo_dir(git: Git, spec: str) -> str:
     return flat
 
 
+def _is_within(path: str, root: str) -> bool:
+    """Whether ``path`` is ``root`` or beneath it (case-folded on Windows)."""
+    path = os.path.normcase(path)
+    root = os.path.normcase(root)
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
 def _resolve_commit_code_target(path: str) -> tuple[str | None, str | None]:
     """Resolve an explicit ``path`` to the ONE commit_code target, or an error.
 
@@ -887,9 +894,7 @@ def _resolve_commit_code_target(path: str) -> tuple[str | None, str | None]:
 
     resolved = os.path.abspath(os.path.expanduser(path))
     roots = [os.path.abspath(DEFAULT_WORKSPACE), WORKTREE_ROOT]
-    if not any(
-        resolved == root or resolved.startswith(root + os.sep) for root in roots
-    ):
+    if not any(_is_within(resolved, root) for root in roots):
         return None, (
             f"path {resolved!r} is outside the configured workspace roots "
             f"({', '.join(roots)}); refusing to commit_code there"

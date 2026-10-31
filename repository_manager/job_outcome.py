@@ -46,6 +46,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from repository_manager import portable_fs as pfs
+
 __all__ = [
     "COMPLETED",
     "FAILED",
@@ -198,6 +200,8 @@ def _stage_argv(
     use_systemd: bool,
 ) -> list[str]:
     if not use_systemd:
+        if pfs.is_windows():
+            return [os.environ.get("COMSPEC", "cmd.exe"), "/c", wrapped]
         return ["bash", "-c", wrapped]
     return [
         "systemd-run",
@@ -326,7 +330,7 @@ def run_stages(
         fully_measured=fully_measured,
         stages=outcomes,
         profile=profile.as_dict(),
-        host=os.uname().nodename,
+        host=pfs.hostname(),
     )
     return job.as_dict()
 

@@ -43,9 +43,7 @@ __all__ = [
 ]
 
 import concurrent.futures
-import multiprocessing
 import shutil
-import signal
 
 import yaml  # type: ignore[import-untyped]
 from pydantic import ValidationError
@@ -64,6 +62,7 @@ from importlib.resources import files
 from scion_sdk.utilities import get_logger
 
 from repository_manager import dependency_readiness
+from repository_manager import portable_fs as pfs
 from repository_manager.canonical_guard import guarded_canonical_mutation
 from repository_manager.development.fleet_release_gate import (
     require_legacy_release_route,
@@ -2247,7 +2246,7 @@ class Git:
     @staticmethod
     def _replace_uv_sibling_link(link: Path, target: Path) -> None:
         """Create or correct one sibling symlink without replacing real files."""
-        if link.is_symlink():
+        if pfs.is_link(link):
             try:
                 if link.resolve(strict=False) == target:
                     return
@@ -2261,11 +2260,11 @@ class Git:
         staged = Git._uv_sibling_temp_path(link)
         staged_created = False
         try:
-            staged.symlink_to(target, target_is_directory=True)
+            pfs.create_dir_link(staged, target)
             staged_created = True
-            if link.exists() and not link.is_symlink():
+            if link.exists() and not pfs.is_link(link):
                 raise ValueError(f"refusing to replace non-symlink path {link}")
-            os.replace(staged, link)
+            pfs.replace_link(staged, link)
         finally:
             if staged_created:
                 cleanup_errors = Git._cleanup_uv_sibling_temp(staged, os.fspath(target))
@@ -2281,12 +2280,12 @@ class Git:
     @staticmethod
     def _cleanup_uv_sibling_temp(staged: Path, expected_target: str) -> list[str]:
         """Remove one task-owned staging symlink without deleting real files."""
-        if not staged.is_symlink():
+        if not pfs.is_link(staged):
             if staged.exists():
                 return [f"staging path is no longer a symlink: {staged}"]
             return []
         try:
-            actual_target = os.readlink(staged)
+            actual_target = pfs.read_link(staged)
         except OSError as exc:
             return [f"cannot inspect staging path {staged}: {exc}"]
         if actual_target != expected_target:
@@ -2300,13 +2299,13 @@ class Git:
     @staticmethod
     def _rollback_new_uv_link(link: Path, new_target: str, errors: list[str]) -> None:
         """Remove a link this transaction created, if it is still ours to remove."""
-        if not link.is_symlink():
+        if not pfs.is_link(link):
             if link.exists():
                 errors.append(
                     f"refusing to remove non-symlink path during rollback: {link}"
                 )
             return
-        if os.readlink(link) != new_target:
+        if pfs.read_link(link) != new_target:
             errors.append(f"refusing to remove changed symlink during rollback: {link}")
             return
         link.unlink()
@@ -2314,9 +2313,9 @@ class Git:
     @staticmethod
     def _restore_uv_link(link: Path, previous_target: str, errors: list[str]) -> None:
         """Point a pre-existing link back at the target it had before."""
-        if link.is_symlink() and os.readlink(link) == previous_target:
+        if pfs.is_link(link) and pfs.read_link(link) == previous_target:
             return
-        if link.exists() and not link.is_symlink():
+        if link.exists() and not pfs.is_link(link):
             errors.append(
                 f"refusing to replace non-symlink path during rollback: {link}"
             )
@@ -2325,9 +2324,9 @@ class Git:
         restore = Git._uv_sibling_temp_path(link)
         restore_created = False
         try:
-            restore.symlink_to(previous_target)
+            pfs.create_dir_link(restore, previous_target)
             restore_created = True
-            os.replace(restore, link)
+            pfs.replace_link(restore, link)
         finally:
             if restore_created:
                 errors.extend(Git._cleanup_uv_sibling_temp(restore, previous_target))
@@ -2387,7 +2386,7 @@ class Git:
                 label=f"uv sibling link {name!r}",
                 allow_leaf_symlink=True,
             )
-            if link.exists() and not link.is_symlink():
+            if link.exists() and not pfs.is_link(link):
                 raise ValueError(f"refusing to replace non-symlink path {link}")
             normalized_name = self._normalize_uv_name(
                 name, label="uv sibling path component"
@@ -2413,7 +2412,7 @@ class Git:
         updates: list[tuple[Path, Path, str | None, Path]] = []
         for name, target in validated_links:
             link = sibling_dir / name
-            previous_target = os.readlink(link) if link.is_symlink() else None
+            previous_target = pfs.read_link(link) if pfs.is_link(link) else None
             if previous_target is not None and self._uv_link_already_points_at(
                 link, target
             ):
@@ -2430,7 +2429,7 @@ class Git:
     ) -> None:
         """Create every replacement symlink under a task-owned staging name."""
         for _link, target, _previous_target, staged_path in updates:
-            staged_path.symlink_to(target, target_is_directory=True)
+            pfs.create_dir_link(staged_path, target)
             staged.append((staged_path, os.fspath(target)))
 
     @staticmethod
@@ -2439,14 +2438,14 @@ class Git:
     ) -> None:
         """Move every staged symlink onto its final name."""
         for link, _target, _previous_target, staged_path in updates:
-            if link.exists() and not link.is_symlink():
+            if link.exists() and not pfs.is_link(link):
                 raise ValueError(f"refusing to replace non-symlink path {link}")
-            os.replace(staged_path, link)
+            pfs.replace_link(staged_path, link)
 
     @staticmethod
     def _remove_created_uv_sibling_dir(sibling_dir: Path) -> list[str]:
         """Remove a sibling directory this transaction created, if still safe."""
-        if sibling_dir.is_symlink() or not sibling_dir.is_dir():
+        if pfs.is_link(sibling_dir) or not sibling_dir.is_dir():
             return [f"refusing to remove changed sibling directory {sibling_dir}"]
         try:
             sibling_dir.rmdir()
@@ -2494,7 +2493,7 @@ class Git:
                     created_sibling_dir = True
                 except FileExistsError:
                     pass
-            if sibling_dir.is_symlink() or not sibling_dir.is_dir():
+            if pfs.is_link(sibling_dir) or not sibling_dir.is_dir():
                 raise ValueError(f"sibling path is not a directory {sibling_dir}")
 
             self._stage_uv_sibling_links(updates, staged)
@@ -2533,7 +2532,7 @@ class Git:
         resolved_targets = self._resolve_uv_sibling_targets(names)
 
         sibling_dir = project / _UV_WORKSPACE_SIBLINGS_DIRNAME
-        if sibling_dir.is_symlink():
+        if pfs.is_link(sibling_dir):
             raise ValueError(f"refusing symlink sibling directory {sibling_dir}")
         if sibling_dir.exists() and not sibling_dir.is_dir():
             raise ValueError(f"sibling path is not a directory {sibling_dir}")
@@ -2759,10 +2758,7 @@ class Git:
         available cores keeps background validation from starving the IDE and
         MCP server.
         """
-        try:
-            cores = len(os.sched_getaffinity(0))
-        except AttributeError:
-            cores = multiprocessing.cpu_count() or 4
+        cores = pfs.cpu_count()
         target = max(1, int(cores * max_cpu_pct / 100.0))
         return target
 
@@ -3071,17 +3067,14 @@ class Git:
     @staticmethod
     def _terminate_process_group(process: subprocess.Popen) -> None:
         """SIGTERM then SIGKILL a timed-out command's whole process group."""
-        if not hasattr(os, "killpg"):
-            Git._kill_process(process)
-            return
         try:
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            pfs.terminate_process_group(process)
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                pfs.terminate_process_group(process, force=True)
                 process.wait(timeout=5)
-        except Exception:  # nosec B110
+        except (OSError, subprocess.SubprocessError):
             Git._kill_process(process)
 
     @staticmethod
@@ -3178,22 +3171,22 @@ class Git:
                     "descriptor-pinned path anchor is absent from the Git command"
                 )
             command_argv = [
-                f"/proc/self/fd/{destination_fd}" if token == lexical_path else token
+                pfs.fd_path(destination_fd) if token == lexical_path else token
                 for token in command_argv
             ]
         try:
             process = subprocess.Popen(
                 command_argv,
                 shell=False,
-                cwd=f"/proc/self/fd/{cwd_fd}",
+                cwd=pfs.fd_path(cwd_fd),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 text=True,
                 env=current_env,
                 bufsize=1,
-                start_new_session=True,
-                pass_fds=inherited,
+                **pfs.new_group_kwargs(),
+                **pfs.popen_fd_kwargs(inherited),
             )
         except OSError as exc:
             return self._repository_command_result(
@@ -3697,10 +3690,11 @@ class Git:
                         # absent.  A real clone always leaves at least .git.
                         if destination.target_fd is not None:
                             try:
-                                if destination.leaf is not None and not os.listdir(
-                                    destination.target_fd
+                                if (
+                                    destination.leaf is not None
+                                    and not pfs.scandir_names(destination.target_fd)
                                 ):
-                                    os.rmdir(destination.leaf, dir_fd=destination.fd)
+                                    pfs.rmdir(destination.leaf, dir_fd=destination.fd)
                             except OSError:
                                 # A non-empty destination is the expected real
                                 # clone handoff; any inability to inspect it is
@@ -4370,7 +4364,7 @@ class Git:
         """Run Git only inside the private admin repository."""
         command = ["git"]
         if initialized:
-            command.append(f"--git-dir=/proc/self/fd/{admin.fd}")
+            command.append(f"--git-dir={pfs.fd_path(admin.fd)}")
         command.extend(argv)
         return self._run_pinned_repository_command(
             command,

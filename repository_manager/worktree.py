@@ -40,6 +40,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from repository_manager import portable_fs as pfs
 from repository_manager import prune_guard, stash_guard
 from repository_manager.canonical_guard import guarded_canonical_mutation
 
@@ -95,9 +96,7 @@ class GitLike(Protocol):
     ) -> Any: ...
 
 
-_XDG_STATE_HOME = os.getenv(
-    "XDG_STATE_HOME", os.path.join(os.path.expanduser("~"), ".local", "state")
-)
+_XDG_STATE_HOME = str(pfs.state_home())
 WORKTREE_ROOT = os.path.abspath(
     os.path.expanduser(
         os.getenv(

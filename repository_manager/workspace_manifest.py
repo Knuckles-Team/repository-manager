@@ -23,6 +23,8 @@ from urllib.parse import SplitResult, urlsplit
 
 import yaml  # type: ignore[import-untyped]
 
+from repository_manager import portable_fs as pfs
+
 _ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _LOCAL_HOST_SUFFIXES = (".arpa", ".internal", ".lan", ".local", ".localhost")
 _PRIVATE_HOST_REFERENCE = re.compile(
@@ -127,9 +129,7 @@ class _DestinationSnapshot:
 def default_runtime_manifest_path() -> Path:
     """Return the exact XDG runtime manifest path without creating directories."""
 
-    config_home = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(config_home).expanduser() if config_home else Path.home() / ".config"
-    return base / "scion-sdk" / "workspace.yml"
+    return pfs.config_home() / "scion-sdk" / "workspace.yml"
 
 
 def default_packaged_seed_path() -> Path:
@@ -735,14 +735,7 @@ def _stage_write(destination: Path, content: bytes, mode: int) -> Path:
 
 
 def _fsync_directory(directory: Path) -> None:
-    try:
-        descriptor = os.open(directory, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    pfs.fsync_directory_path(directory)
 
 
 def _restore_snapshots(snapshots: list[_DestinationSnapshot]) -> bool:

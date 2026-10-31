@@ -30,6 +30,7 @@ from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 
+from repository_manager import portable_fs as pfs
 from repository_manager.workspace_manifest import (
     WorkspaceManifestError,
     select_repositories,
@@ -729,9 +730,27 @@ def _cgroup_violation(
     return None
 
 
+_ROOT_PROCESSES: dict[int, subprocess.Popen[str]] = {}
+
+
+def _procfs_available() -> bool:
+    """Whether Linux procfs can enumerate descendants (false on Windows)."""
+
+    return Path("/proc/self").exists()
+
+
+def _tracked_root_alive(pid: int) -> bool:
+    """Liveness of a launched child where procfs is unavailable."""
+
+    process = _ROOT_PROCESSES.get(pid)
+    return process is not None and process.poll() is None
+
+
 def _process_exists(pid: int) -> bool:
     """Return whether a process is still observable in procfs."""
 
+    if not _procfs_available():
+        return _tracked_root_alive(pid)
     return Path(f"/proc/{pid}").exists()
 
 
@@ -765,6 +784,9 @@ def _signal_process_tree(
 ) -> None:
     """Signal the process group and every descendant found in proc."""
 
+    if not _procfs_available() or not hasattr(os, "killpg"):
+        pfs.terminate_process_group(process, force=signum != signal.SIGTERM)
+        return
     observed.update(_process_tree(process.pid))
     try:
         os.killpg(process.pid, signum)
@@ -803,7 +825,7 @@ def _kill_process_group(
     _signal_process_tree(process, signal.SIGTERM, tracked)
     if _wait_for_process_tree(process, tracked, 10):
         return True
-    _signal_process_tree(process, signal.SIGKILL, tracked)
+    _signal_process_tree(process, pfs.force_signal(), tracked)
     return _wait_for_process_tree(process, tracked, 10)
 
 
@@ -843,15 +865,19 @@ def _launch_process(
     """Start one direct child process in its own process group."""
 
     try:
-        return subprocess.Popen(
+        process = subprocess.Popen(
             command,
             cwd=str(repository.path),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            start_new_session=True,
             env=env,
+            **pfs.new_group_kwargs(),
         )
+        for stale in [k for k, v in _ROOT_PROCESSES.items() if v.poll() is not None]:
+            del _ROOT_PROCESSES[stale]
+        _ROOT_PROCESSES[process.pid] = process
+        return process
     except OSError as exc:
         raise MergeQueueRunnerError(
             f"repository {repository.identifier!r} drain could not start: {exc}"

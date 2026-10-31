@@ -7,6 +7,7 @@ import signal
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from repository_manager import portable_fs as pfs
 from repository_manager.development import (
     ExecutionCommand,
     ExecutionOutcome,
@@ -95,7 +96,7 @@ class FakeProcess:
     def kill(self) -> None:
         """Record a KILL request."""
 
-        self.send_signal(signal.SIGKILL)
+        self.send_signal(pfs.force_signal())
 
 
 class FakeExecutor:
