@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_connector_sdk.mcp.action_dispatch import resolve_action
-from agent_connector_sdk.mcp.concurrency import run_blocking
 from fastmcp import Context, FastMCP
 from pydantic import Field
+from scion_sdk.mcp.action_dispatch import resolve_action
+from scion_sdk.mcp.concurrency import run_blocking
 
 from repository_manager.mcp_tools.context import McpToolContext
 from repository_manager.mcp_tools.contracts import RM_MERGE_QUEUE_ACTIONS
@@ -84,7 +84,7 @@ def register_merge_queue_tools(
         **The queue does not know what a gate is.** Gates are declared in the
         target repository's own ``.mergequeue.yaml`` — a command, a tier, a
         timeout, and how to compare its result against the base ref.
-        agent-connector-sdk declares pytest + ruff + its contract scripts;
+        scion-sdk declares pytest + ruff + its contract scripts;
         epistemic-graph declares ``cargo check --all-features`` + clippy; a docs
         repo could declare only a link check. A repository with no declaration is
         REFUSED rather than defaulted, because "declared no gates" and "has no

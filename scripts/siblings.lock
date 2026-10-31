@@ -1,6 +1,6 @@
 # Sibling source checkouts required by uv.lock's editable path sources.
 #
-# None: every dependency, agent-connector-sdk included, installs from PyPI.
+# None: every dependency, scion-sdk included, installs from PyPI.
 # scripts/bootstrap.sh still reads this file; add a row only for a temporary
 # editable path source.
 #

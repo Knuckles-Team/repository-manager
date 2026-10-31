@@ -2,7 +2,7 @@
 the dependency-readiness manual release hook (CONCEPT:RM-DEP-READY Layer 1).
 
 Mirrors real fleet `.pre-commit-config.yaml` shapes (a `repo: local` block
-with existing 2-space-indented hooks, matching agent-connector-sdk'/servicenow-api's
+with existing 2-space-indented hooks, matching scion-sdk'/servicenow-api's
 actual files) so the indentation-matching + idempotency behavior is proven
 against the shape it will actually run against, not a synthetic minimal file.
 """
@@ -13,11 +13,17 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import yaml
 import pytest
+import yaml
 
-_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "sweep_dependency_readiness_hook.py"
-_spec = importlib.util.spec_from_file_location("sweep_dependency_readiness_hook", _SCRIPT_PATH)
+_SCRIPT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "sweep_dependency_readiness_hook.py"
+)
+_spec = importlib.util.spec_from_file_location(
+    "sweep_dependency_readiness_hook", _SCRIPT_PATH
+)
 assert _spec is not None and _spec.loader is not None
 sweep_mod = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = sweep_mod
@@ -47,8 +53,9 @@ REF = "a" * 40
 
 
 def run(cfg, apply=False, reviewed=False):
-    return sweep_mod.plan_or_apply(cfg, apply=apply, pipelines_ref=REF,
-                                   publishers_reviewed=reviewed)
+    return sweep_mod.plan_or_apply(
+        cfg, apply=apply, pipelines_ref=REF, publishers_reviewed=reviewed
+    )
 
 
 def config(tmp_path, content=_REALISTIC_CONFIG):
@@ -58,10 +65,16 @@ def config(tmp_path, content=_REALISTIC_CONFIG):
 
 
 def legacy(entry=None, stages=None, **extra):
-    return {"id": "dependency-readiness", "name": sorted(sweep_mod.LEGACY_NAMES)[0],
-            "entry": entry or sweep_mod.LEGACY_ENTRY, "language": "system",
-            "pass_filenames": False, "always_run": True,
-            "stages": stages or ["manual", "pre-push"], **extra}
+    return {
+        "id": "dependency-readiness",
+        "name": sorted(sweep_mod.LEGACY_NAMES)[0],
+        "entry": entry or sweep_mod.LEGACY_ENTRY,
+        "language": "system",
+        "pass_filenames": False,
+        "always_run": True,
+        "stages": stages or ["manual", "pre-push"],
+        **extra,
+    }
 
 
 def with_hook(hook):
@@ -85,8 +98,11 @@ def test_apply_and_idempotence_preserve_all_other_config(tmp_path):
     assert run(cfg, True, True).action == "added-central"
     after = yaml.safe_load(cfg.read_text())
     assert after["repos"][:-1] == yaml.safe_load(_REALISTIC_CONFIG)["repos"]
-    assert after["repos"][-1] == {"repo": sweep_mod.PIPELINES, "rev": REF,
-                                  "hooks": [{"id": "dependency-readiness"}]}
+    assert after["repos"][-1] == {
+        "repo": sweep_mod.PIPELINES,
+        "rev": REF,
+        "hooks": [{"id": "dependency-readiness"}],
+    }
     once = cfg.read_text()
     assert run(cfg, True, True).action == "already-central"
     assert cfg.read_text() == once
@@ -104,8 +120,15 @@ def test_recognized_legacy_reconciled(tmp_path, entry, stages):
     assert after["repos"][-1]["hooks"] == [{"id": "dependency-readiness"}]
 
 
-@pytest.mark.parametrize("extra", [{"args": ["custom"]}, {"entry": "custom checker"},
-                                   {"stages": ["pre-commit"]}, {"always_run": False}])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"args": ["custom"]},
+        {"entry": "custom checker"},
+        {"stages": ["pre-commit"]},
+        {"always_run": False},
+    ],
+)
 def test_custom_hooks_untouched(tmp_path, extra):
     cfg = config(tmp_path, with_hook(legacy(**extra)))
     before = cfg.read_text()
@@ -114,7 +137,10 @@ def test_custom_hooks_untouched(tmp_path, extra):
 
 
 def test_only_legacy_local_hook_and_following_top_level_key(tmp_path):
-    data = {"repos": [{"repo": "local", "hooks": [legacy()]}], "default_stages": ["pre-commit"]}
+    data = {
+        "repos": [{"repo": "local", "hooks": [legacy()]}],
+        "default_stages": ["pre-commit"],
+    }
     cfg = config(tmp_path, yaml.safe_dump(data, sort_keys=False))
     assert run(cfg, True, True).action == "reconciled"
     result = yaml.safe_load(cfg.read_text())
@@ -122,8 +148,16 @@ def test_only_legacy_local_hook_and_following_top_level_key(tmp_path):
     assert result["default_stages"] == ["pre-commit"]
 
 
-@pytest.mark.parametrize("content", ["repos: []", "repos: null", "repos: []\nrepos: []",
-    "repos: &r []", with_hook(legacy()) + "  # preserve operator note\n"])
+@pytest.mark.parametrize(
+    "content",
+    [
+        "repos: []",
+        "repos: null",
+        "repos: []\nrepos: []",
+        "repos: &r []",
+        with_hook(legacy()) + "  # preserve operator note\n",
+    ],
+)
 def test_invalid_or_commented_configs_preserved(tmp_path, content):
     cfg = config(tmp_path, content)
     result = run(cfg, True, True)
@@ -141,7 +175,9 @@ def test_duplicate_hook_and_commented_legacy_preserved(tmp_path):
     data["repos"][-1]["hooks"].append(legacy())
     cfg = config(tmp_path, yaml.safe_dump(data))
     assert run(cfg, True, True).action == "review-required-duplicate"
-    cfg.write_text(content.replace("language: system", "language: system # operator note"))
+    cfg.write_text(
+        content.replace("language: system", "language: system # operator note")
+    )
     assert run(cfg, True, True).action == "review-required-invalid"
 
 
@@ -170,10 +206,19 @@ def test_sweep_walks_existing_configs_only(tmp_path):
 
 def test_contract_checked_at_immutable_git_object(monkeypatch, tmp_path):
     calls = []
+
     def show(args, **kwargs):
         calls.append(args)
-        return yaml.safe_dump([{"id": "dependency-readiness", "stages": ["manual"],
-                                "entry": "pipelines-hook dependency-readiness"}])
+        return yaml.safe_dump(
+            [
+                {
+                    "id": "dependency-readiness",
+                    "stages": ["manual"],
+                    "entry": "pipelines-hook dependency-readiness",
+                }
+            ]
+        )
+
     monkeypatch.setattr(sweep_mod.subprocess, "check_output", show)
     sweep_mod.validate_contract(tmp_path, REF)
     assert calls[0][-1] == REF + ":.pre-commit-hooks.yaml"

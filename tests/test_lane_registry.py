@@ -257,10 +257,10 @@ def test_allocate_reaches_native_authority_via_registry_factory(
     ``create_production_lane_registry``/``NativeLaneAuthority.from_graph_client``
     compose -- rather than calling ``create_production_lane_registry`` by
     name. ``from_graph_client`` additionally imports
-    ``agent_connector_sdk.orchestration.development_lane.
+    ``scion_sdk.orchestration.development_lane.
     EngineNativeDevelopmentLaneTransport``, which is confirmed NOT importable
     anywhere in this host's installed environments (it lives only on
-    agent-connector-sdk' own unmerged ``rmdd-28-native-lane-authority-0809``
+    scion-sdk' own unmerged ``rmdd-28-native-lane-authority-0809``
     branch -- see this lane's handoff). The seam ``WorktreeManager.
     __init__``'s ``registry_factory`` wires is generic: it is
     ``create_production_lane_registry`` itself once that AU branch merges,

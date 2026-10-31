@@ -32,7 +32,7 @@ def _scoped_manager(tmp_path: Path) -> Git:
     urls = {
         "pipeline": "https://example.invalid/pipelines.git",
         "epistemic": "https://example.invalid/epistemic-graph.git",
-        "utilities": "https://example.invalid/agent-connector-sdk.git",
+        "utilities": "https://example.invalid/scion-sdk.git",
         "webui": "https://example.invalid/agent-webui.git",
         "agent": "https://example.invalid/agent-one.git",
         "service": "https://example.invalid/service-one.git",
@@ -42,7 +42,7 @@ def _scoped_manager(tmp_path: Path) -> Git:
     paths = {
         "pipeline": tmp_path / "pipelines",
         "epistemic": tmp_path / "epistemic-graph",
-        "utilities": tmp_path / "agent-connector-sdk",
+        "utilities": tmp_path / "scion-sdk",
         "webui": tmp_path / "agent-webui",
         "agent": tmp_path / "agent-packages" / "agents" / "agent-one",
         "service": tmp_path / "services" / "service-one",
@@ -70,7 +70,7 @@ def _five_phase_config() -> dict:
         "phases": [
             {"phase": 1, "name": "Phase 1", "projects": ["pipelines"]},
             {"phase": 2, "name": "Phase 2", "projects": ["epistemic-graph"]},
-            {"phase": 3, "name": "Phase 3", "projects": ["agent-connector-sdk"]},
+            {"phase": 3, "name": "Phase 3", "projects": ["scion-sdk"]},
             {"phase": 4, "name": "Phase 4", "projects": ["agent-webui"]},
             {
                 "phase": 5,
@@ -107,7 +107,7 @@ def test_bulk_precommit_scope_cannot_absorb_infrastructure(tmp_path: Path) -> No
     assert names == [
         "pipelines",
         "epistemic-graph",
-        "agent-connector-sdk",
+        "scion-sdk",
         "agent-webui",
         "agent-one",
     ]

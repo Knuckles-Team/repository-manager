@@ -13,7 +13,7 @@ description: >-
 license: MIT
 tags: [repository-manager, validation, pre-commit, bumpversion, mcp]
 metadata:
-  author: Genius
+  author: Knuckles-Team
   version: '0.1.0'
 ---
 # Repository Manager — Workspace Validation & Maintenance
@@ -76,7 +76,7 @@ rm_projects_validate_status(job_id="<id>", summary=true)
 ```
 Validate only two projects:
 ```
-rm_projects_validate(repositories="agent-connector-sdk,gitlab-api")
+rm_projects_validate(repositories="scion-sdk,gitlab-api")
 ```
 Dry-run a patch bump across the workspace:
 ```

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.4]
+
+### Changed
+- Require `scion-sdk[mcp]>=0.6.4,<0.7.0`; imports move from `agent_connector_sdk` to `scion_sdk`; `uv.lock` relocked.
+
 ### Added
 - **Dependency-readiness gate (CONCEPT:RM-DEP-READY)** — `repository_manager/dependency_readiness.py`,
   a pluggable artifact-availability predicate (`IndexBackend` protocol; `PyPISimpleIndexBackend`

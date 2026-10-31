@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from agent_connector_sdk.mcp.action_dispatch import resolve_action
-from agent_connector_sdk.mcp.concurrency import run_blocking
 from fastmcp import Context, FastMCP
 from pydantic import Field
+from scion_sdk.mcp.action_dispatch import resolve_action
+from scion_sdk.mcp.concurrency import run_blocking
 
 from repository_manager.development.fleet_release_gate import (
     FleetReleaseGateError,
@@ -225,8 +225,8 @@ def register_workspace_management_tools(
             default=False,
             description=(
                 "For 'setup': after clone/pull, materialize each project's "
-                ".uv-workspace-siblings/agent-connector-sdk symlink and run `uv "
-                "sync`, dependency-ordered (agent-connector-sdk first, since "
+                ".uv-workspace-siblings/scion-sdk symlink and run `uv "
+                "sync`, dependency-ordered (scion-sdk first, since "
                 "every fleet member depends on it and it is not yet "
                 "published to PyPI at the required floor). Best-effort per "
                 "project; a partial failure is reported (status='error' "

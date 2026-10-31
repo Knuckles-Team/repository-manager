@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_connector_sdk.mcp.concurrency import run_blocking
 from fastmcp import Context, FastMCP
 from pydantic import Field
+from scion_sdk.mcp.concurrency import run_blocking
 
 from repository_manager.mcp_tools.context import McpToolContext
 
@@ -113,7 +113,7 @@ def register_concepts_tools(
 
         Repository-manager never allocates a concept id itself: every action
         here is a thin, MCP/CLI-neutral consumer of an injected authority
-        port. When the central authority (``agent_connector_sdk.governance.
+        port. When the central authority (``scion_sdk.governance.
         concept_reservation``) is unavailable in this environment, every
         mutating action refuses with a named
         ``dependency_blocked``/``ConceptAuthorityUnavailable`` error instead

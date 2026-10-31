@@ -1,19 +1,19 @@
 """Concept-claim lifecycle states, mirrored from RMDD-16's authority contract.
 
-RMDD-16 (``agent_connector_sdk.governance.concept_reservation``,
+RMDD-16 (``scion_sdk.governance.concept_reservation``,
 ``ConceptReservationState``/``ConceptReservationVisibility``) is the owning
 authority for this state machine.  RMDD-17 does not redefine or widen it —
 this module mirrors the exact wire values so repository-manager can reason
 about a claim's lifecycle without an import-time dependency on a module
-that, as of this lane (2026-08-10), exists only on ``agent-connector-sdk``
+that, as of this lane (2026-08-10), exists only on ``scion-sdk``
 feature branches (``rmdd-program-integration-0808``,
 ``rmdd-28-native-lane-authority-0809``, ``rmdd-19-provenance-0810``) and
 backup ref ``refs/lane-backup/rmdd-16-concept-authority-0809`` (commit
-``bbb09765``) — not yet on ``agent-connector-sdk`` ``main`` (see
+``bbb09765``) — not yet on ``scion-sdk`` ``main`` (see
 ``client.py`` for the full account and the exact commits checked).
 
 ``tests/concept_coordination/test_state.py`` asserts these values against the
-real enum whenever ``agent_connector_sdk.governance.concept_reservation`` *is*
+real enum whenever ``scion_sdk.governance.concept_reservation`` *is*
 importable, so drift is caught the moment both repositories' ``main``
 branches carry the module — the test degrades to a documented skip only when
 the module is genuinely absent, never a silent pass.
@@ -99,7 +99,7 @@ VISIBILITY_RANK: dict[ConceptClaimVisibility, int] = {
 
 # Every lifecycle transition never lowers visibility, and reaching a given
 # state floors it at a minimum (mirrors RMDD-16's authority exactly, read
-# from ``agent_connector_sdk.governance.concept_reservation`` commit ``bbb09765``
+# from ``scion_sdk.governance.concept_reservation`` commit ``bbb09765``
 # — see ``client.py`` for why that module cannot be imported here):
 # materializing is at least fragment-visible, landing is at least
 # repository-visible, and a tombstone is always fully external.

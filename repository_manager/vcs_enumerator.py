@@ -4,7 +4,7 @@ from __future__ import annotations
 """Remote VCS enumeration for enterprise-scale ingestion (CONCEPT:AU-KG.ontology.populated-at-import-real-3).
 
 Lists every repository across a GitLab instance or GitHub org so the KG-side
-batch ingestor (``agent_connector_sdk.knowledge_graph.ingestion.batch_orchestrator``)
+batch ingestor (``scion_sdk.knowledge_graph.ingestion.batch_orchestrator``)
 can fan deep-code ingestion into the durable queue. This is the enumeration gap:
 the engine and queue already scale, but nothing listed 20k+ remote repos.
 
@@ -29,8 +29,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agent_connector_sdk.tls.profile import ResolvedTLSProfile
-from agent_connector_sdk.tls.resolve import resolve_tls_profile
+from scion_sdk.tls.profile import ResolvedTLSProfile
+from scion_sdk.tls.resolve import resolve_tls_profile
 
 try:  # optional at import — only needed for the live (non-injected) path
     import httpx

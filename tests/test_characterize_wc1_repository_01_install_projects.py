@@ -31,14 +31,14 @@ def _meta(command="test"):
 
 @pytest.fixture
 def git_with_projects(tmp_path):
-    """A Git instance with an agent-connector-sdk project plus one downstream project."""
+    """A Git instance with an scion-sdk project plus one downstream project."""
     git = Git(path=str(tmp_path))
-    au_dir = tmp_path / "agent-connector-sdk"
+    au_dir = tmp_path / "scion-sdk"
     au_dir.mkdir()
     proj_dir = tmp_path / "proj-a"
     proj_dir.mkdir()
     git.project_map = {
-        "https://example.invalid/agent-connector-sdk.git": str(au_dir),
+        "https://example.invalid/scion-sdk.git": str(au_dir),
         "https://example.invalid/proj-a.git": str(proj_dir),
     }
     return git, au_dir, proj_dir
@@ -117,9 +117,7 @@ def test_install_projects_au_success_syncs_declared_sibling(git_with_projects):
             return_value="/usr/bin/uv",
         ),
         patch.object(Git, "git_action", side_effect=fake_git_action),
-        patch.object(
-            Git, "_materialize_uv_siblings", return_value=("agent-connector-sdk",)
-        ),
+        patch.object(Git, "_materialize_uv_siblings", return_value=("scion-sdk",)),
     ):
         results = git.install_projects(extra="all", report=False)
 

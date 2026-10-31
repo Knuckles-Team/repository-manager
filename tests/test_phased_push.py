@@ -150,7 +150,7 @@ def test_phased_push_aborts_wave_when_barrier_times_out_unsatisfied(
                 raw_requirement="epistemic-graph[full]>=2.23.2,<3.0.0",
                 specifier="<3.0.0,>=2.23.2",
                 extras=("full",),
-                declared_by="agent-connector-sdk/pyproject.toml",
+                declared_by="scion-sdk/pyproject.toml",
             )
         ],
     )
@@ -208,7 +208,7 @@ def test_phased_push_proceeds_immediately_when_barrier_satisfied(
                 raw_requirement="epistemic-graph>=2.23.0",
                 specifier=">=2.23.0",
                 extras=(),
-                declared_by="agent-connector-sdk/pyproject.toml",
+                declared_by="scion-sdk/pyproject.toml",
             )
         ],
     )
@@ -508,8 +508,12 @@ def test_phased_push_bulk_push_excludes_infrastructure_even_when_buildable(
         "https://example-gitlab.arpa/agent-packages/agents/repo1.git": os.path.join(
             root, "agent-packages", "agents", "repo1"
         ),
-        "https://example-gitlab.arpa/images/foo.git": os.path.join(root, "images", "foo"),
-        "https://example-gitlab.arpa/services/bar.git": os.path.join(root, "services", "bar"),
+        "https://example-gitlab.arpa/images/foo.git": os.path.join(
+            root, "images", "foo"
+        ),
+        "https://example-gitlab.arpa/services/bar.git": os.path.join(
+            root, "services", "bar"
+        ),
     }
     mock_repo_manager._project_categories = {
         "https://example-gitlab.arpa/agent-packages/agents/repo1.git": (

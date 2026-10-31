@@ -1,6 +1,6 @@
 """RM-GOVERNANCE-R001: no parallel Git-governance implementation outside RM.
 
-repository-manager used to reach ``agent_connector_sdk.governance.lanes`` for lane
+repository-manager used to reach ``scion_sdk.governance.lanes`` for lane
 arbitration (the shared-resource arbitration classes every concurrent lane on
 a host depends on: partition, lease, append-only fragment, read-only). An
 operator ruling moved that module here as ``repository_manager.governance.lanes``, hosted and
@@ -21,12 +21,12 @@ import pytest
 
 REPOSITORY_MANAGER_ROOT = Path(__file__).resolve().parents[2] / "repository_manager"
 
-#: ``agent_connector_sdk.governance.concept_reservation`` is a separate, still-out
+#: ``scion_sdk.governance.concept_reservation`` is a separate, still-out
 #: -of-scope authority (RM-GOVERNANCE-R030): ``concept_coordination/client.py``
 #: names it only as a string a caller may inject, never imports it, and this
 #: test does not pin that unrelated requirement.
-RETIRED_LANE_MODULE = "agent_connector_sdk.governance.lanes"
-RETIRED_LANE_PACKAGE = "agent_connector_sdk.governance"
+RETIRED_LANE_MODULE = "scion_sdk.governance.lanes"
+RETIRED_LANE_PACKAGE = "scion_sdk.governance"
 
 
 def _production_python_files() -> list[Path]:

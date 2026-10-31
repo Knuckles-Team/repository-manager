@@ -16,7 +16,7 @@ description: >-
 license: MIT
 tags: [repository-manager, lifecycle, lane, worktree, merge-queue, entrypoint, mcp]
 metadata:
-  author: Genius
+  author: Knuckles-Team
   version: '1.0.0'
 ---
 # Repository Manager — Development Lifecycle

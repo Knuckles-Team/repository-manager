@@ -129,7 +129,7 @@ def default_runtime_manifest_path() -> Path:
 
     config_home = os.environ.get("XDG_CONFIG_HOME")
     base = Path(config_home).expanduser() if config_home else Path.home() / ".config"
-    return base / "agent-connector-sdk" / "workspace.yml"
+    return base / "scion-sdk" / "workspace.yml"
 
 
 def default_packaged_seed_path() -> Path:

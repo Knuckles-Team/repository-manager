@@ -20,10 +20,10 @@ maintenance:
       projects:
         - "epistemic-graph"
       wait_minutes: 30
-    - name: "Phase 3: agent-connector-sdk"
+    - name: "Phase 3: scion-sdk"
       phase: 3
       projects:
-        - "agent-connector-sdk"
+        - "scion-sdk"
       wait_minutes: 30
     - name: "Phase 4: Core Tools and UIs"
       phase: 4
@@ -42,7 +42,7 @@ maintenance:
 ```mermaid
 flowchart LR
     P1[Phase 1: Pipelines] --> P2[Phase 2: Epistemic Graph]
-    P2 --> P3[Phase 3: agent-connector-sdk]
+    P2 --> P3[Phase 3: scion-sdk]
     P3 --> P4[Phase 4: Core tools and UIs]
     P4 --> P5[Phase 5: Agent candidates]
     P5 --> C{Manifest category is agent-packages/agents?}
@@ -76,7 +76,7 @@ repository-manager --maintain --push
 repository-manager --push --phase 2 --single-phase
 
 # Push only specific projects defined in the configuration (comma-separated)
-repository-manager --push --project agent-connector-sdk,agent-webui
+repository-manager --push --project scion-sdk,agent-webui
 ```
 
 For a bulk phase, `--project` only intersects the already eligible

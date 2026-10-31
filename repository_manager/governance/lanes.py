@@ -68,13 +68,13 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from agent_connector_sdk.config import setting
+from scion_sdk.config import setting
 
 # R-07: file_lock is the cross-platform chokepoint for advisory file locking
 # (POSIX fcntl.flock / Windows kernel32 LockFileEx via ctypes); stdlib-only,
-# no new deps. No agent-connector-sdk equivalent exists yet (SDK gap) --
-# keep this one agent_connector_sdk import.
-from agent_connector_sdk.file_lock import lock_exclusive, unlock
+# no new deps. No scion-sdk equivalent exists yet (SDK gap) --
+# keep this one scion_sdk import.
+from scion_sdk.file_lock import lock_exclusive, unlock
 
 ARBITRATION_DIRNAME = "agent-lanes"
 DEFAULT_LEASE_TTL_SECONDS = 1_800
@@ -1031,11 +1031,11 @@ def resource_scope(name: str) -> str:
 
 
 #: The host state namespace every lease/fragment writer shares. It keeps the
-#: name this module had before it moved from agent-connector-sdk to
+#: name this module had before it moved from scion-sdk to
 #: repository-manager: a lease is only exclusive while every holder
 #: resolves the SAME lock file, so renaming the namespace would split one
 #: arbitration domain into two for as long as an older writer is still running.
-ARBITRATION_STATE_NAMESPACE = "agent-connector-sdk"
+ARBITRATION_STATE_NAMESPACE = "scion-sdk"
 
 
 def workspace_arbitration_dir() -> Path:

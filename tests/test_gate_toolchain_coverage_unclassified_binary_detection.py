@@ -62,8 +62,6 @@ def test_command_tokens_assignment_prefix_is_skipped_not_a_command():
     assert tokens == ["node"]
 
 
-
-
 def test_command_tokens_real_paren_subshell_puts_next_in_command_position():
     tokens = gtc._command_tokens("(cd sub && node build.js)")
     assert "node" in tokens
@@ -176,7 +174,7 @@ def test_iter_mergequeue_entries_skips_non_list_command(tmp_path):
 
 def _build_fleet(tmp_path: Path, hook_entry: str) -> Path:
     fleet_root = tmp_path / "fleet"
-    (fleet_root / "agent-connector-sdk").mkdir(parents=True)
+    (fleet_root / "scion-sdk").mkdir(parents=True)
     (fleet_root / "agents" / "repo-one").mkdir(parents=True)
     (fleet_root / "agents" / "repo-one" / ".pre-commit-config.yaml").write_text(
         textwrap.dedent(
@@ -208,9 +206,7 @@ def test_main_fails_on_unclassified_command(tmp_path):
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text("FROM python:3.12-slim\n", encoding="utf-8")
 
-    result = _run_gate(
-        "--fleet-root", str(fleet_root), "--dockerfile", str(dockerfile)
-    )
+    result = _run_gate("--fleet-root", str(fleet_root), "--dockerfile", str(dockerfile))
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "UNCLASSIFIED" in result.stdout
@@ -222,9 +218,7 @@ def test_main_passes_when_only_base_provided_binaries_are_used(tmp_path):
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text("FROM python:3.12-slim\n", encoding="utf-8")
 
-    result = _run_gate(
-        "--fleet-root", str(fleet_root), "--dockerfile", str(dockerfile)
-    )
+    result = _run_gate("--fleet-root", str(fleet_root), "--dockerfile", str(dockerfile))
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "PASS" in result.stdout
@@ -235,9 +229,7 @@ def test_main_reports_missing_toolchain_binary(tmp_path):
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text("FROM python:3.12-slim\n", encoding="utf-8")
 
-    result = _run_gate(
-        "--fleet-root", str(fleet_root), "--dockerfile", str(dockerfile)
-    )
+    result = _run_gate("--fleet-root", str(fleet_root), "--dockerfile", str(dockerfile))
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "MISSING" in result.stdout
@@ -251,9 +243,7 @@ def test_main_reports_ok_when_dockerfile_provisions_toolchain(tmp_path):
         "FROM python:3.12-slim\nENV NODE_HOME=/opt/node\n", encoding="utf-8"
     )
 
-    result = _run_gate(
-        "--fleet-root", str(fleet_root), "--dockerfile", str(dockerfile)
-    )
+    result = _run_gate("--fleet-root", str(fleet_root), "--dockerfile", str(dockerfile))
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "[OK" in result.stdout

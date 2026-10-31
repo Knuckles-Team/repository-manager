@@ -14,8 +14,8 @@ from repository_manager.governance import concept_allocator as ca
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    (tmp_path / "agent_connector_sdk").mkdir()
-    (tmp_path / "agent_connector_sdk" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "scion_sdk").mkdir()
+    (tmp_path / "scion_sdk" / "__init__.py").write_text("", encoding="utf-8")
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "concepts.yaml").write_text(
         yaml.safe_dump(
@@ -65,7 +65,7 @@ def test_registry_and_code_ids_cannot_be_reserved(repo: Path) -> None:
     # repo-wide scanner (check_concept_governance.all_registered_concepts), which
     # is how `AU-KG.compute.code-feature` ended up in the undocumented-concept
     # backlog with no code behind it. Same trap, same fix, as commit 38a9b918.
-    (repo / "agent_connector_sdk" / "feature.py").write_text(
+    (repo / "scion_sdk" / "feature.py").write_text(
         "# " + "CONCEPT:" + "AU-KG.compute.code-feature\n", encoding="utf-8"
     )
     for concept_id in (
@@ -103,7 +103,7 @@ def test_open_reservation_blocks_duplicate_and_release_frees_it(repo: Path) -> N
 def test_reconcile_marks_landed(repo: Path) -> None:
     concept_id = "AU-KG.compute.landed-feature"
     ca.reserve_concept_id(concept_id, session_id="s", repo_root=repo)
-    (repo / "agent_connector_sdk" / "feature.py").write_text(
+    (repo / "scion_sdk" / "feature.py").write_text(
         f"# CONCEPT:{concept_id}\n", encoding="utf-8"
     )
     assert ca.reconcile(repo_root=repo)["landed"] == [concept_id]
@@ -115,10 +115,10 @@ def test_reconcile_marks_landed(repo: Path) -> None:
 def test_reconcile_marks_landed_in_a_non_default_scan_root(
     repo: Path,
 ) -> None:
-    """D-25-8 — a CONCEPT: marker landing outside agent_connector_sdk/ (e.g. a
+    """D-25-8 — a CONCEPT: marker landing outside scion_sdk/ (e.g. a
     separate in-repo package, historically ``mcp_v2_gateway/`` before its
     BUG-069 retirement — see docs/architecture/mcp-2026-protocol-surface.md)
-    must reconcile to 'landed' exactly like one in agent_connector_sdk/, given an
+    must reconcile to 'landed' exactly like one in scion_sdk/, given an
     explicit extra scan root — previously it stayed 'reserved' forever
     because _default_scan_roots() never walked anything but the one default
     package. This exercises reconcile()'s scan_roots override directly
@@ -129,7 +129,7 @@ def test_reconcile_marks_landed_in_a_non_default_scan_root(
     (repo / "other_package" / "tracing.py").write_text(
         f"# CONCEPT:{concept_id}\n", encoding="utf-8"
     )
-    scan_roots = [repo / "agent_connector_sdk", repo / "other_package"]
+    scan_roots = [repo / "scion_sdk", repo / "other_package"]
     assert ca.reconcile(repo_root=repo, scan_roots=scan_roots)["landed"] == [concept_id]
     assert [r["id"] for r in ca.list_reservations(repo_root=repo, status="landed")] == [
         concept_id

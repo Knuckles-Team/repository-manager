@@ -16,20 +16,20 @@ description: >-
 license: MIT
 tags: [repository-manager, concepts, reservation, verification, mcp]
 metadata:
-  author: Genius
+  author: Knuckles-Team
   version: '1.0.0'
 ---
 # Repository Manager — Concept Coordination
 
 `rm_concepts_*` is repository-manager's thin, MCP/CLI-neutral consumer of RMDD-16's
-central concept-id claim authority (`agent_connector_sdk.governance.
+central concept-id claim authority (`scion_sdk.governance.
 concept_reservation`). Repository-manager **never allocates a concept id itself** —
 every action here is a claim/verification call against an injected authority port.
 
 ## ⚠ Read this before anything else: the authority is unavailable on `main` today
 As of this lane (verified 2026-08-10 against `agent-packages/repository-manager`
 `main` at `fdce825`), RMDD-16's authority module is **not an ancestor of
-agent-connector-sdk `main`**. Every mutating `rm_concepts_*` action —
+scion-sdk `main`**. Every mutating `rm_concepts_*` action —
 `reserve`/`get`/`list`/`release`/`materialize`/`verify_candidate`/`verify_generation`
 — therefore refuses with a named `ConceptAuthorityUnavailable` refusal
 (`error_code: "dependency_blocked"` from the shared `RefusalCode`/`FailureClass`
@@ -44,7 +44,7 @@ not this skill's cue to route around it:
 - **Report the refusal truthfully** — `{"ok": false, "refused": "...", "error_code":
   "dependency_blocked", "unreachable": ...}` — rather than describing concept
   coordination as working.
-- This will change the moment RMDD-16's authority lands on agent-connector-sdk `main`;
+- This will change the moment RMDD-16's authority lands on scion-sdk `main`;
   re-verify this section against the live server before trusting it stale.
 
 ## When to use

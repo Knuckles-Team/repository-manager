@@ -29,7 +29,7 @@ from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from agent_connector_sdk.file_lock import lock_exclusive, unlock
+from scion_sdk.file_lock import lock_exclusive, unlock
 
 from repository_manager.governance.lanes import lane_scope
 

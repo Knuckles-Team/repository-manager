@@ -8,7 +8,7 @@ name: Windows coverage
 # package.
 #
 # Report-only by design (continue-on-error on every step, like
-# agent-connector-sdk' advisory.yml two-workflow model): repository-manager's
+# scion-sdk' advisory.yml two-workflow model): repository-manager's
 # publish pipeline is not gated on this, consistent with "do not disable or
 # weaken any existing CI job" -- this only adds signal, it does not touch
 # pipeline.yml.

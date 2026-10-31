@@ -2,14 +2,14 @@
 
 Mirrors the append-only-fragment / folded-generated-view pattern already
 established for concept markers in
-``agent_connector_sdk.governance.concept_allocator`` (per-lane fragment +
+``scion_sdk.governance.concept_allocator`` (per-lane fragment +
 ``regenerate_view()``) and for merge-queue records via
-``agent_connector_sdk.governance.lanes.FragmentStore``. Repository-manager has no
+``scion_sdk.governance.lanes.FragmentStore``. Repository-manager has no
 concept-claim ledger of its own on ``main`` today (verified: no
 ``docs/concept_reservations*`` path exists in this repository — only
-agent-connector-sdk has one, for its own markers), so this module creates one
+scion-sdk has one, for its own markers), so this module creates one
 scoped to *this* repository, deliberately named ``concept_claims`` (not
-``concept_reservations``) to avoid any confusion with agent-connector-sdk' own
+``concept_reservations``) to avoid any confusion with scion-sdk' own
 file of that name in a different repository.
 
 **This is a read/audit projection of RMDD-16's central authority, never a

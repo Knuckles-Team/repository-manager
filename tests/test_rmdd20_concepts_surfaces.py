@@ -201,15 +201,15 @@ def test_import_mcp_server_without_concept_reservation_authority():
     """``import repository_manager.mcp_server`` never hard-depends on the authority.
 
     Run in a fresh subprocess to prove the *base install* imports cleanly
-    regardless of whether ``agent_connector_sdk.governance.concept_reservation``
-    happens to be present on the agent-connector-sdk checkout under test (it
+    regardless of whether ``scion_sdk.governance.concept_reservation``
+    happens to be present on the scion-sdk checkout under test (it
     lives on integration branches before landing on ``main`` -- see
     ``repository_manager/concept_coordination/client.py``'s "Why this
     always refuses today" docstring) -- a module-level import of it anywhere
     in the package would abort collection whenever it's absent, exactly the
     RMDD-19 revert class this lane must not repeat. This does not assert the
     module's absence as a precondition (unlike an earlier version of this
-    test): that would make the proof depend on which agent-connector-sdk branch
+    test): that would make the proof depend on which scion-sdk branch
     happens to be checked out, which is not this lane's concern.
     """
 

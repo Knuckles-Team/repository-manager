@@ -5,7 +5,7 @@
 # The proof that repository_manager/build_queue.py is genuinely generic:
 # nothing below is cargo, rustc, or maturin, and the broker needs no code
 # change to run it -- same relationship `epistemic-graph.mergequeue.yaml` has
-# to `agent-connector-sdk.mergequeue.yaml` in the merge-queue presets. This
+# to `scion-sdk.mergequeue.yaml` in the merge-queue presets. This
 # repository's own waste was a `node_modules/` duplicated per lane rather than
 # a `target-isolated/`, but the shape of the fix is identical: dedup the build
 # by content address, publish the artifact, let the install dir be a throwaway

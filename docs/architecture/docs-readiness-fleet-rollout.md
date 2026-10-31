@@ -29,7 +29,7 @@ standalone `pages.yml`. The current source findings are:
 
 - Missing Pages surfaces (2): `agents/ciso-assistant-api` and
   `agents/onetrust-api`.
-- Missing `site_url` declarations (4): `agent-connector-sdk`, `agents/mealie-mcp`,
+- Missing `site_url` declarations (4): `scion-sdk`, `agents/mealie-mcp`,
   `agents/microsoft-agent`, and `agents/vector-mcp`.
 
 `audit_source_findings()` re-reads those facts from the provided workspace and

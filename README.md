@@ -20,7 +20,7 @@
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/repository-manager)
 ![PyPI - Implementation](https://img.shields.io/pypi/implementation/repository-manager)
 
-*Version: 3.5.3*
+*Version: 3.5.4*
 
 > **Documentation** — Installation, deployment, usage across the CLI, API, MCP, and
 > agent interfaces, and the phased multi-repository release workflows are maintained
@@ -170,7 +170,7 @@ When query strings or parameters are provided, an LLM-free **Knowledge Graph res
 <!-- MCP-CONFIG-EXAMPLES:START -->
 
 > **Install the connector-focused `[mcp]` extra.** Examples use `repository-manager[mcp]` to add
-> FastMCP / FastAPI through `agent-connector-sdk`; the required Agent Connector SDK core
+> FastMCP / FastAPI through `scion-sdk`; the required Scion SDK core
 > still carries `epistemic-graph[full]`. The `[agent-runtime]` extra additionally
 > enables model orchestration.
 
@@ -399,11 +399,11 @@ the detailed transport contract.
 | `EUNOMIA_TYPE` | `none` | options: none, embedded, remote |
 | `EUNOMIA_POLICY_FILE` | `mcp_policies.json` |  |
 | `EUNOMIA_REMOTE_URL` | `http://eunomia-server:8000` |  |
-| `CONNECTOR_CONFIG_DIR` | — | override of ~/.config/agent-connector-sdk for the capacity-seed inventory.yaml lookup |
+| `CONNECTOR_CONFIG_DIR` | — | override of ~/.config/scion-sdk for the capacity-seed inventory.yaml lookup |
 | `REPOSITORY_MANAGER_WORKSPACE_ROOT` | — | runtime-injected root; never persist a machine path |
 | `REPOSITORY_MANAGER_WORKSPACE` | — | optional override of REPOSITORY_MANAGER_WORKSPACE_ROOT |
 | `WORKSPACE_PATH` | — | compatibility workspace-root override |
-| `WORKSPACE_YML` | `workspace.yml` | prefer the XDG agent-connector-sdk copy at runtime |
+| `WORKSPACE_YML` | `workspace.yml` | prefer the XDG scion-sdk copy at runtime |
 | `WORKSPACE_REPORTS` | — | optional report directory; defaults beneath the workspace root |
 | `REPOSITORY_MANAGER_WORKTREE_ROOT` | — | optional worktree root; injected at runtime |
 | `REPOSITORY_MANAGER_DEFAULT_BRANCH` | `main` | default branch name for git operations |
@@ -458,7 +458,7 @@ the detailed transport contract.
 | `AU_LANE_TEMP_ROOT` | — | Absolute override for the per-lane temp root (pytest basetemp / TMPDIR / pre-commit store / cargo target dir); unset uses the default $HOME/.al/<token> root. See lanes.py's _configured_lane_temp_root(). |
 | `CARGO_TARGET_DIR` | — | Cargo's own target-dir override. lane_guard.py's cargo-target-override check reads this to refuse a shared/global CARGO_TARGET_DIR that would both serialize and corrupt concurrent lane builds; it is not set by this package. |
 
-#### Inherited agent-connector-sdk variables (apply to every connector)
+#### Inherited scion-sdk variables (apply to every connector)
 
 | Variable | Example | Description |
 |----------|---------|-------------|
@@ -478,7 +478,7 @@ the detailed transport contract.
 | `MODEL_ID` | — | Operator-configured model id for the agent |
 | `ENABLE_WEB_UI` | `True` | Serve the AG-UI web interface |
 
-_69 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-connector-sdk set — do not edit._
+_69 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared scion-sdk set — do not edit._
 <!-- ENV-VARS-TABLE:END -->
 
 
@@ -573,7 +573,7 @@ Pick the extra that matches what the operator want to run:
 
 | Extra | Installs | Use when |
 |-------|----------|----------|
-| `repository-manager[mcp]` | Connector-focused MCP server (`agent-connector-sdk` — FastMCP/FastAPI + `epistemic-graph[full]`) | The operator only run the **MCP server** (smallest install / image) |
+| `repository-manager[mcp]` | Connector-focused MCP server (`scion-sdk` — FastMCP/FastAPI + `epistemic-graph[full]`) | The operator only run the **MCP server** (smallest install / image) |
 | `repository-manager[all]` | `mcp` plus `pre-commit` / `bump2version` | Development |
 
 ```bash
@@ -601,7 +601,7 @@ docker build --target mcp   -t example/repository-manager:mcp    docker/   # con
 ### Knowledge-graph database (`epistemic-graph`)
 
 The `[mcp]` extra carries the **epistemic-graph** engine through the required
-Agent Connector SDK core dependency (`epistemic-graph[full]`). The `[mcp]` extra keeps
+Scion SDK core dependency (`epistemic-graph[full]`). The `[mcp]` extra keeps
 the server connector-focused. Local
 deployments can use the bundled engine. For production or shared state, run
 **epistemic-graph as a dedicated database service** and configure the runtime to use it.

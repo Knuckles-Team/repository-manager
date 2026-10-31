@@ -13,7 +13,7 @@ The agent ecosystem enforces dependency order updates through five sequential ma
    Publishes the database engine before its Python consumers.
    Gate-readiness ceiling: 30 minutes.
 
-3. **Phase 3: agent-connector-sdk**
+3. **Phase 3: scion-sdk**
    Publishes the primary orchestrator after Epistemic Graph.
    Gate-readiness ceiling: 30 minutes.
 
@@ -92,9 +92,9 @@ Run only Phase 2 pushing:
 repository-manager --push --phase 2 --single-phase
 ```
 
-Target only `agent-connector-sdk` during a phased bump:
+Target only `scion-sdk` during a phased bump:
 ```bash
-repository-manager --maintain --bump patch --project agent-connector-sdk
+repository-manager --maintain --bump patch --project scion-sdk
 ```
 
 Target two eligible agent distributions during both bump and push:

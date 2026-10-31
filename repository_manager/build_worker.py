@@ -558,7 +558,7 @@ def _terminal_matches(
 
 
 class GraphBuildAuthority:
-    """Production adapter over the existing Agent Connector SDK WorkItem verbs."""
+    """Production adapter over the existing Scion SDK WorkItem verbs."""
 
     def __init__(
         self,

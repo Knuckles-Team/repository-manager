@@ -16,7 +16,7 @@ description: >-
 license: MIT
 tags: [repository-manager, release, version, maintain, workspace, mcp]
 metadata:
-  author: Genius
+  author: Knuckles-Team
   version: '1.0.0'
 ---
 # Repository Manager — Workspace Release
@@ -123,7 +123,7 @@ rm_projects_validate_status(job_id="<id>", summary=true)
 ```
 Re-bump just the repos a prior phase run skipped:
 ```
-rm_workspace_maintain(part="patch", projects="agent-connector-sdk,gitlab-api")
+rm_workspace_maintain(part="patch", projects="scion-sdk,gitlab-api")
 ```
 List the workspace manifest / branches:
 ```

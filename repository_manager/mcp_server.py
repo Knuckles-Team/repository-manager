@@ -27,11 +27,11 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from agent_connector_sdk.config import load_config, setting
-from agent_connector_sdk.mcp.content import ConnectorContent
-from agent_connector_sdk.mcp.server import create_mcp_server
-from agent_connector_sdk.mcp.tool_surface import register_tool_surface
-from agent_connector_sdk.utilities import to_integer
+from scion_sdk.config import load_config, setting
+from scion_sdk.mcp.content import ConnectorContent
+from scion_sdk.mcp.server import create_mcp_server
+from scion_sdk.mcp.tool_surface import register_tool_surface
+from scion_sdk.utilities import to_integer
 
 from repository_manager.action_split import register_split_action_tools
 from repository_manager.mcp_tools import (
@@ -835,12 +835,12 @@ def _resolve_repo_dir(git: Git, spec: str) -> str:
 
     Honors the workspace's **nested** layout. The workspace.yml groups repos
     under subdirectories (e.g. ``agent-packages/agents/data-science-mcp``), so a
-    bare name like ``agent-connector-sdk`` lives at
-    ``<ws>/agent-packages/agent-connector-sdk`` — NOT the flat ``<ws>/agent-connector-sdk``.
+    bare name like ``scion-sdk`` lives at
+    ``<ws>/agent-packages/scion-sdk`` — NOT the flat ``<ws>/scion-sdk``.
     ``validate`` already resolves via ``project_map``; the per-repo git
     sub-actions (pull/push/add/commit) historically flat-joined ``git.path + name``
     and so hit ``[Errno 2] No such file or directory`` on every nested repo (e.g.
-    a standalone ``push projects=agent-connector-sdk`` failing while ``validate``
+    a standalone ``push projects=scion-sdk`` failing while ``validate``
     of the same repo passed). This makes path resolution consistent across
     actions by consulting ``project_map`` for bare names.
 

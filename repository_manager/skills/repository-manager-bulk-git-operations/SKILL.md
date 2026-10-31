@@ -14,7 +14,7 @@ description: >-
 license: MIT
 tags: [repository-manager, git, bulk, enumerate, mcp]
 metadata:
-  author: Genius
+  author: Knuckles-Team
   version: '0.1.0'
 ---
 # Repository Manager — Bulk Git Operations
@@ -75,7 +75,7 @@ rm_git_pull()
 ```
 Commit code across two repos with pre-commit hooks first:
 ```
-rm_git_commit_code(projects="agent-connector-sdk,gitlab-api", message="chore: sweep", run_precommit=true)
+rm_git_commit_code(projects="scion-sdk,gitlab-api", message="chore: sweep", run_precommit=true)
 ```
 Enumerate an entire GitLab instance (also KG-ingests as :GitRepository nodes):
 ```
