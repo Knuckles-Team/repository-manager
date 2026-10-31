@@ -26,8 +26,8 @@ import signal
 import stat
 import subprocess  # nosec B404 - taskkill with a fixed argv
 import threading
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 _TOKEN_BASE = 1 << 30
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
