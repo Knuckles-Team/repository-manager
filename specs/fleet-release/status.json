@@ -90,6 +90,7 @@
       "title": "Publish this package only from version tags",
       "delivery_state": "VERIFIED",
       "landed_in": [
+        "0da88ef35ebf",
         "bbd7f22f1b5a"
       ],
       "verified_by": [
@@ -101,8 +102,8 @@
       "title": "Deterministic, resumable dependency-floor rollout through PRs",
       "delivery_state": "LANDED",
       "landed_in": [
-        "5e86c8df0f39",
-        "75da0d671adf"
+        "459ef9f61397",
+        "a64b95f87b4e"
       ],
       "verified_by": []
     }
