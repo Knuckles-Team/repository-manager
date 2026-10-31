@@ -62,3 +62,4 @@ bootstrap skill, together with the [SDD full lifecycle](https://github.com/Knuck
 - [`RM-GOVERNANCE`](development-governance/spec.md) — repository development governance.
 - [`RM-RELEASE`](fleet-release/spec.md) — dependency aware fleet release.
 - [`RM-SCM`](source-changesets/spec.md) — git import, export and mirror sync for engine changesets.
+- [`CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT`](connector-content/spec.md) — The connector serves its packaged content
