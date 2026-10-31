@@ -187,8 +187,9 @@ EXPECTED_TOOL_NAMES = (
 # Recomputed for the SDK 0.3.0 per-operation surface: every rm_* action is its own
 # rm_<group>_<action> tool, and the Git facade serves one
 # repository_manager_<operation> tool per method; no action-routed tool remains.
+# Recomputed for scion-sdk 0.6.4: tool docstrings now name scion-sdk.
 BASELINE_CATALOG_SHA256 = (
-    "1df41dc830731725442940654a64765261b51180a0df7da62713755e820cdeec"
+    "bf428dbcafbbb6ed521ef3aacc22c8ff84dcaa6b2819ae526719d7b4cc0f1dcb"
 )
 
 
