@@ -18,6 +18,17 @@ def workflow(name):
 
 
 def test_source_ci_still_validates_main_and_pull_requests():
-    events = workflow("ci.yml")["on"]
-    assert "pull_request" in events
+    connector = workflow("connector.yml")
+    events = connector["on"]
+    assert events["pull_request"]["branches"] == ["main"]
     assert events["push"]["branches"] == ["main"]
+    # Publication is routed by the shared pipeline only for pushed v-prefixed tags.
+    assert events["push"]["tags"] == ["v*"]
+    assert connector["jobs"]["pipeline"]["uses"] == (
+        "Knuckles-Team/pipelines/.github/workflows/connector_pipeline.yml@main"
+    )
+
+
+def test_connector_workflow_is_the_only_source_ci_caller():
+    names = {p.name for p in (ROOT / ".github" / "workflows").glob("*.yml")}
+    assert names - {"windows-ci.yml"} == {"connector.yml"}
