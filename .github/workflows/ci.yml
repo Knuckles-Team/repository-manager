@@ -32,10 +32,15 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: '1.4.2'
+      - name: Resolve the floating pipelines hook revision
+        # .pre-commit-config.yaml tracks pipelines at `rev: main`; keying the cache
+        # on the config alone restores stale hooks after pipelines moves.
+        id: pipelines-rev
+        run: echo "sha=$(git ls-remote https://github.com/Knuckles-Team/pipelines refs/heads/main | cut -f1)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pre-commit
-          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+          key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}-${{ steps.pipelines-rev.outputs.sha }}
       - name: Bootstrap
         # The standard connector environment: the locked environment alone sets
         # up Python and the hooks' interpreter (scripts/bootstrap.sh is no longer
