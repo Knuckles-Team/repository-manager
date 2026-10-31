@@ -2,7 +2,7 @@
   "schema_version": 2,
   "spec_id": "RM-RELEASE",
   "owner_repo": "repository-manager",
-  "delivery_state": "SPECIFIED",
+  "delivery_state": "LANDED",
   "requirement_ids": [
     "RM-RELEASE-R001",
     "RM-RELEASE-R002",
@@ -99,8 +99,11 @@
     {
       "id": "RM-RELEASE-R009",
       "title": "Deterministic, resumable dependency-floor rollout through PRs",
-      "delivery_state": "SPECIFIED",
-      "landed_in": [],
+      "delivery_state": "LANDED",
+      "landed_in": [
+        "27c01603666a",
+        "dad934ed0c81"
+      ],
       "verified_by": []
     }
   ]

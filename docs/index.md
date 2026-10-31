@@ -2,7 +2,7 @@
 
 Manage the operator's git projects across a workspace — a **CLI, API, MCP server, and A2A
 agent** for bulk Git operations, resumable fleet dependency rollouts, and
-cross-repository graph intelligence in the agent-connector-sdk ecosystem.
+cross-repository graph intelligence in the scion-sdk ecosystem.
 
 !!! info "Official documentation"
     This site is the canonical reference for `repository-manager`, maintained
