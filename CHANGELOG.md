@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.7] - 2026-10-30
+
+### Fixed
+- `rollout` relocks (`uv lock`, no upgrade) after the patch bump so `uv.lock` records the package's new own version and connector lock-coherence tests pass.
+- `rollout` runs the repo's full pre-commit (also `.config/pre-commit.yaml`; `uvx pre-commit` when not installed) and stages hook-rewritten files.
+- `default_runtime_manifest_path` resolves to `~/.config/arbora/workspace.yml` (`ARBORA_CONFIG_DIR` overrides); the old location is gone.
+
 ## [3.5.6] - 2026-10-30
 
 ### Added

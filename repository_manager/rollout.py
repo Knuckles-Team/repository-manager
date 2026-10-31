@@ -704,6 +704,11 @@ class Rollout:
             f"Require `{cfg.dependency}{cfg.spec_range}`; `uv.lock` relocked.",
             self.today(),
         )
+        # The bump changed the package's own version: relock (no upgrade) so
+        # uv.lock records it and the connector's lock-coherence test passes.
+        res = run(["uv", "lock"], cwd=wt, timeout=1200)
+        if res.returncode:
+            return self._fail(row, "uv lock (post-bump) failed: " + res.output)
         # Regenerate spec status so the PR carries the current status schema.
         if (wt / "specs").is_dir():
             res = run(["pipelines-hook", "spec-status", "--write"], cwd=wt, timeout=900)
@@ -711,13 +716,25 @@ class Rollout:
                 return self._fail(
                     row, "pipelines-hook spec-status --write failed: " + res.output
                 )
-        if (wt / ".pre-commit-config.yaml").is_file():
+        hook_cfg = next(
+            (
+                c
+                for c in (".pre-commit-config.yaml", ".config/pre-commit.yaml")
+                if (wt / c).is_file()
+            ),
+            None,
+        )
+        if hook_cfg:
+            # Fresh worktrees may lack pre-commit: run it via uvx (installed on demand).
+            have = run(["pre-commit", "--version"], cwd=wt).returncode == 0
+            cmd = ["pre-commit"] if have else ["uvx", "pre-commit"]
+            cmd += ["run", "--all-files"]
+            if hook_cfg != ".pre-commit-config.yaml":
+                cmd += ["--config", hook_cfg]
             with self._precommit_lock:  # pre-commit's cache is not concurrency-safe
                 ok, out = False, ""
                 for _ in range(3):  # autofixing hooks settle on a re-run
-                    res = run(
-                        ["pre-commit", "run", "--all-files"], cwd=wt, timeout=1800
-                    )
+                    res = run(cmd, cwd=wt, timeout=1800)
                     ok, out = res.returncode == 0, res.output
                     if ok:
                         break
