@@ -55,6 +55,7 @@ def _empty_git_config() -> str:
         _EMPTY_GIT_CONFIG.append(str(empty))
     return _EMPTY_GIT_CONFIG[0]
 
+
 _PINNED_GIT_ENVIRONMENT = frozenset(
     {
         "GIT_DIR",
