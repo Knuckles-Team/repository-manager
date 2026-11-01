@@ -1,8 +1,12 @@
+from tests.portable_paths import SHELL, sh_arg
+
 """Tests for WorktreeManager (CONCEPT:RM-WORKTREE) against real git repos."""
 
 import os
 import shutil
 import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -32,8 +36,8 @@ class FakeGit:
     ):
         del env, timeout, raw_output
         p = subprocess.run(
-            command,
-            shell=True,
+            sh_arg(command),
+            shell=SHELL,
             cwd=path or self.path,
             capture_output=True,
             text=True,
@@ -50,7 +54,9 @@ class FakeGit:
 
 
 def _run(cmd, cwd):
-    subprocess.run(cmd, shell=True, cwd=cwd, check=True, capture_output=True, text=True)
+    subprocess.run(
+        sh_arg(cmd), shell=SHELL, cwd=cwd, check=True, capture_output=True, text=True
+    )
 
 
 @pytest.fixture
@@ -77,8 +83,8 @@ def test_add_creates_worktree_on_branch(repo):
     assert os.path.isdir(res["path"])
     # the worktree is checked out on feat-x
     branch = subprocess.run(
-        "git rev-parse --abbrev-ref HEAD",
-        shell=True,
+        sh_arg("git rev-parse --abbrev-ref HEAD"),
+        shell=SHELL,
         cwd=res["path"],
         capture_output=True,
         text=True,
@@ -100,8 +106,8 @@ def test_add_absolute_repo_path_stays_beneath_worktree_root(repo):
         wt_mod.WORKTREE_ROOT
     )
     branch = subprocess.run(
-        "git rev-parse --abbrev-ref HEAD",
-        shell=True,
+        sh_arg("git rev-parse --abbrev-ref HEAD"),
+        shell=SHELL,
         cwd=res["path"],
         capture_output=True,
         text=True,
@@ -137,8 +143,8 @@ def test_concurrent_worktree_creation_keeps_shared_repo_usable_and_not_bare(repo
     # `git rev-parse --is-inside-work-tree` is the direct, authoritative
     # check (a `core.bare` config read can falsely read "unset == false").
     is_worktree = subprocess.run(
-        "git rev-parse --is-inside-work-tree",
-        shell=True,
+        sh_arg("git rev-parse --is-inside-work-tree"),
+        shell=SHELL,
         cwd=repo.path,
         capture_output=True,
         text=True,
@@ -147,8 +153,8 @@ def test_concurrent_worktree_creation_keeps_shared_repo_usable_and_not_bare(repo
     assert is_worktree.stdout.strip() == "true"
 
     bare_cfg = subprocess.run(
-        "git config --get core.bare",
-        shell=True,
+        sh_arg("git config --get core.bare"),
+        shell=SHELL,
         cwd=repo.path,
         capture_output=True,
         text=True,
@@ -164,8 +170,8 @@ def test_concurrent_worktree_creation_keeps_shared_repo_usable_and_not_bare(repo
             handle.write(f"{branch}\n")
         _run("git add -A && git commit -q -m " + branch, wt_path)
         subject = subprocess.run(
-            "git show -s --format=%s HEAD",
-            shell=True,
+            sh_arg("git show -s --format=%s HEAD"),
+            shell=SHELL,
             cwd=wt_path,
             capture_output=True,
             text=True,
@@ -175,16 +181,16 @@ def test_concurrent_worktree_creation_keeps_shared_repo_usable_and_not_bare(repo
     # The canonical checkout itself was never dirtied or moved off main by
     # any of this concurrent worktree creation.
     canonical_branch = subprocess.run(
-        "git rev-parse --abbrev-ref HEAD",
-        shell=True,
+        sh_arg("git rev-parse --abbrev-ref HEAD"),
+        shell=SHELL,
         cwd=repo.path,
         capture_output=True,
         text=True,
     ).stdout.strip()
     assert canonical_branch == "main"
     canonical_status = subprocess.run(
-        "git status --porcelain",
-        shell=True,
+        sh_arg("git status --porcelain"),
+        shell=SHELL,
         cwd=repo.path,
         capture_output=True,
         text=True,
@@ -210,6 +216,7 @@ def test_list_linked_status_is_independent_of_configured_worktree_root(
     be configured with — the split-brain was git-truth being overridden by a
     path-prefix guess tied to one process's own config."""
     made = repo.wm.add("myrepo", "feat-x")
+    assert made["ok"], made
     assert os.path.commonpath([made["path"], wt_mod.WORKTREE_ROOT]) == os.path.abspath(
         wt_mod.WORKTREE_ROOT
     )
@@ -261,14 +268,14 @@ def test_remove_preserves_sibling_registration_and_unmerged_refs(repo):
     # worktree prune` would remove this unrelated sibling entry.
     shutil.rmtree(sibling["path"])
     before = subprocess.run(
-        "git worktree list --porcelain",
-        shell=True,
+        sh_arg("git worktree list --porcelain"),
+        shell=SHELL,
         cwd=repo.path,
         capture_output=True,
         text=True,
         check=True,
     ).stdout
-    assert sibling["path"] in before
+    assert Path(sibling["path"]).as_posix() in before
 
     result = repo.wm.remove("myrepo", "feat-target", delete_branch=True)
 
@@ -278,14 +285,14 @@ def test_remove_preserves_sibling_registration_and_unmerged_refs(repo):
     assert _ref(repo.path, "refs/heads/feat-target") == target_tip
     assert _ref(repo.path, "refs/heads/feat-sibling") == sibling_tip
     after = subprocess.run(
-        "git worktree list --porcelain",
-        shell=True,
+        sh_arg("git worktree list --porcelain"),
+        shell=SHELL,
         cwd=repo.path,
         capture_output=True,
         text=True,
         check=True,
     ).stdout
-    assert sibling["path"] in after
+    assert Path(sibling["path"]).as_posix() in after
     assert "branch refs/heads/feat-sibling" in after
 
 
@@ -297,8 +304,8 @@ def test_adopt_moves_wip_onto_branch(repo):
     # WIP now lives in the worktree, and the canonical tree is clean
     assert os.path.isfile(os.path.join(res["path"], "wip.txt"))
     status = subprocess.run(
-        "git status --porcelain",
-        shell=True,
+        sh_arg("git status --porcelain"),
+        shell=SHELL,
         cwd=repo.path,
         capture_output=True,
         text=True,
@@ -320,13 +327,17 @@ def test_adopt_never_leaves_anything_on_the_shared_stash_stack(repo):
     res = repo.wm.add("myrepo", "feat-adopt-clean", adopt=True)
     assert res["ok"] and res["adopted"]
     stash_list = subprocess.run(
-        "git stash list", shell=True, cwd=repo.path, capture_output=True, text=True
+        sh_arg("git stash list"),
+        shell=SHELL,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     assert stash_list == ""  # the shared stack was never left holding our WIP
     # and the private ref it briefly used is cleaned up too
     private_refs = subprocess.run(
-        "git for-each-ref refs/lane/rm-adopt-stash",
-        shell=True,
+        sh_arg("git for-each-ref refs/lane/rm-adopt-stash"),
+        shell=SHELL,
         cwd=repo.path,
         capture_output=True,
         text=True,
@@ -371,8 +382,8 @@ def test_adopt_surfaces_the_recovery_ref_instead_of_losing_wip_when_blocked(repo
     # private ref is named for manual recovery -- never silently gone.
     if "stash_ref" in res:
         stash_list = subprocess.run(
-            f"git rev-parse --verify --quiet {res['stash_ref']}",
-            shell=True,
+            sh_arg(f"git rev-parse --verify --quiet {res['stash_ref']}"),
+            shell=SHELL,
             cwd=repo.path,
             capture_output=True,
             text=True,
@@ -404,8 +415,8 @@ def test_add_refuses_dirty_tracked_change_on_canonical(repo):
     assert res["reason"] == "dirty-canonical-checkout"
     # canonical untouched: still on feat-y, edit intact, no worktree created
     branch = subprocess.run(
-        "git rev-parse --abbrev-ref HEAD",
-        shell=True,
+        sh_arg("git rev-parse --abbrev-ref HEAD"),
+        shell=SHELL,
         cwd=repo.path,
         capture_output=True,
         text=True,
@@ -429,8 +440,8 @@ def test_add_parks_canonical_when_clean(repo):
     res = repo.wm.add("myrepo", "feat-w")
     assert res["ok"] and res["created"]
     branch = subprocess.run(
-        "git rev-parse --abbrev-ref HEAD",
-        shell=True,
+        sh_arg("git rev-parse --abbrev-ref HEAD"),
+        shell=SHELL,
         cwd=repo.path,
         capture_output=True,
         text=True,
@@ -451,8 +462,8 @@ def test_merge_refuses_dirty_tracked_change_on_canonical(repo):
     assert result["ok"] is False
     assert result["reason"] == "dirty-canonical-checkout"
     branch = subprocess.run(
-        "git rev-parse --abbrev-ref HEAD",
-        shell=True,
+        sh_arg("git rev-parse --abbrev-ref HEAD"),
+        shell=SHELL,
         cwd=repo.path,
         capture_output=True,
         text=True,
@@ -483,8 +494,8 @@ def test_merge_switches_canonical_when_clean(repo):
     assert result["ok"] and not result["conflict"]
     assert os.path.isfile(os.path.join(repo.path, "feature.txt"))
     branch = subprocess.run(
-        "git rev-parse --abbrev-ref HEAD",
-        shell=True,
+        sh_arg("git rev-parse --abbrev-ref HEAD"),
+        shell=SHELL,
         cwd=repo.path,
         capture_output=True,
         text=True,
@@ -499,8 +510,8 @@ def _commit_in(path, name, msg, env=None):
     open(os.path.join(path, name), "w").write(name)
     full_env = {**os.environ, **(env or {})}
     subprocess.run(
-        f"git add -A && git commit -q -m {msg}",
-        shell=True,
+        sh_arg(f"git add -A && git commit -q -m {msg}"),
+        shell=SHELL,
         cwd=path,
         check=True,
         capture_output=True,
@@ -515,8 +526,8 @@ def _wt_by_branch(audit, branch):
 
 def _branches(repo_path):
     return subprocess.run(
-        "git branch --list",
-        shell=True,
+        sh_arg("git branch --list"),
+        shell=SHELL,
         cwd=repo_path,
         capture_output=True,
         text=True,
@@ -526,8 +537,8 @@ def _branches(repo_path):
 def _ref(repo_path, ref):
     """What ``ref`` points at right now, or "" when it does not exist."""
     return subprocess.run(
-        f"git rev-parse --verify --quiet {ref}",
-        shell=True,
+        sh_arg(f"git rev-parse --verify --quiet {ref}"),
+        shell=SHELL,
         cwd=repo_path,
         capture_output=True,
         text=True,
@@ -644,8 +655,8 @@ def test_audit_prune_merged_keeps_active(repo):
     assert any(k.get("branch") == "feat-active" for k in audit["kept"])
     # the deleted branch is gone, the active one survives
     branches = subprocess.run(
-        "git branch --list",
-        shell=True,
+        sh_arg("git branch --list"),
+        shell=SHELL,
         cwd=repo.path,
         capture_output=True,
         text=True,
@@ -732,6 +743,7 @@ def test_worktree_hygiene_prune_removes_only_merged(tmp_path, monkeypatch):
 def _merged_worktree(wm, branch="feat-merged"):
     """A worktree whose branch really is merged back into main."""
     made = wm.add("myrepo", branch)
+    assert made["ok"], made
     _commit_in(made["path"], f"{branch}.txt", "feat")
     assert wm.merge("myrepo", branch)["ok"]
     return made
@@ -800,8 +812,8 @@ def test_prune_never_deletes_a_branch_that_committed_after_the_scan(repo):
     _commit_in(made["path"], "after-1.txt", "after1")
     _commit_in(made["path"], "after-2.txt", "after2")
     head = subprocess.run(
-        "git rev-parse HEAD",
-        shell=True,
+        sh_arg("git rev-parse HEAD"),
+        shell=SHELL,
         cwd=made["path"],
         capture_output=True,
         text=True,
@@ -816,8 +828,8 @@ def test_prune_never_deletes_a_branch_that_committed_after_the_scan(repo):
     assert "feat-merged" in _branches(repo.path)
     # the ref still points at the two new commits: nothing became garbage
     tip = subprocess.run(
-        "git rev-parse feat-merged",
-        shell=True,
+        sh_arg("git rev-parse feat-merged"),
+        shell=SHELL,
         cwd=repo.path,
         capture_output=True,
         text=True,
@@ -839,6 +851,7 @@ def test_delete_merged_branch_refuses_an_unmerged_branch(repo):
     """The ref gate on its own: `git branch -D` would take this; the guard and
     git's own `-d` both refuse it."""
     made = repo.wm.add("myrepo", "feat-unmerged")
+    assert made["ok"], made
     _commit_in(made["path"], "wip.txt", "wip")
     deleted, reason, anchor = repo.wm._delete_merged_branch(
         repo.path, "feat-unmerged", "main"
@@ -855,6 +868,7 @@ def test_remove_with_delete_branch_refuses_an_unmerged_branch(repo):
     """An explicit `remove --delete-branch` is still not authorisation to orphan
     commits; `force` covers the recoverable directory, never the ref."""
     made = repo.wm.add("myrepo", "feat-unmerged")
+    assert made["ok"], made
     _commit_in(made["path"], "wip.txt", "wip")
     result = repo.wm.remove("myrepo", "feat-unmerged", delete_branch=True)
     assert result["ok"] is True
@@ -889,8 +903,8 @@ def test_delete_anchors_the_tip_before_removing_the_ref(repo):
     assert _ref(repo.path, result["branch_anchor"]) == late
     # and the anchor is a real root: the tip is reachable, not dangling
     dangling = subprocess.run(
-        "git fsck --dangling",
-        shell=True,
+        sh_arg("git fsck --dangling"),
+        shell=SHELL,
         cwd=repo.path,
         capture_output=True,
         text=True,
@@ -956,6 +970,7 @@ def test_sync_rebases_onto_local_main_not_stale_origin_main(repo, tmp_path):
     """NEW behavior: local main is authoritative. A lane branch forked BEFORE
     the landing must pick it up on sync, even though origin/main never saw it."""
     made = repo.wm.add("myrepo", "feat-sync")
+    assert made["ok"], made
     landed_sha = _add_origin_with_stale_main(repo.path, str(tmp_path))
 
     result = repo.wm.sync("myrepo", "feat-sync")
@@ -963,8 +978,8 @@ def test_sync_rebases_onto_local_main_not_stale_origin_main(repo, tmp_path):
     assert result["base_ref"] == "refs/heads/main"
 
     log = subprocess.run(
-        "git log --format=%H",
-        shell=True,
+        sh_arg("git log --format=%H"),
+        shell=SHELL,
         cwd=made["path"],
         capture_output=True,
         text=True,
@@ -979,13 +994,14 @@ def test_old_stale_origin_rebase_would_have_dropped_the_landed_commit(repo, tmp_
     origin/<base> after a best-effort fetch) to prove the failure this item
     was opened against was real, not hypothetical."""
     made = repo.wm.add("myrepo", "feat-sync-old")
+    assert made["ok"], made
     landed_sha = _add_origin_with_stale_main(repo.path, str(tmp_path))
 
     # the exact OLD implementation: fetch, then rebase onto origin/<base>.
     _run("git fetch origin main", made["path"])
     old_rebase = subprocess.run(
-        "git rebase origin/main",
-        shell=True,
+        sh_arg("git rebase origin/main"),
+        shell=SHELL,
         cwd=made["path"],
         capture_output=True,
         text=True,
@@ -993,8 +1009,8 @@ def test_old_stale_origin_rebase_would_have_dropped_the_landed_commit(repo, tmp_
     assert old_rebase.returncode == 0, old_rebase.stdout + old_rebase.stderr
 
     log = subprocess.run(
-        "git log --format=%H",
-        shell=True,
+        sh_arg("git log --format=%H"),
+        shell=SHELL,
         cwd=made["path"],
         capture_output=True,
         text=True,
@@ -1033,7 +1049,7 @@ def _add_fixed_result_gate(repo_path: str, *, exit_code: int) -> None:
             "  hooks:\n"
             "  - id: fixed-result\n"
             "    name: fixed-result\n"
-            f'    entry: python3 -c "import sys; sys.exit({exit_code})"\n'
+            f'    entry: {Path(sys.executable).as_posix()} -c "import sys; sys.exit({exit_code})"\n'
             "    language: system\n"
             "    always_run: true\n"
             "    pass_filenames: false\n"
@@ -1089,6 +1105,7 @@ def test_remove_refuses_an_occupied_worktree_even_with_force(repo):
     clean) and holds a live lease - `force=True` must not bypass it."""
     lanes = pytest.importorskip("repository_manager.governance.lanes")
     made = repo.wm.add("myrepo", "rm-buildbroker-0802")
+    assert made["ok"], made
     _commit_in(made["path"], "wip.txt", "fresh-wip-commit")
 
     with lanes.hold_lease(
@@ -1106,6 +1123,7 @@ def test_remove_still_works_on_a_genuinely_abandoned_worktree(repo):
     """The guard must not become a universal refusal - an unoccupied worktree
     with no lease and no uncommitted work removes exactly as before."""
     made = repo.wm.add("myrepo", "feat-abandoned")
+    assert made["ok"], made
     result = repo.wm.remove("myrepo", "feat-abandoned", force=True)
     assert result["ok"] is True
     assert not os.path.isdir(made["path"])
@@ -1116,6 +1134,7 @@ def test_reset_branch_refuses_an_occupied_worktree_with_unmerged_commits(repo):
     commits is refused rather than reset."""
     lanes = pytest.importorskip("repository_manager.governance.lanes")
     made = repo.wm.add("myrepo", "rm-buildbroker-0802")
+    assert made["ok"], made
     _commit_in(made["path"], "wip.txt", "five-wip-commits")
     tip_before = _ref(repo.path, "refs/heads/rm-buildbroker-0802")
 
@@ -1134,6 +1153,7 @@ def test_reset_branch_refuses_unmerged_commits_even_when_unoccupied(repo):
     a branch that carries commits not reachable from the target would make
     them unreachable from any ref this branch still names - refused."""
     made = repo.wm.add("myrepo", "feat-unmerged-reset")
+    assert made["ok"], made
     _commit_in(made["path"], "wip.txt", "unlanded-work")
     tip_before = _ref(repo.path, "refs/heads/feat-unmerged-reset")
 

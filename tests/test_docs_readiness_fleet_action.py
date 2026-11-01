@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
+import stat
 import subprocess
 from argparse import Namespace
 from pathlib import Path
@@ -18,7 +20,6 @@ from repository_manager.mcp_tools.context import McpToolContext
 from repository_manager.mcp_tools.docs_readiness import (
     register_docs_readiness_tools,
 )
-
 
 
 def _init_repo(path: Path) -> None:
@@ -662,13 +663,15 @@ def fleet_workspace(fixture_workspace: tuple[Path, Path]) -> tuple[Path, set[str
     root, repo = fixture_workspace
     manifest = root / "workspace.yml"
     manifest.write_text(
-        manifest.read_text().replace(
+        manifest.read_text()
+        .replace(
             "      agents:",
             "      skills:\n        repositories:\n"
             "          - url: https://example.invalid/universal-skills.git\n"
             "          - url: https://example.invalid/skill-graphs.git\n"
             "      agents:",
-        ).replace(
+        )
+        .replace(
             "            description: provider",
             "            description: provider\n"
             "          - url: https://example.invalid/tests.git",
@@ -777,7 +780,8 @@ def test_default_fleet_does_not_discover_unlisted_sibling(tmp_path: Path) -> Non
         docs_readiness._manifest_entries(manifest), root
     )
     selected = docs_readiness._select_repositories(
-        identities, None,
+        identities,
+        None,
         expected_identities=frozenset({"agent-packages/agents/provider"}),
     )
 
@@ -988,11 +992,19 @@ def test_mcp_and_cli_register_one_shared_action_surface(
     assert observed[0][0] == "preview"
 
 
+def _rmtree_writable(path: Path) -> None:
+    """Git object files are read-only; Windows refuses to delete them."""
+    for entry in path.rglob("*"):
+        if entry.is_file() and not entry.is_symlink():
+            os.chmod(entry, stat.S_IWRITE)
+    shutil.rmtree(path)
+
+
 def test_missing_other_fleet_checkout_blocks_exact_repository(
     fleet_workspace: tuple[Path, set[str]],
 ) -> None:
     root, _ = fleet_workspace
-    shutil.rmtree(root / "agent-packages/skills/skill-graphs")
+    _rmtree_writable(root / "agent-packages/skills/skill-graphs")
     calls: list[tuple[Path, bool]] = []
     result = docs_readiness.dispatch(
         workspace_root=root,

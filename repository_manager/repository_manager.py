@@ -687,7 +687,7 @@ class Git:
         )
 
         # Initialize log file
-        with open(self.debug_log_path, "a") as f:
+        with open(self.debug_log_path, "a", encoding="utf-8") as f:
             f.write(f"\n\n--- NEW SESSION: {datetime.datetime.now().isoformat()} ---\n")
 
     def _find_python(self) -> str:
@@ -2120,7 +2120,7 @@ class Git:
             report_file = os.path.join(self.path, report_file)
 
         try:
-            with open(report_file, "w") as f:
+            with open(report_file, "w", encoding="utf-8") as f:
                 f.write(markdown_content)
             logger.info("Repository report exported")
         except Exception as e:
@@ -2272,7 +2272,9 @@ class Git:
         # Ensure ~/.local/bin is in PATH for tools like bump2version
         local_bin = os.path.expanduser("~/.local/bin")
         if local_bin not in current_env.get("PATH", ""):
-            current_env["PATH"] = f"{local_bin}:{current_env.get('PATH', '')}"
+            current_env["PATH"] = (
+                f"{local_bin}{os.pathsep}{current_env.get('PATH', '')}"
+            )
 
         # Ensure Python output is unbuffered so we get real-time logs
         current_env["PYTHONUNBUFFERED"] = "1"
@@ -2280,7 +2282,10 @@ class Git:
 
     def _append_debug_log(self, text: str) -> None:
         """Append one entry to the debug log under the shared lock."""
-        with self.debug_lock, open(self.debug_log_path, "a") as log_file:
+        with (
+            self.debug_lock,
+            open(self.debug_log_path, "a", encoding="utf-8") as log_file,
+        ):
             log_file.write(text)
             log_file.flush()
 
@@ -3581,6 +3586,9 @@ class Git:
             raise OperationBoundaryError("push target has no admitted origin URL")
         if any(ord(char) < 0x20 or ord(char) == 0x7F for char in configured):
             raise OperationBoundaryError("push target contains control characters")
+        if pfs.is_windows() and re.match(r"^[A-Za-z]:[\\/]", configured):
+            # A drive-qualified path is a local path, not a URL scheme.
+            return os.path.abspath(configured)
         parsed = urlsplit(configured)
         if parsed.scheme in {"http", "https"}:
             return canonical_repository_url(configured)
@@ -3814,7 +3822,10 @@ class Git:
             logger.error("Push refused because repository status could not be verified")
             return status_check
         if status_check.data.strip():
-            logger.warning("Push refused because the configured project is dirty")
+            logger.warning(
+                "Push refused because the configured project is dirty: %r",
+                status_check.data.strip()[:200],
+            )
             return self._dirty_push_refusal(target_path)
         return self._gate_before_push(target_path, pinned=pinned)
 
@@ -5607,7 +5618,7 @@ class Git:
                 ) from exc
         if not target_file.exists() or not target_file.is_file():
             return None
-        return target_file.read_text()
+        return target_file.read_text(encoding="utf-8")
 
     @staticmethod
     def _write_dependency_content(
@@ -5620,7 +5631,7 @@ class Git:
         if directory_fd is not None:
             write_at(directory_fd, file_name, content.encode())
             return
-        target_file.write_text(content)
+        target_file.write_text(content, encoding="utf-8")
 
     def worktree_hygiene(
         self,
@@ -5677,7 +5688,7 @@ class Git:
             return False
 
         try:
-            with open(abs_yaml_path) as f:
+            with open(abs_yaml_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
 
             if not data:
@@ -6111,7 +6122,7 @@ class Git:
             else:
                 template_content = "name: My Workspace\npath: .\ndescription: New workspace\nsubdirectories:\n  agents:\n    description: Agent repositories\n    repositories: []\n"
 
-            with open(target_path, "w") as f:
+            with open(target_path, "w", encoding="utf-8") as f:
                 f.write(template_content)
 
             return GitResult(
@@ -6151,7 +6162,7 @@ class Git:
             os.makedirs(os.path.dirname(yaml_path), exist_ok=True)
 
             data = cfg.model_dump()
-            with open(yaml_path, "w") as f:
+            with open(yaml_path, "w", encoding="utf-8") as f:
                 yaml.dump(data, f, sort_keys=False)
 
             return GitResult(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import pytest
 import yaml  # type: ignore[import-untyped]
 
 from repository_manager import workspace_manifest
+from tests.portable_paths import native_abs
 from repository_manager.repository_manager import main
 from repository_manager.workspace_manifest import (
     WorkspaceManifestError,
@@ -17,9 +19,10 @@ from repository_manager.workspace_manifest import (
     synchronize_workspace_manifest,
 )
 
+PRIVATE_WORKSPACE = native_abs("/srv/private-workspace")
 MANIFEST = """\
 name: Test Workspace
-path: /srv/private-workspace
+path: @@WORKSPACE@@
 repositories:
   - url: https://example-git.internal.arpa/root.git
   - url: https://example.invalid/public.git
@@ -41,6 +44,7 @@ selectors:
   core:
     include: [agent-utilities, repository-manager]
 """
+MANIFEST = MANIFEST.replace("@@WORKSPACE@@", json.dumps(PRIVATE_WORKSPACE))
 
 
 def _paths(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -113,7 +117,7 @@ def test_realistic_manifest_projects_private_values_without_leaking_them(tmp_pat
     seed_data = yaml.safe_load(seed.read_text(encoding="utf-8"))
     assert seed_data == project_portable_seed(yaml.safe_load(MANIFEST))
     seed_text = seed.read_text(encoding="utf-8")
-    assert "/srv/private-workspace" not in seed_text
+    assert "private-workspace" not in seed_text
     assert "example-git.internal.arpa" not in seed_text
     assert "${REPOSITORY_MANAGER_WORKSPACE_ROOT}" in seed_text
     assert "${ARBORA_REPO_ORIGIN}" in seed_text
@@ -433,7 +437,10 @@ def test_default_workspace_yml_is_the_packaged_seed_and_lists_repositories(monke
 
     monkeypatch.delenv("WORKSPACE_YML", raising=False)
     rm = importlib.reload(rm)
-    assert Path(rm.DEFAULT_WORKSPACE_YML) == workspace_manifest.default_packaged_seed_path()
+    assert (
+        Path(rm.DEFAULT_WORKSPACE_YML)
+        == workspace_manifest.default_packaged_seed_path()
+    )
     seed = yaml.safe_load(Path(rm.DEFAULT_WORKSPACE_YML).read_text(encoding="utf-8"))
     repositories, _, _ = select_repositories(seed)
     assert len(repositories) > 200

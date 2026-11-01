@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -35,6 +36,16 @@ from repository_manager.repository_manager import Git, GitResult
 
 def _run(argv: list[str], cwd: Path) -> None:
     subprocess.run(argv, cwd=cwd, check=True, capture_output=True, text=True)
+
+
+# Windows cannot pin a directory by an open descriptor across a rename, so a
+# parent or checkout swapped between admission and the child process cannot be
+# prevented there, only detected afterwards.  The tests below assert the
+# descriptor-pinning guarantee itself, which exists only on POSIX.
+NEEDS_DESCRIPTOR_PINNING = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="descriptor-pinned directories (swap-proof checkout) do not exist on Windows",
+)
 
 
 def _kernel_mount_id(descriptor: int) -> int | None:
@@ -138,6 +149,11 @@ def test_git_subprocess_uses_an_inherited_descriptor_cwd(tmp_path, monkeypatch):
     assert result.status == "success"
     assert calls
     cwd = str(calls[0]["cwd"])
+    if os.name == "nt":
+        # Windows has no inherited directory descriptors; the pinned
+        # directory is addressed by its verified path instead.
+        assert Path(cwd) == repo
+        return
     assert cwd.startswith("/proc/self/fd/")
     descriptor = int(cwd.rsplit("/", 1)[-1])
     assert descriptor in tuple(calls[0]["pass_fds"])
@@ -277,6 +293,8 @@ def test_mount_identity_matches_the_kernel_descriptor_mount():
 
 
 def test_mount_identity_is_read_fresh_after_descriptor_reuse():
+    if os.name == "nt":
+        pytest.skip("kernel mount IDs and /proc descriptors do not exist on Windows")
     root_fd = os.open(os.sep, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     proc_fd = os.open("/proc", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
@@ -487,6 +505,7 @@ def test_git_action_rejects_a_symlinked_git_directory(tmp_path):
     assert "symlink" in result.error.message
 
 
+@NEEDS_DESCRIPTOR_PINNING
 def test_git_action_keeps_git_metadata_on_the_pinned_checkout(tmp_path, monkeypatch):
     """A .git swap after admission cannot redirect the Git mutation."""
     source_root = tmp_path / "source-root"
@@ -545,9 +564,16 @@ def test_pre_push_gate_uses_the_pinned_checkout_path(tmp_path, monkeypatch):
         with pin_existing(root, checkout) as pinned:
             assert manager._gate_before_push(str(checkout), pinned=pinned) is None
 
-    assert observed and observed[0].startswith("/proc/self/fd/")
+    assert observed
+    if sys.platform == "win32":
+        # No /proc descriptor path exists on Windows; the gate receives the
+        # checkout path itself.
+        assert Path(observed[0]).samefile(checkout)
+    else:
+        assert observed[0].startswith("/proc/self/fd/")
 
 
+@NEEDS_DESCRIPTOR_PINNING
 def test_clone_parent_swap_cannot_redirect_into_external_directory(
     tmp_path, monkeypatch
 ):
@@ -758,7 +784,9 @@ def test_git_action_rejects_multiple_preexisting_push_urls(tmp_path):
 def test_push_refuses_local_destination_rewrite_before_network(tmp_path, directive):
     manager, source, authorized, attacker = _push_fixture(tmp_path)
     with (source / ".git" / "config").open("a", encoding="utf-8") as stream:
-        stream.write(f'\n[url "{attacker}"]\n\t{directive} = {authorized}\n')
+        stream.write(
+            f'\n[url "{Path(attacker).as_posix()}"]\n\t{directive} = {Path(authorized).as_posix()}\n'
+        )
 
     result = manager.push_project(str(source))
 
@@ -777,7 +805,9 @@ def test_push_refuses_included_config_and_later_include_drift(tmp_path):
         stream.write(f"\n[include]\n\tpath = {included}\n")
 
     first = manager.push_project(str(source))
-    included.write_text(f'[url "{attacker}"]\n\tpushInsteadOf = {authorized}\n')
+    included.write_text(
+        f'[url "{Path(attacker).as_posix()}"]\n\tpushInsteadOf = {Path(authorized).as_posix()}\n'
+    )
     second = manager.push_project(str(source))
 
     assert first.status == second.status == "error"
@@ -886,6 +916,7 @@ def test_linked_worktree_handle_rejects_common_config_content_append(tmp_path):
             pinned.assert_operation_identity()
 
 
+@NEEDS_DESCRIPTOR_PINNING
 def test_pre_commit_rejects_checkout_swap_after_handle_pin(tmp_path, monkeypatch):
     manager = _manager_with_project(tmp_path)
     project = Path(next(iter(manager.project_map.values())))

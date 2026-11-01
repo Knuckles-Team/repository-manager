@@ -67,7 +67,7 @@ def test_selector_cannot_choose_plan_or_workspace(tmp_path):
 def test_current_manifest_without_verified_metadata_refuses(tmp_path):
     plan = _plan()
     (tmp_path / "workspace.yml").write_text(
-        f'path: "{tmp_path}"\nrepositories:\n  - url: https://example.test/app.git\n'
+        f"path: {json.dumps(str(tmp_path))}\nrepositories:\n  - url: https://example.test/app.git\n"
     )
     synchronize_workspace_manifest(
         tmp_path / "workspace.yml",

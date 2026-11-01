@@ -33,9 +33,15 @@ import pytest
 
 from repository_manager import merge_queue as mq
 from repository_manager.lane_registry import FakeDurableLaneAuthority, LaneRegistry
+from tests.portable_paths import SHELL, sh_arg
 
 ROOT = Path(__file__).resolve().parents[1]
+# The declared interpreter token, exactly as the repo's .mergequeue.yaml spells it.
 REPO_PYTHON = ".venv/bin/python"
+# Where that interpreter lives on disk on this platform.
+REPO_PYTHON_FILE = (
+    ".venv/Scripts/python.exe" if sys.platform == "win32" else ".venv/bin/python"
+)
 QUEUE_TEST_COMMAND = (
     REPO_PYTHON,
     "-m",
@@ -48,7 +54,12 @@ QUEUE_TEST_COMMAND = (
 
 def _run(cmd: str, cwd: Path) -> str:
     proc = subprocess.run(
-        cmd, shell=True, cwd=str(cwd), capture_output=True, text=True, check=True
+        sh_arg(cmd),
+        shell=SHELL,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return proc.stdout.strip()
 
@@ -65,7 +76,11 @@ class FakeGit:
     ):
         del env, timeout, raw_output, quiet
         p = subprocess.run(
-            command, shell=True, cwd=path or self.path, capture_output=True, text=True
+            sh_arg(command),
+            shell=SHELL,
+            cwd=path or self.path,
+            capture_output=True,
+            text=True,
         )
         out = (p.stdout + p.stderr).strip()
         return SimpleNamespace(
@@ -533,7 +548,7 @@ def _timeout_drift_repo(tmp_path: Path, *, slow_recheck: bool = False) -> Path:
             baseline_timeout: 10
             compare: lines
             timeout_recheck_pattern: '^TIMEOUT (?P<item>checks/[^ ]+\\.sh)$'
-            timeout_recheck_command: ["/bin/sh", "{item}"]
+            timeout_recheck_command: ["sh", "{item}"]
             timeout_recheck_timeout: 1
         """,
     )
@@ -588,7 +603,7 @@ def test_timeout_recheck_refuses_output_derived_path_escape(tmp_path: Path) -> N
         command=("true",),
         compare="lines",
         timeout_recheck_pattern=r"^TIMEOUT (?P<item>.+)$",
-        timeout_recheck_command=("/bin/sh", "{item}"),
+        timeout_recheck_command=("sh", "{item}"),
         timeout_recheck_timeout=1,
     )
     result = mq._recheck_candidate_new_timeouts(
@@ -696,7 +711,7 @@ def test_a_conflict_confined_to_generated_files_is_regenerated_not_rejected(
             compare: exit
         generated_files: ["INDEX.md"]
         regenerate:
-          - ["{sys.executable}", "gen.py"]
+          - [{json.dumps(sys.executable)}, "gen.py"]
         """,
     )
     _commit(repo, "init")
@@ -740,7 +755,7 @@ def test_a_conflict_touching_a_handwritten_file_is_still_rejected(
             stage: integration
             compare: exit
         generated_files: ["INDEX.md"]
-        regenerate: [["{sys.executable}", "gen.py"]]
+        regenerate: [[{json.dumps(sys.executable)}, "gen.py"]]
         """,
     )
     _commit(repo, "init")
@@ -806,8 +821,8 @@ def test_prune_removes_a_clean_worktree_and_anchors_the_branch(
     assert _run(f"git rev-parse {prune['branch_anchor']}", repo) == tip
     assert (
         subprocess.run(
-            "git rev-parse --verify feat/clean",
-            shell=True,
+            sh_arg("git rev-parse --verify feat/clean"),
+            shell=SHELL,
             cwd=repo,
             capture_output=True,
         ).returncode
@@ -1154,7 +1169,7 @@ def test_materialized_snapshot_attaches_only_an_existing_ignored_venv(
     with mq.materialized(repo, head, scope=scope) as snapshot:
         assert not (snapshot / ".venv").exists()
 
-    interpreter = repo / REPO_PYTHON
+    interpreter = repo / REPO_PYTHON_FILE
     interpreter.parent.mkdir(parents=True)
     interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     interpreter.chmod(0o755)
@@ -1163,7 +1178,7 @@ def test_materialized_snapshot_attaches_only_an_existing_ignored_venv(
         attached = snapshot / ".venv"
         assert attached.is_symlink()
         assert attached.resolve() == (repo / ".venv").resolve()
-        assert (snapshot / REPO_PYTHON).is_file()
+        assert (snapshot / REPO_PYTHON_FILE).is_file()
 
 
 def test_a_repo_with_no_config_is_refused_not_defaulted(tmp_path: Path) -> None:

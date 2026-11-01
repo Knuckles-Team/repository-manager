@@ -19,17 +19,75 @@ the same primitive can protect sync, pull, push, and release-plan snapshots.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import dataclasses
 import fnmatch
 import hashlib
 import os
 import re
+import shutil
 import stat
+import subprocess
+import tempfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from repository_manager import portable_fs as pfs
+
+_EMPTY_GIT_CONFIG: list[str] = []
+_AUTOCRLF_VALUES = frozenset({"true", "false", "input"})
+_HOST_AUTOCRLF: list[str | None] = []
+
+
+def _host_autocrlf() -> str | None:
+    """The host's default ``core.autocrlf`` (Windows only), as a validated enum.
+
+    A sealed Git ignores system and user config, which on Windows silently
+    drops the ``core.autocrlf=true`` default the checkout was made under and
+    makes every CRLF working file read as modified.  Only this single enum
+    value crosses the seal; nothing else from host config does.
+    """
+    if not pfs.is_windows():
+        return None
+    if not _HOST_AUTOCRLF:
+        value: str | None = None
+        try:
+            probe = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+                ["git", "config", "--get", "core.autocrlf"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+                cwd=tempfile.gettempdir(),
+            )
+            candidate = probe.stdout.strip().lower()
+            if probe.returncode == 0 and candidate in _AUTOCRLF_VALUES:
+                value = candidate
+        except (OSError, subprocess.SubprocessError):
+            value = None
+        _HOST_AUTOCRLF.append(value)
+    return _HOST_AUTOCRLF[0]
+
+
+def _empty_git_config() -> str:
+    """A path Git reads as an empty global config.
+
+    POSIX uses the null device.  Git for Windows prints a warning on the
+    ``nul`` device when it is named as a config file, which then lands in
+    captured command output, so Windows names a real empty file kept in a
+    private per-process directory instead.
+    """
+    if not pfs.is_windows():
+        return os.devnull
+    if not _EMPTY_GIT_CONFIG:
+        directory = tempfile.mkdtemp(prefix="rm-empty-gitconfig-")
+        atexit.register(shutil.rmtree, directory, True)
+        empty = Path(directory) / "gitconfig"
+        empty.write_bytes(b"")
+        _EMPTY_GIT_CONFIG.append(str(empty))
+    return _EMPTY_GIT_CONFIG[0]
+
 
 _PINNED_GIT_ENVIRONMENT = frozenset(
     {
@@ -106,7 +164,10 @@ class FileIdentity:
             links=int(result.st_nlink),
             size=int(result.st_size),
             modified_ns=int(result.st_mtime_ns),
-            changed_ns=int(result.st_ctime_ns),
+            # Windows reports creation time as ``st_ctime`` and the value
+            # differs between handle and path lookups of the same file, so
+            # it cannot witness a change there; mtime/size/inode still do.
+            changed_ns=0 if os.name == "nt" else int(result.st_ctime_ns),
             mount_id=mount_id,
         )
 
@@ -315,7 +376,12 @@ class PinnedDirectory:
             and not key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
         }
         isolated["GIT_CONFIG_NOSYSTEM"] = "1"
-        isolated["GIT_CONFIG_GLOBAL"] = os.devnull
+        isolated["GIT_CONFIG_GLOBAL"] = _empty_git_config()
+        autocrlf = _host_autocrlf()
+        if autocrlf is not None:
+            isolated["GIT_CONFIG_COUNT"] = "1"
+            isolated["GIT_CONFIG_KEY_0"] = "core.autocrlf"
+            isolated["GIT_CONFIG_VALUE_0"] = autocrlf
         return isolated
 
     def assert_root_identity(self) -> None:
@@ -576,7 +642,10 @@ def _assert_path_identity(path: Path, expected: DirectoryIdentity, label: str) -
     result = _stat_path_without_symlinks(path, label)
     actual = DirectoryIdentity.from_stat(result, _mount_id_for_path(path))
     if actual != expected:
-        raise OperationBoundaryError(f"{label} identity changed")
+        raise OperationBoundaryError(
+            f"{label} identity changed: expected {expected.as_dict()} "
+            f"but found {actual.as_dict()} at {path}"
+        )
 
 
 def _stat_path_without_symlinks(path: Path, label: str) -> os.stat_result:
@@ -590,7 +659,7 @@ def _stat_path_without_symlinks(path: Path, label: str) -> os.stat_result:
     components = raw_path.parts[1:]
     if not components:
         try:
-            return os.stat(raw_path, follow_symlinks=False)
+            return pfs.stat_no_follow(raw_path)
         except OSError as exc:
             raise OperationBoundaryError(
                 f"{label} disappeared or is inaccessible"
@@ -612,7 +681,7 @@ def _stat_path_without_symlinks(path: Path, label: str) -> os.stat_result:
 def _stat_path_component(path: Path, label: str) -> os.stat_result:
     """Read one path component without following its final link."""
     try:
-        return os.stat(path, follow_symlinks=False)
+        return pfs.stat_no_follow(path)
     except OSError as exc:
         raise OperationBoundaryError(f"{label} disappeared or is inaccessible") from exc
 
@@ -641,7 +710,7 @@ def open_directory(path: str | Path, *, create: bool = False) -> PinnedDirectory
     components = _path_components(candidate)
     absolute = Path(os.path.abspath(candidate))
     try:
-        root_fd = pfs.open_root()
+        root_fd = pfs.open_root(absolute.anchor)
     except OSError as exc:
         raise OperationBoundaryError("cannot open filesystem root") from exc
 
@@ -1149,7 +1218,10 @@ def _read_stable_config(descriptor: int) -> tuple[FileIdentity, bytes]:
         chunks.append(chunk)
     after = _regular_file_identity(descriptor, mount_id)
     if before != after:
-        raise OperationBoundaryError("git common config changed during read")
+        raise OperationBoundaryError(
+            "git common config changed during read: "
+            f"before {before.as_dict()} after {after.as_dict()}"
+        )
     return after, b"".join(chunks)
 
 
@@ -1168,7 +1240,10 @@ def _assert_config_entry_identity(directory_fd: int, expected: FileIdentity) -> 
         raise OperationBoundaryError("git common config disappeared during read")
     actual = FileIdentity.from_stat(current, expected.mount_id)
     if actual != expected:
-        raise OperationBoundaryError("git common config changed during read")
+        raise OperationBoundaryError(
+            "git common config changed during read: "
+            f"expected {expected.as_dict()} found {actual.as_dict()}"
+        )
 
 
 def _assert_config_snapshot(

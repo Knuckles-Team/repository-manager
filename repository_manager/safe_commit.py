@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from repository_manager import portable_fs as pfs
 from repository_manager import tree_repair
 
 __all__ = ["safe_commit"]
@@ -403,7 +404,7 @@ def _resolve_gate(
         and configured_gate is None
         and (tree / ".pre-commit-config.yaml").is_file()
     ):
-        configured_gate = ["pre-commit", "run", "--all-files"]
+        configured_gate = [*pfs.pre_commit_launcher(), "run", "--all-files"]
         gate_stage = "pre-commit"
     elif configured_gate is not None:
         gate_stage = "configured"

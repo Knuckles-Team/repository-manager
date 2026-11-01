@@ -14,12 +14,15 @@ positive half is what makes the refusal meaningful.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from repository_manager import lane_doctor, merge_queue
+from repository_manager import portable_fs as pfs
 from repository_manager.lane_doctor import FAIL, OK, SKIP, WARN
 from repository_manager.lane_registry import FakeDurableLaneAuthority, LaneRegistry
 
@@ -115,11 +118,21 @@ def test_a_uv_workspace_managed_worktree_venv_passes(worktree: Path) -> None:
     (worktree / "scripts").mkdir()
     (worktree / "scripts" / "uv_workspace.py").write_text("# managed launcher\n")
     venv = worktree / ".venv"
-    (venv / "bin").mkdir(parents=True)
-    python = venv / "bin" / "python"
-    python.write_text("#!/usr/bin/env python3\n")
-    python.chmod(0o755)
-    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    python = pfs.venv_python(venv)
+    python.parent.mkdir(parents=True)
+    if sys.platform == "win32":
+        # The doctor judges an interpreter by running it, and Windows cannot
+        # execute a text file named python.exe: stage a real venv layout (the
+        # base interpreter beside a pyvenv.cfg that names its home).
+        base = Path(sys.base_prefix)
+        shutil.copy2(base / "python.exe", python)
+        for dll in base.glob("*.dll"):
+            shutil.copy2(dll, python.parent / dll.name)
+        (venv / "pyvenv.cfg").write_text(f"home = {base}\n")
+    else:
+        python.write_text("#!/usr/bin/env python3\n")
+        python.chmod(0o755)
+        (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
     (venv / ".uv-workspace-selection.json").write_text(
         '{"label": "", "selection": ["--all-extras"]}\n'
     )
@@ -143,7 +156,7 @@ def test_a_stale_managed_worktree_venv_is_refused(worktree: Path) -> None:
     check = _named(lane_doctor.diagnose(worktree, env={}), "no-worktree-venv")
 
     assert check["status"] == FAIL
-    assert "bin/python" in check["finding"]
+    assert str(pfs.venv_python(venv)) in check["finding"]
 
 
 def test_no_local_venv_passes(worktree: Path) -> None:
@@ -163,8 +176,8 @@ def _write_pyproject(tree: Path, project_name: str) -> None:
 
 def _make_venv(tree: Path) -> Path:
     venv = tree / ".venv"
-    (venv / "bin").mkdir(parents=True)
-    python = venv / "bin" / "python"
+    python = pfs.venv_python(venv)
+    python.parent.mkdir(parents=True)
     python.write_text("#!/usr/bin/env python3\n")
     python.chmod(0o755)
     site_packages = venv / "lib" / "python3.12" / "site-packages"

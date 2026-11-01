@@ -1321,24 +1321,12 @@ def test_heavy_output_boundary_rejects_links_and_caps_writes(
         ):
             pass
 
-    fifo = tmp_path / "output.fifo"
-    os.mkfifo(fifo)
-    with pytest.raises(lanes.LaneArbitrationError, match="regular file"):
-        with lanes.hold_lease(
-            "cpu-heavy",
-            operation="fifo output",
-            host_id="host-primary",
-            output_path=fifo,
-            path=canonical,
-        ):
-            pass
-
     with pytest.raises(lanes.LaneArbitrationError, match="regular file"):
         with lanes.hold_lease(
             "cpu-heavy",
             operation="device output",
             host_id="host-primary",
-            output_path=Path("/dev/null"),
+            output_path=Path(os.devnull),
             path=canonical,
         ):
             pass
@@ -1375,6 +1363,24 @@ def test_heavy_output_boundary_rejects_links_and_caps_writes(
             operation="stdout output",
             host_id="host-primary",
             output_path="-",
+            path=canonical,
+        ):
+            pass
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "mkfifo"),
+    reason="named pipes do not exist on Windows, so there is no FIFO to refuse",
+)
+def test_heavy_output_boundary_rejects_a_fifo(canonical: Path, tmp_path: Path) -> None:
+    fifo = tmp_path / "output.fifo"
+    os.mkfifo(fifo)
+    with pytest.raises(lanes.LaneArbitrationError, match="regular file"):
+        with lanes.hold_lease(
+            "cpu-heavy",
+            operation="fifo output",
+            host_id="host-primary",
+            output_path=fifo,
             path=canonical,
         ):
             pass
@@ -1591,7 +1597,7 @@ def test_exported_gate_refuses_a_hand_edited_generated_view(tmp_path: Path) -> N
     )
     _run(["git", "add", "docs/concept_reservations.yaml"], lane)
     proc = subprocess.run(
-        GUARD_COMMAND, cwd=str(lane), capture_output=True, text=True, env=_guard_env()
+        GUARD_ARGV, cwd=str(lane), capture_output=True, text=True, env=_guard_env()
     )
     assert proc.returncode == 1
     assert "GENERATED" in proc.stderr
@@ -1613,7 +1619,7 @@ def test_gate_allows_webui_to_stage_its_canonical_reservation_ledger(
 
     env = _guard_env()
     proc = subprocess.run(
-        GUARD_COMMAND,
+        GUARD_ARGV,
         cwd=str(lane),
         capture_output=True,
         text=True,
@@ -1647,6 +1653,8 @@ _GUARD_HOOK = next(
     if hook["id"] == "lane-guard"
 )
 GUARD_COMMAND = shlex.split(_GUARD_HOOK["entry"])
+# The hook entry names ``python3``; run the same module with this interpreter.
+GUARD_ARGV = [sys.executable, *GUARD_COMMAND[1:]]
 
 
 # spec: RM-GOVERNANCE-R031
@@ -1712,7 +1720,7 @@ def test_gate_reaches_a_repo_that_is_not_scion_sdk(tmp_path: Path) -> None:
     _run(["git", "add", "new.py"], lane)
     env = _guard_env()
     proc = subprocess.run(
-        GUARD_COMMAND,
+        GUARD_ARGV,
         cwd=str(lane),
         capture_output=True,
         text=True,
@@ -1733,7 +1741,7 @@ def test_gate_still_refuses_a_canonical_commit_in_a_foreign_repo(
     _run(["git", "add", "new.py"], foreign)
     env = _guard_env()
     proc = subprocess.run(
-        GUARD_COMMAND,
+        GUARD_ARGV,
         cwd=str(foreign),
         capture_output=True,
         text=True,
@@ -1753,7 +1761,7 @@ def test_gate_detects_a_stray_cargo_target_dir_export_in_a_foreign_cargo_repo(
     env = _guard_env()
     env["CARGO_TARGET_DIR"] = "/some/shared/global/target"
     proc = subprocess.run(
-        GUARD_COMMAND,
+        GUARD_ARGV,
         cwd=str(lane),
         capture_output=True,
         text=True,
@@ -1772,7 +1780,7 @@ def test_gate_allows_unset_cargo_target_dir_for_default_partition(
     env = _guard_env()
     env.pop(lanes.LANE_TEMP_ROOT_ENV, None)
     proc = subprocess.run(
-        GUARD_COMMAND,
+        GUARD_ARGV,
         cwd=str(lane),
         capture_output=True,
         text=True,
@@ -1791,7 +1799,7 @@ def test_gate_refuses_missing_cargo_target_dir_for_configured_root(
     expected = lanes.partitioned_paths(lane).cargo_target_dir
     env = _guard_env()
     proc = subprocess.run(
-        GUARD_COMMAND,
+        GUARD_ARGV,
         cwd=str(lane),
         capture_output=True,
         text=True,
@@ -1810,7 +1818,7 @@ def test_gate_accepts_the_lanes_own_cargo_target_dir_export(tmp_path: Path) -> N
     env = _guard_env()
     env["CARGO_TARGET_DIR"] = str(own_target)
     proc = subprocess.run(
-        GUARD_COMMAND,
+        GUARD_ARGV,
         cwd=str(lane),
         capture_output=True,
         text=True,
@@ -1830,7 +1838,7 @@ def test_gate_accepts_the_configured_lane_cargo_target_dir_export(
     env = _guard_env()
     env["CARGO_TARGET_DIR"] = str(tmp_path / "other-target")
     refused = subprocess.run(
-        GUARD_COMMAND,
+        GUARD_ARGV,
         cwd=str(lane),
         capture_output=True,
         text=True,
@@ -1840,7 +1848,7 @@ def test_gate_accepts_the_configured_lane_cargo_target_dir_export(
     assert lanes.LANE_TEMP_ROOT_ENV in refused.stderr
     env["CARGO_TARGET_DIR"] = str(own_target)
     proc = subprocess.run(
-        GUARD_COMMAND,
+        GUARD_ARGV,
         cwd=str(lane),
         capture_output=True,
         text=True,

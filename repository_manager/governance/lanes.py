@@ -578,8 +578,17 @@ def is_pid_alive(pid: int) -> bool:
     handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
         return False  # ERROR_INVALID_PARAMETER et al.: no such process
-    kernel32.CloseHandle(handle)
-    return True
+    try:
+        # A terminated process stays openable while any handle to it remains
+        # (its parent's, for instance); only a STILL_ACTIVE exit code means
+        # the process is actually running.
+        _STILL_ACTIVE = 259
+        exit_code = ctypes.c_ulong()
+        if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return exit_code.value == _STILL_ACTIVE
+        return True
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _classify_precommit_patch(patch_path: Path, scope: LaneScope) -> dict[str, Any]:
@@ -2057,6 +2066,12 @@ def _write_exclusive_lease_file(path: Path, serialized: str) -> LeaseIdentity:
     fd: int | None = None
     identity: LeaseIdentity | None = None
     try:
+        if pfs.is_link(path):
+            # Windows has no O_NOFOLLOW: refuse an existing link explicitly.
+            raise LaneArbitrationError(
+                f"cannot publish lease file {path} without following links: "
+                "path is a link"
+            )
         fd = os.open(str(path), _lease_publication_flags(), 0o600)
         info = os.fstat(fd)
         identity = (info.st_dev, info.st_ino)

@@ -385,7 +385,9 @@ class BoundedLogSink:
     def tail_text(self, stream: StreamName) -> str:
         """Return the terminal tail as replacement-safe UTF-8 text."""
 
-        return self.tail_bytes(stream).decode("utf-8", errors="replace")
+        # Windows children write CRLF; normalize at the capture boundary.
+        text = self.tail_bytes(stream).decode("utf-8", errors="replace")
+        return text.replace("\r\n", "\n")
 
     def snapshot(self, stream: StreamName) -> LogSnapshot:
         """Return immutable counters and a digest for one stream."""

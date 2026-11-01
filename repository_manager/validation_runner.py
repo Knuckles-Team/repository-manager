@@ -24,6 +24,7 @@ import re
 import selectors
 import shutil
 import subprocess  # nosec B404 - all calls below use fixed argv
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -187,6 +188,49 @@ def _pump_bounded_output(
         if _drain_selector_events(events, buffers, max_bytes, selector, process):
             return "overflow_killed"
     return "ok"
+
+
+def _pump_bounded_output_threaded(
+    process: subprocess.Popen,
+    streams: Mapping[str, IO[bytes]],
+    buffers: dict[str, bytearray],
+    deadline: float,
+    max_bytes: int,
+) -> str:
+    """Same contract as :func:`_pump_bounded_output` for platforms where pipes
+    cannot be selected (Windows): one reader thread per stream."""
+
+    overflow = threading.Event()
+
+    def read_stream(name: str, stream: IO[bytes]) -> None:
+        while True:
+            try:
+                chunk = os.read(stream.fileno(), 64 * 1024)
+            except OSError:
+                return
+            if not chunk:
+                return
+            if len(buffers[name]) + len(chunk) > max_bytes:
+                overflow.set()
+                process.kill()
+                return
+            buffers[name].extend(chunk)
+
+    threads = [
+        threading.Thread(target=read_stream, args=(name, stream), daemon=True)
+        for name, stream in streams.items()
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(max(0.0, deadline - time.monotonic()))
+        if thread.is_alive():
+            process.kill()
+            process.wait()
+            for other in threads:
+                other.join(1.0)
+            return "timeout_killed"
+    return "overflow_killed" if overflow.is_set() else "ok"
 
 
 def _normalize_changed_path(raw_path: bytes) -> str | None:
@@ -1011,7 +1055,7 @@ class ValidationRunner:
 
     def _verify_head_matches(self, request: ValidationRequest, tree: Path) -> None:
         current = self._git_output(["rev-parse", "--show-toplevel"], tree)
-        if current != str(tree):
+        if current is None or Path(current) != tree:
             raise ValidationPreparationError(
                 "tree path is not the Git worktree top-level"
             )
@@ -1182,21 +1226,31 @@ class ValidationRunner:
         if spawned is None:
             return None
         process, stdout, stderr = spawned
-        selector = selectors.DefaultSelector()
-        selector.register(stdout, selectors.EVENT_READ, "stdout")
-        selector.register(stderr, selectors.EVENT_READ, "stderr")
         buffers: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
         deadline = time.monotonic() + timeout_seconds
-        try:
-            state = _pump_bounded_output(
-                process, selector, buffers, deadline, max_bytes
+        if os.name == "nt":
+            # ``selectors`` cannot poll pipes on Windows.
+            state = _pump_bounded_output_threaded(
+                process,
+                {"stdout": stdout, "stderr": stderr},
+                buffers,
+                deadline,
+                max_bytes,
             )
-        except OSError:
-            process.kill()
-            process.wait()
-            return None
-        finally:
-            selector.close()
+        else:
+            selector = selectors.DefaultSelector()
+            selector.register(stdout, selectors.EVENT_READ, "stdout")
+            selector.register(stderr, selectors.EVENT_READ, "stderr")
+            try:
+                state = _pump_bounded_output(
+                    process, selector, buffers, deadline, max_bytes
+                )
+            except OSError:
+                process.kill()
+                process.wait()
+                return None
+            finally:
+                selector.close()
         if state == "timeout_killed":
             return None
         if state == "overflow_killed":

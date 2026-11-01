@@ -227,8 +227,11 @@ def _run_git(
     process_env = os.environ.copy()
     if env:
         process_env.update(env)
+    # Deep build trees (cargo target dirs) exceed MAX_PATH on Windows; without
+    # long-path support git cannot delete a disposable worktree.
+    long_paths = ["-c", "core.longpaths=true"] if pfs.is_windows() else []
     proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        [git_executable, *args],
+        [git_executable, *long_paths, *args],
         cwd=str(cwd),
         capture_output=True,
         text=True,
@@ -1753,7 +1756,7 @@ def _timed_run(argv: list[str], cwd: Path, *, timeout: int, env: dict) -> tuple:
     start = time.monotonic()
     try:
         proc = subprocess.run(  # noqa: S603 - argv from repo-declared config, no shell
-            argv,
+            pfs.launchable_argv(argv, cwd),
             cwd=str(cwd),
             capture_output=True,
             text=True,
@@ -1843,7 +1846,7 @@ def _environment_signature(tree: Path, config: QueueConfig) -> str:
     if config.environment_signature:
         try:
             proc = subprocess.run(  # noqa: S603 - argv from repo-declared config
-                list(config.environment_signature),
+                pfs.launchable_argv(config.environment_signature, tree),
                 cwd=str(tree),
                 capture_output=True,
                 text=True,
@@ -2594,7 +2597,7 @@ def _regenerate_generated_files(
         for command in config.regenerate:
             try:
                 proc = subprocess.run(  # noqa: S603 - argv from repo-declared config
-                    list(command),
+                    pfs.launchable_argv(command, work_tree),
                     cwd=str(work_tree),
                     capture_output=True,
                     text=True,

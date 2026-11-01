@@ -22,7 +22,11 @@ from uuid import uuid4
 __all__ = ["PatchRejected", "apply_patch", "changed_paths_in_patch", "run_git"]
 
 _HEADER_RE = re.compile(r"^(?:\+\+\+|---) (?:a/|b/)(.+)$", re.MULTILINE)
-_SYMLINK_MODE_RE = re.compile(r"^(?:old|new) mode 120000$", re.MULTILINE)
+_SYMLINK_MODE_RE = re.compile(
+    r"^(?:(?:old|new|deleted file|new file) mode 120000"
+    r"|index [0-9a-f]+\.\.[0-9a-f]+ 120000)\r?$",
+    re.MULTILINE,
+)
 _DEV_NULL = "/dev/null"
 
 
@@ -129,7 +133,7 @@ def apply_patch(
 
     patch_name = f".materialize-{uuid4().hex}.patch"
     patch_file = worktree_path / patch_name
-    patch_file.write_text(patch_text, encoding="utf-8")
+    patch_file.write_bytes(patch_text.encode("utf-8"))  # no newline translation
     try:
         check = run_git(["git", "apply", "--check", "--", patch_name], worktree_path)
         if check.returncode != 0:

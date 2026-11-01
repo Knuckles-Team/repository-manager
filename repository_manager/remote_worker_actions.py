@@ -39,6 +39,7 @@ optional ``tunnel-manager`` dependency is absent -- see
 from __future__ import annotations
 
 import base64
+import posixpath
 from collections.abc import Callable
 from pathlib import Path
 from threading import RLock
@@ -470,7 +471,8 @@ def _run_remote_build(
 
     build_command = ExecutionCommand(
         argv=command,
-        workdir=f"{destination}/{workdir_rel}".rstrip("/"),
+        # The remote host is POSIX: normalize so "." never leaves a "/." tail.
+        workdir=posixpath.normpath(f"{destination}/{workdir_rel}"),
         timeout_seconds=timeout_seconds,
     )
     return executor.run(

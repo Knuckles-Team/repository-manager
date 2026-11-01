@@ -22,10 +22,13 @@ from __future__ import annotations
 
 import itertools
 import os
+import shutil
 import signal
 import stat
 import subprocess  # nosec B404 - taskkill with a fixed argv
+import sys
 import threading
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +84,23 @@ def _is_link(result: os.stat_result) -> bool:
     return bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
 
 
+def stat_no_follow(target: str | os.PathLike[str]) -> os.stat_result:
+    """Stat one entry without following links, with a comparable identity.
+
+    On Windows ``os.lstat`` and ``os.stat`` report different ``st_dev`` and
+    ``st_ino`` for the same directory, so an identity captured by one never
+    equals one captured by the other.  Links and reparse points are detected
+    with ``lstat`` and returned as is; everything else is re-read with
+    ``os.stat`` so all identities come from the same source.
+    """
+    result = os.lstat(target)
+    if not is_windows() or stat.S_ISLNK(result.st_mode):
+        return result
+    if _is_link(result):
+        raise OSError(f"{str(target)!r} is a reparse point")
+    return os.stat(target)
+
+
 def directory_open_flags() -> int:
     """Flags for opening a directory that cannot follow a symlink."""
     return (
@@ -94,6 +114,22 @@ def directory_open_flags() -> int:
 def file_flags(flags: int) -> int:
     """Add the binary flag Windows needs to avoid newline translation."""
     return flags | getattr(os, "O_BINARY", 0)
+
+
+def venv_python(venv: Path) -> Path:
+    """The interpreter inside a virtual environment (``Scripts`` on Windows)."""
+    if is_windows():
+        return venv / "Scripts" / "python.exe"
+    return venv / "bin" / "python"
+
+
+def cache_entry_name(key: str) -> str:
+    """Directory name for a cache key such as ``v2:<digest>``.
+
+    NTFS rejects ``:`` in a path component, so Windows stores ``v2-<digest>``;
+    POSIX keeps the key unchanged.
+    """
+    return key.replace(":", "-") if is_windows() else key
 
 
 def open_directory(name: str, parent_fd: int | None = None) -> int:
@@ -111,11 +147,16 @@ def open_directory(name: str, parent_fd: int | None = None) -> int:
     return _register(target)
 
 
-def open_root() -> int:
-    """Open the filesystem root (the current drive's anchor on Windows)."""
+def open_root(anchor: str | None = None) -> int:
+    """Open the filesystem root; on Windows the root of ``anchor``'s drive.
+
+    ``anchor`` is the drive anchor of the path being opened (``C:\\``); it
+    defaults to the current drive.  A path on another drive must not be
+    resolved against the working directory's drive.
+    """
     if native_dir_fd():
         return os.open(os.sep, directory_open_flags())
-    return _register(Path(os.getcwd()).anchor or os.sep)
+    return _register(anchor or Path(os.getcwd()).anchor or os.sep)
 
 
 def open_entry(name: str, flags: int, mode: int = 0o777, *, dir_fd: int | None) -> int:
@@ -135,7 +176,7 @@ def open_entry(name: str, flags: int, mode: int = 0o777, *, dir_fd: int | None) 
 def stat_entry(name: str, *, dir_fd: int) -> os.stat_result:
     if native_dir_fd():
         return os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-    return os.lstat(_child(dir_fd, name))
+    return stat_no_follow(_child(dir_fd, name))
 
 
 def fstat(fd: int) -> os.stat_result:
@@ -396,3 +437,94 @@ def temp_root() -> Path:
     import tempfile
 
     return Path(tempfile.gettempdir())
+
+
+# --------------------------------------------------------------------------
+# Script launching
+# --------------------------------------------------------------------------
+
+
+def _windows_posix_shell() -> str | None:
+    """The POSIX ``sh`` shipped with Git for Windows, or a ``sh`` on PATH."""
+    found = shutil.which("sh")
+    if found:
+        return found
+    git = shutil.which("git")
+    if git:
+        root = Path(git).resolve().parent.parent
+        for candidate in (root / "usr" / "bin" / "sh.exe", root / "bin" / "sh.exe"):
+            if candidate.exists():
+                return str(candidate)
+    return None
+
+
+def _shebang_interpreter(script: Path) -> str | None:
+    try:
+        with script.open("rb") as handle:
+            first = handle.readline(512)
+    except OSError:
+        return None
+    if not first.startswith(b"#!"):
+        return None
+    words = first[2:].decode("utf-8", "replace").split()
+    if not words:
+        return None
+    if Path(words[0]).name == "env" and len(words) > 1:
+        return Path(words[1]).name
+    return Path(words[0]).name
+
+
+def launchable_argv(argv: Sequence[str], cwd: str | os.PathLike[str]) -> list[str]:
+    """Make a declared command line launchable on this platform.
+
+    POSIX returns *argv* unchanged.  Windows cannot execute a ``#!`` script or
+    a ``.venv/bin/python`` path directly, so the venv interpreter maps to
+    ``Scripts/python.exe`` and a shebang script runs under its interpreter
+    (``sh`` from Git for Windows, or the running Python).  An interpreter that
+    is not available raises ``OSError`` naming the script and interpreter.
+    """
+    command = list(argv)
+    if not is_windows() or not command:
+        return command
+    head = command[0].replace("\\", "/")
+    parts = head.split("/")
+    if len(parts) >= 2 and parts[-2] == "bin" and parts[-1].startswith("python"):
+        declared = Path(cwd) / command[0]
+        parts[-2:] = ["Scripts", "python.exe"]
+        if (Path(cwd) / "/".join(parts)).exists() or not declared.is_file():
+            command[0] = "/".join(parts)
+            return command
+        # No Windows interpreter exists, but the declared ``bin/python`` is a
+        # real file (a launcher script): run that file under its interpreter.
+    script = Path(cwd) / command[0]
+    if not script.is_file():
+        return command
+    interpreter = _shebang_interpreter(script)
+    if interpreter is None:
+        return command
+    if interpreter.startswith("python"):
+        resolved: str | None = sys.executable
+    elif interpreter in {"sh", "bash"}:
+        resolved = _windows_posix_shell()
+    else:
+        resolved = shutil.which(interpreter)
+    if resolved is None:
+        raise OSError(
+            f"cannot run {command[0]}: its shebang interpreter {interpreter!r} "
+            "is not available on Windows"
+        )
+    return [resolved, *command]
+
+
+def pre_commit_launcher(env: Mapping[str, str] | None = None) -> list[str]:
+    """The argv prefix that starts pre-commit on this host.
+
+    A ``pre-commit`` console script reachable on ``PATH`` wins.  When it is not
+    (a venv ``Scripts`` directory that is not on ``PATH``, common on Windows),
+    the running interpreter launches the same package with ``-m pre_commit``.
+    """
+    path = (env if env is not None else os.environ).get("PATH")
+    found = shutil.which("pre-commit", path=path)
+    if found:
+        return [found]
+    return [sys.executable, "-m", "pre_commit"]

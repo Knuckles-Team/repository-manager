@@ -318,7 +318,8 @@ def _portable_path(value: str, *, workspace_root: Path) -> str:
     """Parameterize an absolute workspace path without retaining its prefix."""
 
     candidate = Path(value)
-    if not candidate.is_absolute():
+    # A rooted path without a drive (``/x``) is absolute in intent on Windows.
+    if not (candidate.is_absolute() or value.startswith(("/", "\\"))):
         return value
     try:
         relative = candidate.relative_to(workspace_root)

@@ -41,6 +41,7 @@ from repository_manager.development import RepositoryIdentity
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+_DRIVE_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:/")
 _SAFE_TEXT_RE = re.compile(r"^[^\x00-\x1f\x7f\x80-\x9f]+$")
 _REF_FORBIDDEN_RE = re.compile(r"[\x00-\x20~^:?*\\\[]")
 _REF_INJECTION_RE = re.compile(r"[;|&$`'\"()<>\[\]{}]")
@@ -253,7 +254,9 @@ def _path(value: object, field_name: str) -> str:
     """Validate an internal trusted canonical path without exposing it."""
 
     result = _text(value, field_name, maximum=_MAX_PATH_BYTES)
-    if not result.startswith("/") or "\x00" in result or "/../" in f"/{result}/":
+    normalized = result.replace("\\", "/")
+    absolute = normalized.startswith("/") or _DRIVE_ABSOLUTE_RE.match(normalized)
+    if not absolute or "\x00" in result or "/../" in f"/{normalized}/":
         raise LandingReservationError(f"{field_name} is invalid")
     return result
 

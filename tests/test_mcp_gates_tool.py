@@ -25,6 +25,7 @@ this layer:
 import concurrent.futures
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -33,6 +34,8 @@ import pytest
 
 from repository_manager.mcp_server import _jobs, _jobs_lock, get_mcp_instance
 from tests.conftest import isolated_git_subprocess_env
+
+PY = Path(sys.executable).as_posix()  # portable interpreter token
 
 #: Fixed-duration work each heavy-only hook performs -- AFTER it has cleared
 #: the rendezvous barrier below, so this sleep is provably shared by every
@@ -66,10 +69,11 @@ _HEAVY_POLL_TIMEOUT_S = 90.0
 #: once per test to a shared file (see ``_write_barrier_script``) and
 #: invoked with per-repo argv rather than embedded per-repo, so the barrier
 #: logic itself is proven identical across repos and lives in one place.
-_BARRIER_HOOK_SCRIPT = '''\
+_BARRIER_HOOK_SCRIPT = """\
 import pathlib
 import sys
 import time
+
 
 
 def main() -> int:
@@ -107,7 +111,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-'''
+"""
 
 
 def _write_barrier_script(tmp_path: Path) -> Path:
@@ -133,7 +137,7 @@ def _heavy_hook_entry(
     a function that never had a lower baseline to regress from.
     """
     argv = (
-        "python3",
+        PY,
         str(barrier_script),
         repo_name,
         str(barrier_dir),
@@ -180,7 +184,7 @@ def _init_tiered_repo(
         "  hooks:\n"
         "  - id: fast-only\n"
         "    name: fast-only\n"
-        "    entry: python3 -c \"print('FAST_ONLY_RAN')\"\n"
+        "    entry: " + PY + " -c \"print('FAST_ONLY_RAN')\"\n"
         "    language: system\n"
         "    always_run: true\n"
         "    pass_filenames: false\n"
@@ -296,8 +300,12 @@ def _assert_heavy_hooks_overlapped(barrier_dir: Path, repo_names: list[str]) -> 
     barrier blocks it) it would never clear the barrier at all and
     ``_read_barrier_timestamp`` above would already have failed loudly.
     """
-    starts = {name: _read_barrier_timestamp(barrier_dir, name, "start") for name in repo_names}
-    ends = {name: _read_barrier_timestamp(barrier_dir, name, "end") for name in repo_names}
+    starts = {
+        name: _read_barrier_timestamp(barrier_dir, name, "start") for name in repo_names
+    }
+    ends = {
+        name: _read_barrier_timestamp(barrier_dir, name, "end") for name in repo_names
+    }
     latest_start = max(starts.values())
     earliest_end = min(ends.values())
     assert latest_start < earliest_end, (
@@ -462,11 +470,15 @@ async def test_rm_gates_run_is_parallel_and_stage_scoped(tmp_path, monkeypatch):
         _jobs.clear()
 
     try:
-        with patch("repository_manager.mcp_server.get_git_instance", return_value=mock_git):
+        with patch(
+            "repository_manager.mcp_server.get_git_instance", return_value=mock_git
+        ):
             rm_gates = await _get_rm_gates_tool()
 
             await _run_and_verify_fast_stage(rm_gates)
-            heavy_jobs = await _run_and_verify_heavy_stage(rm_gates, barrier_dir, repo_names)
+            heavy_jobs = await _run_and_verify_heavy_stage(
+                rm_gates, barrier_dir, repo_names
+            )
             await _verify_profile(rm_gates)
             one_repo = next(iter(heavy_jobs))
             await _verify_explain(rm_gates, one_repo)

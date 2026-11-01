@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 from pathlib import Path
 
 import pytest
@@ -76,6 +77,7 @@ class FakeForge:
         self.hook_files: list[str] = []
         self.cwds: list[str] = []
         self.bumped_before: list[bool] = []
+        self._record_lock = threading.Lock()
 
     def _repo(self, cwd: Path | None) -> str:
         assert cwd is not None
@@ -86,11 +88,15 @@ class FakeForge:
 
     def __call__(self, argv, *, cwd=None, timeout=None):  # noqa: C901
         argv = list(argv)
-        self.calls.append(argv)
-        self.cwds.append(str(cwd))
         pp = Path(cwd) / "pyproject.toml" if cwd else None
         text = pp.read_text() if pp and pp.is_file() else ""
-        self.bumped_before.append('version = "1.2.4"' in text or 'version = "2.0.1"' in text)
+        bumped = 'version = "1.2.4"' in text or 'version = "2.0.1"' in text
+        # The engine runs repositories on a thread pool: the three parallel
+        # call records must be appended as one step to stay index-aligned.
+        with self._record_lock:
+            self.calls.append(argv)
+            self.cwds.append(str(cwd))
+            self.bumped_before.append(bumped)
         ok = Completed(0)
         if argv[:3] == ["gh", "repo", "list"]:
             return Completed(0, "alpha-mcp\nbeta-mcp\nnodep-mcp\n")
@@ -286,7 +292,9 @@ def test_resume_is_idempotent_no_duplicate_pr_or_double_bump(env):
     after = len([c for c in forge.calls if c[:3] == ["gh", "pr", "create"]])
     assert before == after == 2
     assert {r["state"] for r in rows} == {"pr_open"}
-    assert len([c for c in forge.calls if c[0] == "uv"]) == 4  # lock + post-bump relock, once per repo
+    assert (
+        len([c for c in forge.calls if c[0] == "uv"]) == 4
+    )  # lock + post-bump relock, once per repo
 
 
 def test_existing_open_pr_is_adopted_not_duplicated(env):

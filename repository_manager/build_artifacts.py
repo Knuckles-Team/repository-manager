@@ -631,9 +631,14 @@ def _fsync_file(path: Path) -> None:
 
     descriptor: int | None = None
     try:
+        if pfs.is_link(path):
+            # Windows has no O_NOFOLLOW; refuse links explicitly.
+            raise ArtifactStoreError(f"cannot fsync non-regular artifact {path}")
+        # Windows ``_commit`` rejects a read-only descriptor (EBADF).
+        access = os.O_RDWR if pfs.is_windows() else os.O_RDONLY
         descriptor = os.open(
             path,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+            access | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
         )
         file_stat = os.fstat(descriptor)
         if not stat.S_ISREG(file_stat.st_mode):
@@ -644,7 +649,7 @@ def _fsync_file(path: Path) -> None:
             os.close(descriptor)
             descriptor = None
     except OSError as exc:
-        raise ArtifactStoreError(f"could not fsync artifact {path}") from exc
+        raise ArtifactStoreError(f"could not fsync artifact {path}: {exc}") from exc
     finally:
         if descriptor is not None:
             try:
@@ -711,6 +716,9 @@ def _key_component(key: str) -> str:
     if Path(key).name != key or "/" in key or "\\" in key or "\x00" in key:
         raise ArtifactStoreError("artifact key must not contain path separators")
     return key
+
+
+key_entry_name = pfs.cache_entry_name
 
 
 def _manifest_attempt(manifest: Mapping[str, Any]) -> int | None:
@@ -1348,7 +1356,7 @@ def _stage_one_artifact(
             "artifact source escapes its declared output root"
         ) from exc
     relative = source.relative_to(paths.output_root)
-    relative_name = str(relative)
+    relative_name = relative.as_posix()  # manifests are portable across hosts
     if relative_name in accumulator.seen:
         return
     accumulator.seen.add(relative_name)
@@ -1445,10 +1453,10 @@ class BuildArtifactStore:
         self.quarantine_root.mkdir(parents=True, exist_ok=True)
 
     def manifest_path(self, key: str) -> Path:
-        return self.root / _key_component(key) / MANIFEST_NAME
+        return self.root / key_entry_name(_key_component(key)) / MANIFEST_NAME
 
     def _key_dir(self, key: str) -> Path:
-        return self.root / _key_component(key)
+        return self.root / key_entry_name(_key_component(key))
 
     def read_manifest(self, key: str) -> dict[str, Any] | None:
         path = self.manifest_path(key)
@@ -1885,7 +1893,7 @@ class BuildArtifactStore:
                     state.cleanup_stage = True
                     return existing
                 self._require_fence(fence_check)
-                final_dir = self.root / staged.key
+                final_dir = self.root / key_entry_name(staged.key)
                 temporary_dir = self.root / (
                     f".{_safe(staged.key)}.publish-{uuid.uuid4().hex}"
                 )
@@ -2025,7 +2033,14 @@ class BuildArtifactStore:
         for directory in sorted(directories):
             manifest = self.read_manifest(directory.name)
             if manifest is not None:
-                entries.append((directory.name, manifest))
+                recorded = manifest.get("key")
+                key = (
+                    recorded
+                    if isinstance(recorded, str)
+                    and key_entry_name(recorded) == directory.name
+                    else directory.name
+                )
+                entries.append((key, manifest))
         return tuple(entries)
 
     def _authorize_entry_removal(

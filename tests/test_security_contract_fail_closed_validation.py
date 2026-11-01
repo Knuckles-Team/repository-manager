@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -29,9 +30,7 @@ MODULE_PATH = ROOT / "scripts" / "security_contract.py"
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location(
-        "security_contract_char", MODULE_PATH
-    )
+    spec = importlib.util.spec_from_file_location("security_contract_char", MODULE_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -67,7 +66,9 @@ def _valid_contract_dict() -> dict:
     }
 
 
-def _write_contract(root: Path, contract: dict, name: str = "security-contract.json") -> str:
+def _write_contract(
+    root: Path, contract: dict, name: str = "security-contract.json"
+) -> str:
     (root / name).write_text(json.dumps(contract), encoding="utf-8")
     return name
 
@@ -241,7 +242,9 @@ def _sbom(components: list[dict]) -> dict:
 
 
 def test_check_licenses_accepts_only_allowed_licenses(tmp_path):
-    contract = sc.load_contract(tmp_path, _write_contract(tmp_path, _valid_contract_dict()))
+    contract = sc.load_contract(
+        tmp_path, _write_contract(tmp_path, _valid_contract_dict())
+    )
     sbom_name = "sbom.json"
     (tmp_path / sbom_name).write_text(
         json.dumps(_sbom([{"licenses": [{"expression": "MIT"}]}])), encoding="utf-8"
@@ -253,33 +256,47 @@ def test_check_licenses_accepts_only_allowed_licenses(tmp_path):
 
 
 def test_check_licenses_rejects_denied_license(tmp_path):
-    contract = sc.load_contract(tmp_path, _write_contract(tmp_path, _valid_contract_dict()))
+    contract = sc.load_contract(
+        tmp_path, _write_contract(tmp_path, _valid_contract_dict())
+    )
     sbom_name = "sbom.json"
     (tmp_path / sbom_name).write_text(
         json.dumps(_sbom([{"licenses": [{"expression": "GPL-3.0-only"}]}])),
         encoding="utf-8",
     )
     with pytest.raises(sc.SecurityContractError, match="violates license policy"):
-        sc.check_licenses(tmp_path, contract, sbom_name, "security-results/licenses.json")
+        sc.check_licenses(
+            tmp_path, contract, sbom_name, "security-results/licenses.json"
+        )
     output = json.loads((tmp_path / "security-results" / "licenses.json").read_text())
     assert output["passed"] is False
     assert output["violations"] == 1
 
 
 def test_check_licenses_rejects_non_cyclonedx_format(tmp_path):
-    contract = sc.load_contract(tmp_path, _write_contract(tmp_path, _valid_contract_dict()))
+    contract = sc.load_contract(
+        tmp_path, _write_contract(tmp_path, _valid_contract_dict())
+    )
     sbom_name = "sbom.json"
-    (tmp_path / sbom_name).write_text(json.dumps({"bomFormat": "SPDX"}), encoding="utf-8")
+    (tmp_path / sbom_name).write_text(
+        json.dumps({"bomFormat": "SPDX"}), encoding="utf-8"
+    )
     with pytest.raises(sc.SecurityContractError, match="not CycloneDX"):
-        sc.check_licenses(tmp_path, contract, sbom_name, "security-results/licenses.json")
+        sc.check_licenses(
+            tmp_path, contract, sbom_name, "security-results/licenses.json"
+        )
 
 
 def test_check_licenses_treats_unknown_license_as_failing(tmp_path):
-    contract = sc.load_contract(tmp_path, _write_contract(tmp_path, _valid_contract_dict()))
+    contract = sc.load_contract(
+        tmp_path, _write_contract(tmp_path, _valid_contract_dict())
+    )
     sbom_name = "sbom.json"
     (tmp_path / sbom_name).write_text(json.dumps(_sbom([{}])), encoding="utf-8")
     with pytest.raises(sc.SecurityContractError, match="violates license policy"):
-        sc.check_licenses(tmp_path, contract, sbom_name, "security-results/licenses.json")
+        sc.check_licenses(
+            tmp_path, contract, sbom_name, "security-results/licenses.json"
+        )
     output = json.loads((tmp_path / "security-results" / "licenses.json").read_text())
     assert output["unknown"] == 1
     assert output["passed"] is False
@@ -355,6 +372,15 @@ def _hook_contract(argv: list[str]) -> dict:
     return contract
 
 
+def _refused_on_windows(tmp_path, contract) -> bool:
+    """run-hook needs Unix resource limits; on Windows it must refuse clearly."""
+    if os.name != "nt":
+        return False
+    with pytest.raises(sc.SecurityContractError, match="unavailable on Windows"):
+        sc.run_hook(tmp_path, contract, "fuzz", "security-results")
+    return True
+
+
 def test_run_hook_accepts_a_passing_hook(tmp_path):
     evidence_path = tmp_path / "security-results" / "fuzz.json"
     script = (
@@ -365,11 +391,15 @@ def test_run_hook_accepts_a_passing_hook(tmp_path):
         "'cases': 10, 'failures': 0, 'crashes': 0}))"
     )
     contract = _hook_contract(["python3", "-c", script])
+    if _refused_on_windows(tmp_path, contract):
+        return
     sc.run_hook(tmp_path, contract, "fuzz", "security-results")
 
 
 def test_run_hook_rejects_nonzero_exit(tmp_path):
     contract = _hook_contract(["python3", "-c", "import sys; sys.exit(1)"])
+    if _refused_on_windows(tmp_path, contract):
+        return
     with pytest.raises(sc.SecurityContractError, match="returned a failure"):
         sc.run_hook(tmp_path, contract, "fuzz", "security-results")
 
@@ -390,6 +420,8 @@ def test_run_hook_rejects_evidence_reporting_a_crash(tmp_path):
         "'cases': 10, 'failures': 0, 'crashes': 1}))"
     )
     contract = _hook_contract(["python3", "-c", script])
+    if _refused_on_windows(tmp_path, contract):
+        return
     with pytest.raises(sc.SecurityContractError, match="reported a crash"):
         sc.run_hook(tmp_path, contract, "fuzz", "security-results")
 
@@ -403,9 +435,9 @@ def test_run_hook_rejects_invalid_kind(tmp_path):
 def test_run_hook_rejects_evidence_path_outside_result_root(tmp_path):
     contract = _hook_contract(["python3", "-c", "pass"])
     contract["hooks"]["fuzz"]["evidence"] = "elsewhere/fuzz.json"
-    with pytest.raises(
-        sc.SecurityContractError, match="must stay in the result root"
-    ):
+    if _refused_on_windows(tmp_path, contract):
+        return
+    with pytest.raises(sc.SecurityContractError, match="must stay in the result root"):
         sc.run_hook(tmp_path, contract, "fuzz", "security-results")
 
 

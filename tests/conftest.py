@@ -4,8 +4,32 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
+
+
+def _prefer_git_bash_on_windows() -> None:
+    """Put Git for Windows' POSIX ``bash`` ahead of the WSL launcher.
+
+    ``C:\\Windows\\System32\\bash.exe`` is a WSL shim that fails without an
+    installed distribution; fixtures that run ``bash -c`` need a real shell.
+    """
+    if os.name != "nt":
+        return
+    import shutil
+
+    git = shutil.which("git")
+    if git is None:
+        return
+    root = Path(git).resolve().parent.parent
+    for candidate in (root / "bin", root / "usr" / "bin"):
+        if (candidate / "bash.exe").exists():
+            os.environ["PATH"] = str(candidate) + os.pathsep + os.environ["PATH"]
+            return
+
+
+_prefer_git_bash_on_windows()
 
 #: Env vars a git hook invocation sets that git honors over a subprocess's
 #: `cwd=` -- this repo's own `pre-commit` runs pytest as a `language: system`
@@ -171,6 +195,23 @@ def _isolate_process_state(monkeypatch):
     for name in list(os.environ):
         if name in _GIT_ENV_LEAK_NAMES or name.startswith(_GIT_ENV_LEAK_PREFIXES):
             monkeypatch.delenv(name, raising=False)
+    if sys.platform == "win32":
+        # Fixtures written through text mode become CRLF on Windows, while the
+        # sealed git environments the product runs with ignore the system
+        # core.autocrlf=true default and would read every such file as
+        # modified.  Fixture text is LF so working tree and index agree.
+        original_write_text = Path.write_text
+
+        def write_text_lf(self, data, encoding=None, errors=None, newline=None):
+            return original_write_text(
+                self,
+                data,
+                encoding=encoding,
+                errors=errors,
+                newline="\n" if newline is None else newline,
+            )
+
+        monkeypatch.setattr(Path, "write_text", write_text_lf)
     try:
         yield
     finally:

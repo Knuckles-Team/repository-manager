@@ -19,7 +19,7 @@ import re
 import signal
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 # ``resource`` is POSIX-only; contract validation remains importable on
@@ -308,12 +308,25 @@ def _validate_hook_limits(hook: dict[str, Any]) -> None:
         raise SecurityContractError("security hook case threshold is invalid")
 
 
+def _reference_escapes_root(reference: str) -> bool:
+    """True for a rooted or parent-traversing reference on ANY platform.
+
+    A POSIX-rooted ``/etc/x`` is not absolute to Windows ``Path`` yet still
+    replaces the root when joined, so both flavours are checked.
+    """
+    posix, windows = PurePosixPath(reference), PureWindowsPath(reference)
+    return (
+        Path(reference).is_absolute()
+        or posix.is_absolute()
+        or windows.is_absolute()
+        or bool(windows.drive or windows.root)
+        or ".." in posix.parts
+        or ".." in windows.parts
+    )
+
+
 def _validate_hook_evidence_reference(evidence: Any) -> None:
-    if (
-        not isinstance(evidence, str)
-        or Path(evidence).is_absolute()
-        or ".." in Path(evidence).parts
-    ):
+    if not isinstance(evidence, str) or _reference_escapes_root(evidence):
         raise SecurityContractError("security hook evidence path is invalid")
 
 
@@ -471,7 +484,9 @@ def _prepare_result_root(root: Path, result_root: str) -> Path:
     return resolved_results
 
 
-def _hook_evidence_path(root: Path, resolved_results: Path, hook: dict[str, Any]) -> Path:
+def _hook_evidence_path(
+    root: Path, resolved_results: Path, hook: dict[str, Any]
+) -> Path:
     evidence = root.joinpath(hook["evidence"])
     try:
         evidence.relative_to(resolved_results)
@@ -607,7 +622,7 @@ def _classify_component_licenses(
 def _write_license_evidence(
     root: Path, output_reference: str, payload: dict[str, Any]
 ) -> None:
-    if Path(output_reference).is_absolute() or ".." in Path(output_reference).parts:
+    if _reference_escapes_root(output_reference):
         raise SecurityContractError("license evidence path is invalid")
     output = root.joinpath(output_reference)
     try:

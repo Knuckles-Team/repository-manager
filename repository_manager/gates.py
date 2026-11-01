@@ -67,6 +67,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from repository_manager import build_queue, gate_ledger, merge_queue, task_queue
+from repository_manager import portable_fs as pfs
 from repository_manager.execution.process_supervisor import ProcessSupervisor
 from repository_manager.scan_models import HookResult, RepoScanResult
 
@@ -252,7 +253,7 @@ def _run_pre_commit(
 
     scope = ["--files", *files] if files else ["--all-files"]
     argv = [
-        "pre-commit",
+        *pfs.pre_commit_launcher(env),
         "run",
         *(hook_ids or []),
         "--hook-stage",

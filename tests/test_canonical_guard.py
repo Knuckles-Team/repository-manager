@@ -1,3 +1,5 @@
+from tests.portable_paths import SHELL, sh_arg
+
 """Tests for the canonical-checkout guard (CONCEPT:RM-CANON-GUARD) against a
 real git fixture repo -- not a mock of the guard function, the actual git
 state it inspects."""
@@ -29,7 +31,7 @@ class FakeGit:
     ) -> SimpleNamespace:
         del env, timeout, raw_output
         p = subprocess.run(
-            command, shell=True, cwd=path, capture_output=True, text=True
+            sh_arg(command), shell=SHELL, cwd=path, capture_output=True, text=True
         )
         out = (p.stdout + p.stderr).strip()
         return SimpleNamespace(
@@ -39,7 +41,9 @@ class FakeGit:
 
 
 def _run(cmd, cwd):
-    subprocess.run(cmd, shell=True, cwd=cwd, check=True, capture_output=True, text=True)
+    subprocess.run(
+        sh_arg(cmd), shell=SHELL, cwd=cwd, check=True, capture_output=True, text=True
+    )
 
 
 @pytest.fixture
@@ -54,7 +58,9 @@ def repo(tmp_path):
 
 
 def test_clean_tree_proceeds(repo):
-    with guarded_canonical_mutation(FakeGit(), repo, "myrepo", "test-action") as blocked:
+    with guarded_canonical_mutation(
+        FakeGit(), repo, "myrepo", "test-action"
+    ) as blocked:
         assert blocked is None
 
 
@@ -86,13 +92,17 @@ def test_untracked_file_refuses_and_reports(repo, caplog):
             assert blocked is not None
             assert blocked["reason"] == "dirty-canonical-checkout"
             assert "scratch.txt" in blocked["detail"]
-    assert any("REFUSING" in r.message and "myrepo" in r.message for r in caplog.records)
+    assert any(
+        "REFUSING" in r.message and "myrepo" in r.message for r in caplog.records
+    )
 
 
 def test_untracked_and_tracked_together_still_refuses(repo):
     open(os.path.join(repo, "README.md"), "w").write("changed\n")
     open(os.path.join(repo, "scratch.txt"), "w").write("wip\n")
-    with guarded_canonical_mutation(FakeGit(), repo, "myrepo", "test-action") as blocked:
+    with guarded_canonical_mutation(
+        FakeGit(), repo, "myrepo", "test-action"
+    ) as blocked:
         assert blocked is not None
         assert "README.md" in blocked["detail"]
         assert "scratch.txt" in blocked["detail"]
@@ -107,8 +117,8 @@ def test_nothing_mutated_when_refused(repo):
         if blocked is None:
             git.git_action("git checkout other", path=repo)
     branch = subprocess.run(
-        "git rev-parse --abbrev-ref HEAD",
-        shell=True,
+        sh_arg("git rev-parse --abbrev-ref HEAD"),
+        shell=SHELL,
         cwd=repo,
         capture_output=True,
         text=True,
@@ -149,8 +159,8 @@ def test_lease_file_lives_inside_dotgit_and_is_never_dirty(repo):
     with hold_canonical_lease(repo, note="x"):
         assert os.path.exists(os.path.join(repo, ".git", "repository-manager.lease"))
     status = subprocess.run(
-        "git status --porcelain",
-        shell=True,
+        sh_arg("git status --porcelain"),
+        shell=SHELL,
         cwd=repo,
         capture_output=True,
         text=True,

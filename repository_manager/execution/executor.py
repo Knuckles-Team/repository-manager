@@ -25,7 +25,13 @@ from .bounded_log import BoundedLogSink, LogSink, RedactingLogSink, StreamName
 from .cancellation import CancellationToken
 from .process_supervisor import ProcessLike, ProcessSupervisor
 
-_SHELL_META = re.compile(r"[\x00\r\n\t;&|<>$`(){}\[\]`\\]")
+# A backslash is shell escaping on POSIX but the path separator on Windows,
+# where executables are named like ``C:\\Python\\python.exe``.
+_SHELL_META = re.compile(
+    r"[\x00\r\n\t;&|<>$`(){}\[\]`]"
+    if os.name == "nt"
+    else r"[\x00\r\n\t;&|<>$`(){}\[\]`\\]"
+)
 _SENSITIVE_ENV_NAME = re.compile(
     r"(?i)(?:token|secret|password|passwd|api[_-]?key|private[_-]?key|"
     r"authorization|credential|access[_-]?key|database[_-]?url|dsn|"
@@ -47,6 +53,17 @@ _OPERATIONAL_ENV_NAMES = frozenset(
         "TMPDIR",
         "TMP",
         "TEMP",
+        # Windows processes (including the interpreter) need these to start.
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
         "XDG_CONFIG_HOME",
         "XDG_CACHE_HOME",
         "XDG_DATA_HOME",
@@ -63,15 +80,6 @@ _OPERATIONAL_ENV_NAMES = frozenset(
         "NPM_CONFIG_USERCONFIG",
         "npm_config_cache",
         # Windows process lookup/toolchain compatibility.
-        "SYSTEMROOT",
-        "SYSTEMDRIVE",
-        "WINDIR",
-        "COMSPEC",
-        "PATHEXT",
-        "USERPROFILE",
-        "APPDATA",
-        "LOCALAPPDATA",
-        "PROGRAMDATA",
         "HOMEDRIVE",
         "HOMEPATH",
         "USERNAME",

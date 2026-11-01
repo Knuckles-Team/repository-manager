@@ -48,6 +48,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from repository_manager import portable_fs as pfs
 from repository_manager.eg_work_coordination import (
     EgDevelopmentLaneTransport,
     EgWorkCoordinationUnavailable,
@@ -266,7 +267,7 @@ class NativeLaneAuthority:
         *,
         tenant_ref: str,
         host_ref: str,
-        managed_root: str | Path = "/var/lib/repository-manager/lanes",
+        managed_root: str | Path | None = None,
         quota_policy_name: str = "default",
         quota_policy_version: str = "1",
         clock: Callable[[], datetime] | Any | None = None,
@@ -295,6 +296,12 @@ class NativeLaneAuthority:
         # best-effort SQLite projection (LaneRegistry._project, never an
         # authorization path) retains the real path from the original
         # allocate() call; this is a disclosed v1 residual, not a silent gap.
+        if managed_root is None:
+            managed_root = (
+                pfs.state_home() / "repository-manager" / "lanes"
+                if pfs.is_windows()
+                else Path("/var/lib/repository-manager/lanes")
+            )
         self._managed_root = Path(managed_root)
         self._quota_policy_name = _string(quota_policy_name, name="quota_policy_name")
         self._quota_policy_version = _string(

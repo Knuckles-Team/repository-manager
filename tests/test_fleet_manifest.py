@@ -1,5 +1,6 @@
 """Fleet manifest closure requires every nested repository and declared source."""
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -151,7 +152,7 @@ def test_strict_fleet_mirror_preflight_binds_exact_projections(tmp_path: Path) -
         ),
     )
     source = tmp_path / "workspace.yml"
-    source.write_text(f'path: "{tmp_path}"\n' + source.read_text())
+    source.write_text(f"path: {json.dumps(str(tmp_path))}\n" + source.read_text())
     runtime = tmp_path / "runtime.yml"
     seed = tmp_path / "seed.yml"
     synchronize_workspace_manifest(
@@ -183,7 +184,7 @@ def test_strict_mirror_refuses_unresolved_metadata(tmp_path: Path) -> None:
         ),
     )
     source = tmp_path / "workspace.yml"
-    source.write_text(f'path: "{tmp_path}"\n' + source.read_text())
+    source.write_text(f"path: {json.dumps(str(tmp_path))}\n" + source.read_text())
     runtime = tmp_path / "runtime.yml"
     seed = tmp_path / "seed.yml"
     synchronize_workspace_manifest(

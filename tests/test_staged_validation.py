@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from repository_manager import portable_fs as pfs
 from repository_manager.development import (
     ExecutionCommand,
     ExecutionOutcome,
@@ -239,8 +241,11 @@ def test_dirty_feedback_tree_uses_safe_commit_and_evaluates_deletion(
             argv = tuple(command.argv)
             self.commands.append(argv)
             started = datetime.now(UTC)
+            launch = list(argv)
+            if launch[0] == "pre-commit":
+                launch[:1] = pfs.pre_commit_launcher()
             completed = subprocess.run(
-                list(argv),
+                launch,
                 cwd=command.workdir,
                 capture_output=True,
                 text=True,
@@ -289,7 +294,7 @@ def test_dirty_feedback_tree_uses_safe_commit_and_evaluates_deletion(
         "  hooks:\n"
         "  - id: record-staged\n"
         "    name: record staged\n"
-        f"    entry: python {hook}\n"
+        f"    entry: {Path(sys.executable).as_posix()} {hook.as_posix()}\n"
         "    language: system\n"
         "    pass_filenames: false\n"
         "    always_run: true\n",
@@ -572,7 +577,8 @@ def test_changed_path_derivation_preserves_deletion_rename_and_odd_names(
     tmp_path: Path,
 ) -> None:
     repo, sha = _repo(tmp_path)
-    odd_name = "odd\tname.py"
+    # A tab cannot be part of a Windows file name.
+    odd_name = "odd name.py" if sys.platform == "win32" else "odd\tname.py"
     (repo / odd_name).write_text("odd\n", encoding="utf-8")
     (repo / "removed.txt").unlink()
     profile = ValidationProfile(

@@ -41,6 +41,7 @@ from tests.materialization.fakes import (
     FakeMergeQueuePort,
     InMemoryReceiptStore,
 )
+from tests.portable_paths import SHELL, sh_arg
 
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 FUTURE = NOW + timedelta(hours=1)
@@ -59,7 +60,11 @@ class FakeGit:
     ):
         del env, timeout, raw_output
         proc = subprocess.run(
-            command, shell=True, cwd=path or self.path, capture_output=True, text=True
+            sh_arg(command),
+            shell=SHELL,
+            cwd=path or self.path,
+            capture_output=True,
+            text=True,
         )
         out = (proc.stdout + proc.stderr).strip()
         return SimpleNamespace(
@@ -118,14 +123,32 @@ def _make_patch(
             if content is None:
                 target.unlink()
             elif symlink:
-                target.unlink(missing_ok=True)
-                target.symlink_to(content)
+                # Stage a mode-120000 entry through the index so the fixture
+                # does not depend on the platform's symlink support.
+                blob = (
+                    subprocess.run(
+                        ["git", "hash-object", "-w", "--stdin"],
+                        cwd=str(scratch),
+                        input=content.encode(),
+                        capture_output=True,
+                        check=True,
+                    )
+                    .stdout.decode()
+                    .strip()
+                )
+                _git(["rm", "-q", "--cached", "--", rel], scratch)
+                _git(
+                    ["update-index", "--add", "--cacheinfo", f"120000,{blob},{rel}"],
+                    scratch,
+                )
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(
                     content.encode("latin-1") if binary else content.encode()
                 )
         diff_args = ["diff", "--no-color"] + (["--binary"] if binary else [])
+        if symlink:
+            diff_args.append("--cached")
         diff = _git(diff_args, scratch, check=False)
         return diff.stdout
     finally:

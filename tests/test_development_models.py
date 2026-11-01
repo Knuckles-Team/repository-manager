@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.portable_paths import native_abs
+
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -65,10 +67,10 @@ NOW = datetime(2026, 8, 8, 23, 0, tzinfo=UTC)
 def _repository() -> RepositoryIdentity:
     return RepositoryIdentity(
         repository_id="repo:agent-webui",
-        canonical_path="/home/app/workspace/agent-packages/agent-webui",
+        canonical_path=native_abs("/home/app/workspace/agent-packages/agent-webui"),
         configured_roots=(
-            "/home/app/workspace",
-            "/home/app/worktrees/repository-manager",
+            native_abs("/home/app/workspace"),
+            native_abs("/home/app/worktrees/repository-manager"),
         ),
     )
 
@@ -195,7 +197,7 @@ def test_canonical_serialization_is_stable_for_mapping_order_and_round_trips() -
         _artifact(),
         _log(),
         ExecutionCommand(
-            argv=("python", "-m", "pytest"), workdir="/home/app/workspace"
+            argv=("python", "-m", "pytest"), workdir=native_abs("/home/app/workspace")
         ),
         _execution_result(),
         ValidationEvidence(
@@ -218,7 +220,9 @@ def test_canonical_serialization_is_stable_for_mapping_order_and_round_trips() -
             repository=_repository(),
             branch="feature/one",
             base_sha=SHA0,
-            worktree_path="/home/app/worktrees/repository-manager/rmdd-01-contracts-0808",
+            worktree_path=native_abs(
+                "/home/app/worktrees/repository-manager/rmdd-01-contracts-0808"
+            ),
             owner_id="agent:one",
             session_id="session:one",
             created_at=NOW,
@@ -285,13 +289,13 @@ def test_target_path_ref_and_command_boundaries_fail_closed() -> None:
     with pytest.raises(ValidationError, match="outside configured roots"):
         RepositoryIdentity(
             repository_id="repo:bad",
-            canonical_path="/etc",
-            configured_roots=("/home/app/workspace",),
+            canonical_path=native_abs("/etc"),
+            configured_roots=(native_abs("/home/app/workspace"),),
         )
     with pytest.raises(ValidationError, match="parent traversal"):
         RepositoryIdentity(
             repository_id="repo:bad",
-            canonical_path="/home/app/workspace/../etc",
+            canonical_path=native_abs("/home/app/workspace/../etc"),
         )
     with pytest.raises(ValidationError, match="named ref"):
         Candidate(
@@ -308,7 +312,7 @@ def test_target_path_ref_and_command_boundaries_fail_closed() -> None:
         )
     with pytest.raises(ValidationError, match="sequence"):
         ExecutionCommand.model_validate(
-            {"argv": "python -m pytest", "workdir": "/home/app/workspace"}
+            {"argv": "python -m pytest", "workdir": native_abs("/home/app/workspace")}
         )
     with pytest.raises(ValidationError, match="inventory alias"):
         TargetPolicy(kind=TargetKind.INVENTORY_ALIAS)
@@ -446,8 +450,8 @@ def test_workspace_release_plan_freezes_dag_and_rejects_cycles() -> None:
         project_id="project:a",
         repository=RepositoryIdentity(
             repository_id="repo:a",
-            canonical_path="/home/app/workspace/projects/a",
-            configured_roots=("/home/app/workspace",),
+            canonical_path=native_abs("/home/app/workspace/projects/a"),
+            configured_roots=(native_abs("/home/app/workspace"),),
         ),
         tree_sha=SHA0,
         current_version="1.0.0",
@@ -457,8 +461,8 @@ def test_workspace_release_plan_freezes_dag_and_rejects_cycles() -> None:
         project_id="project:b",
         repository=RepositoryIdentity(
             repository_id="repo:b",
-            canonical_path="/home/app/workspace/projects/b",
-            configured_roots=("/home/app/workspace",),
+            canonical_path=native_abs("/home/app/workspace/projects/b"),
+            configured_roots=(native_abs("/home/app/workspace"),),
         ),
         tree_sha=SHA1,
         current_version="2.0.0",

@@ -9,6 +9,8 @@ evidence and cannot authorize CP3.
 
 from __future__ import annotations
 
+from tests.portable_paths import native_abs
+
 import inspect
 import json
 from collections.abc import Callable
@@ -52,7 +54,7 @@ SHA_ALT = "5" * 40
 DIGEST = "a" * 64
 FENCE = "landing-fence-1"
 REPOSITORY_ID = "repository:workspace/one"
-CANONICAL_PATH = "/tmp/workspace/agent-packages/agents/repository-manager"
+CANONICAL_PATH = native_abs("/tmp/workspace/agent-packages/agents/repository-manager")
 
 
 def _repository(
@@ -738,8 +740,8 @@ def test_proof_reference_is_opaque_and_rehashed_shape_is_not_authority() -> None
 def test_request_digest_binds_resolved_identity_without_exposing_path() -> None:
     request = _request()
     controller = ControllerIdentity("controller:one", "owner:one", "tenant:one", 1)
-    first = _resolved(canonical_path="/tmp/one/same")
-    second = _resolved(canonical_path="/tmp/two/same")
+    first = _resolved(canonical_path=native_abs("/tmp/one/same"))
+    second = _resolved(canonical_path=native_abs("/tmp/two/same"))
     assert first.repository_id == second.repository_id
     assert first.digest() != second.digest()
     assert request.digest(first, controller) != request.digest(second, controller)
