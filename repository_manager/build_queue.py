@@ -67,6 +67,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from repository_manager import portable_fs as pfs
 from repository_manager import task_queue as tq
 from repository_manager.config_schema import (
     ArtifactContract,
@@ -731,7 +732,7 @@ def _artifact_root(path: Path | str | None = None) -> Path:
 
 
 def _manifest_path(key_digest: str, path: Path | str | None = None) -> Path:
-    return _artifact_root(path) / key_digest / "manifest.json"
+    return _artifact_root(path) / pfs.cache_entry_name(key_digest) / "manifest.json"
 
 
 def _read_manifest(
@@ -785,7 +786,7 @@ def _resolve_expected_artifact_root(
     if path is None or not isinstance(expected_key, str) or not expected_key:
         return True, None
     try:
-        key_dir = _artifact_root(path) / expected_key
+        key_dir = _artifact_root(path) / pfs.cache_entry_name(expected_key)
         artifacts_dir = key_dir / "artifacts"
         if key_dir.is_symlink() or artifacts_dir.is_symlink():
             return False, None
@@ -1042,7 +1043,7 @@ def _publish_artifacts(
         workdir.relative_to(tree)
     except ValueError as exc:
         raise BuildQueueError("legacy artifact workdir escapes the build tree") from exc
-    dest_dir = _artifact_root(path) / key_digest / "artifacts"
+    dest_dir = _artifact_root(path) / pfs.cache_entry_name(key_digest) / "artifacts"
     _reject_symlink_path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     published: list[dict[str, Any]] = []

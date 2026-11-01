@@ -67,7 +67,7 @@ def _counter_spec(counter_path: Path) -> str:
         base: main
         specs:
           - name: widget
-            command: ["bash", "-c", "echo built >> {counter_path}; echo payload > out.txt"]
+            command: ["bash", "-c", "echo built >> {Path(counter_path).as_posix()}; echo payload > out.txt"]
             workdir: "."
             cache_key_paths: ["src.txt"]
             artifacts: ["out.txt"]
@@ -219,7 +219,7 @@ def test_two_concurrent_same_key_requests_build_exactly_once(tmp_path: Path):
             base: main
             specs:
               - name: widget
-                command: ["bash", "-c", "sleep 0.5; echo built >> {counter}; echo payload > out.txt"]
+                command: ["bash", "-c", "sleep 0.5; echo built >> {Path(counter).as_posix()}; echo payload > out.txt"]
                 workdir: "."
                 cache_key_paths: ["src.txt"]
                 artifacts: ["out.txt"]

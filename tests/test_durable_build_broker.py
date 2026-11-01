@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from collections.abc import Callable, Mapping
@@ -683,7 +684,7 @@ def test_validate_manifest_caps_sparse_bytes_and_fsync_refuses_symlinks(
 ) -> None:
     store = BuildArtifactStore(tmp_path / "cache")
     key = "v2:oversized-file"
-    artifact_dir = store.root / key / "artifacts"
+    artifact_dir = store._key_dir(key) / "artifacts"
     artifact_dir.mkdir(parents=True)
     artifact = artifact_dir / "large.bin"
     with artifact.open("wb") as handle:
@@ -826,7 +827,7 @@ def test_publish_quarantines_orphan_final_directory_before_republish(
     (output / "artifact.txt").write_text("ok", encoding="utf-8")
     store = BuildArtifactStore(tmp_path / "cache")
     key = "v2:orphan"
-    orphan = store.root / key / "artifacts"
+    orphan = store._key_dir(key) / "artifacts"
     orphan.mkdir(parents=True)
     (orphan / "leftover").write_text("crash", encoding="utf-8")
     staged = store.stage(
@@ -1797,7 +1798,7 @@ def test_disk_admission_refusal_happens_before_executor_process(
 def test_gc_protects_live_pinned_waited_and_running_keys(tmp_path: Path) -> None:
     store = BuildArtifactStore(tmp_path / "cache")
     key = "v2:protected"
-    entry = store.root / key
+    entry = store._key_dir(key)
     entry.mkdir()
     (entry / "manifest.json").write_text(
         '{"schema":"build-artifact:v2","key":"v2:protected",'
@@ -1865,11 +1866,11 @@ def test_gc_probe_fails_closed_and_stable_identity_does_not_use_basename(
     second_root.mkdir(parents=True)
     assert bq.stable_repository_id(first) != bq.stable_repository_id(second_root)
     store = BuildArtifactStore(tmp_path / "cache")
-    (store.root / "v2:gc" / "artifacts").mkdir(parents=True)
-    (store.root / "v2:gc" / "artifacts" / "x").write_text("x", encoding="utf-8")
-    (store.root / "v2:gc" / "manifest.json").write_text(
+    (store._key_dir("v2:gc") / "artifacts").mkdir(parents=True)
+    (store._key_dir("v2:gc") / "artifacts" / "x").write_text("x", encoding="utf-8")
+    (store._key_dir("v2:gc") / "manifest.json").write_text(
         f'{{"schema":"build-artifact:v2","key":"v2:gc","publication_state":"committed",'
-        f'"artifacts":[{{"stored_at":"{store.root / "v2:gc" / "artifacts" / "x"}",'
+        f'"artifacts":[{{"stored_at":{json.dumps(str(store._key_dir("v2:gc") / "artifacts" / "x"))},'
         '"sha256":"2d711642b726b04401627ca9fbac32f5da7e1e1f9b9f0f3f8f2f7b9b1b9b9b9b9",'
         '"bytes":1}]}',
         encoding="utf-8",
@@ -1881,7 +1882,7 @@ def test_artifact_manifest_and_root_scan_bounds_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = BuildArtifactStore(tmp_path / "cache")
-    oversized = store.root / "v2:oversized"
+    oversized = store._key_dir("v2:oversized")
     oversized.mkdir()
     (oversized / "manifest.json").write_bytes(
         b"{" + b'"x":"' + b"x" * (1 << 20) + b'"}'
@@ -1889,7 +1890,7 @@ def test_artifact_manifest_and_root_scan_bounds_fail_closed(
     assert store.read_manifest("v2:oversized") is None
 
     (store.root / ".hidden-entry").mkdir()
-    (store.root / "v2:visible-entry").mkdir()
+    (store._key_dir("v2:visible-entry")).mkdir()
     monkeypatch.setattr(artifact_module, "_MAX_SCAN_ENTRIES", 3)
     with pytest.raises(ArtifactStoreError, match="entry scan"):
         store.iter_entries()

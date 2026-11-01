@@ -96,6 +96,15 @@ def file_flags(flags: int) -> int:
     return flags | getattr(os, "O_BINARY", 0)
 
 
+def cache_entry_name(key: str) -> str:
+    """Directory name for a cache key such as ``v2:<digest>``.
+
+    NTFS rejects ``:`` in a path component, so Windows stores ``v2-<digest>``;
+    POSIX keeps the key unchanged.
+    """
+    return key.replace(":", "-") if is_windows() else key
+
+
 def open_directory(name: str, parent_fd: int | None = None) -> int:
     """Open one directory (relative to ``parent_fd``) without following links."""
     if native_dir_fd():
