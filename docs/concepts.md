@@ -2,7 +2,7 @@
 
 > **Prefix**: `CONCEPT:RM-*`
 > **Version**: 1.18.0
-> **Bridge**: [`CONCEPT:AU-ECO.messaging.native-backend-abstraction`](https://github.com/Knuckles-Team/scion-sdk/blob/main/docs/concepts.md) (Unified Toolkit Ingestion)
+> **Bridge**: [`CONCEPT:MERISTEM-ECO.messaging.native-backend-abstraction`](https://github.com/Knuckles-Team/scion-sdk/blob/main/docs/concepts.md) (Unified Toolkit Ingestion)
 
 ---
 
@@ -22,14 +22,14 @@
 
 | Concept ID | Name | Origin |
 |------------|------|--------|
-| `CONCEPT:AU-ECO.messaging.native-backend-abstraction` | Unified Toolkit Ingestion | scion-sdk |
-| `CONCEPT:AU-ORCH.adapter.hot-cache-invalidation` | Confidence-Gated Router | scion-sdk |
-| `CONCEPT:AU-OS.config.secrets-authentication` | Prompt Injection Defense | scion-sdk |
-| `CONCEPT:AU-OS.state.cognitive-scheduler-preemption` | Cognitive Scheduler | scion-sdk |
-| `CONCEPT:AU-OS.governance.reactive-multi-axis-budget` | Guardrail Engine | scion-sdk |
-| `CONCEPT:AU-OS.governance.wasm-micro-agent-sandbox` | Audit Logging | scion-sdk |
-| `CONCEPT:AU-KG.query.object-graph-mapper` | Knowledge Graph Core | scion-sdk |
+| `CONCEPT:MERISTEM-ECO.messaging.native-backend-abstraction` | Unified Toolkit Ingestion | scion-sdk |
+| `CONCEPT:MERISTEM-ORCH.adapter.hot-cache-invalidation` | Confidence-Gated Router | scion-sdk |
+| `CONCEPT:MERISTEM-OS.config.secrets-authentication` | Prompt Injection Defense | scion-sdk |
+| `CONCEPT:MERISTEM-OS.state.cognitive-scheduler-preemption` | Cognitive Scheduler | scion-sdk |
+| `CONCEPT:MERISTEM-OS.governance.reactive-multi-axis-budget` | Guardrail Engine | scion-sdk |
+| `CONCEPT:MERISTEM-OS.governance.wasm-micro-agent-sandbox` | Audit Logging | scion-sdk |
+| `CONCEPT:MERISTEM-KG.query.object-graph-mapper` | Knowledge Graph Core | scion-sdk |
 
 ## Synergy with scion-sdk
 
-This project integrates with `scion-sdk` via `CONCEPT:AU-ECO.messaging.native-backend-abstraction` (Unified Toolkit Ingestion). The `repository_manager` MCP server registers its tools with the scion-sdk FastMCP middleware, enabling automatic discovery, telemetry, and Knowledge Graph ingestion of all RM-* concepts.
+This project integrates with `scion-sdk` via `CONCEPT:MERISTEM-ECO.messaging.native-backend-abstraction` (Unified Toolkit Ingestion). The `repository_manager` MCP server registers its tools with the scion-sdk FastMCP middleware, enabling automatic discovery, telemetry, and Knowledge Graph ingestion of all RM-* concepts.

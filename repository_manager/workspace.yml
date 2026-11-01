@@ -92,7 +92,7 @@ subdirectories:
         - url: https://github.com/Knuckles-Team/egeria-mcp.git
           description: Apache Egeria open-metadata API + MCP Server for Agentic AI!
             Metadata/governance/lineage system-of-record federated with the Medulla
-            KG. CONCEPT:EG-001
+            KG. CONCEPT:MEDULLA-001
         - url: https://github.com/Knuckles-Team/emerald-exchange.git
           description: Emerald Exchange — Unified Finance MCP Server with fully abstracted
             exchange backends for equities, crypto, and derivatives trading. CONCEPT:EE-001

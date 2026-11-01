@@ -17,27 +17,27 @@ than silently succeed.
 ``PARTITION``
     Stop sharing it. Derive a per-lane instance (cargo target dir, pytest
     basetemp, scratch, and a per-lane stash ref instead of ``refs/stash``).
-    CONCEPT:AU-OS.governance.lane-partitioned-resources
+    CONCEPT:MERISTEM-OS.governance.lane-partitioned-resources
 
 ``APPEND-ONLY``
     Stop rewriting it. Each writer appends immutable records to *its own*
     fragment; a reconciler folds the fragments into a generated canonical view.
     Distinct files never merge-conflict and no writer can clobber another's
-    record. CONCEPT:AU-OS.governance.append-only-fragment-fold
+    record. CONCEPT:MERISTEM-OS.governance.append-only-fragment-fold
 
 ``LEASE``
     Announce, then defer. A holder publishes a lease at the scope every lane
     shares; other lanes detect it and **defer instead of proceeding** (relock,
     venv swap, ``pre-commit --all-files``, a reconciliation merge).
-    CONCEPT:AU-OS.governance.shared-scope-lease
+    CONCEPT:MERISTEM-OS.governance.shared-scope-lease
 
 ``READ-ONLY``
     Forbid it. The canonical checkout is not a place agents edit, and no global
     actor may reset a tree holding work it does not own.
-    CONCEPT:AU-OS.governance.canonical-checkout-immutable
+    CONCEPT:MERISTEM-OS.governance.canonical-checkout-immutable
 
 The classification itself is data (``lane_resources.yaml``), not code, so adding a
-resource is a one-row change: CONCEPT:AU-OS.governance.lane-arbitration-classes.
+resource is a one-row change: CONCEPT:MERISTEM-OS.governance.lane-arbitration-classes.
 
 **Why the shared git directory is the arbitration scope.** Every worktree of a
 repository shares one ``--git-common-dir``. That directory is (a) reachable and
@@ -711,7 +711,7 @@ def orphaned_precommit_patches(path: Path | str | None = None) -> list[dict[str,
     return results
 
 
-CARGO_CONFIG_MARKER = "# CONCEPT:AU-OS.governance.lane-partitioned-resources"
+CARGO_CONFIG_MARKER = "# CONCEPT:MERISTEM-OS.governance.lane-partitioned-resources"
 
 
 def _require_default_cargo_binding() -> None:

@@ -188,7 +188,7 @@ EXPECTED_TOOL_NAMES = (
 # Recomputed for RM-RELEASE-R009: phased bump/push tools retired, rm_rollout_{plan,apply,status,release} added.
 # Recomputed for scion-sdk 0.6.4: tool docstrings name scion-sdk.
 BASELINE_CATALOG_SHA256 = (
-    "9e1f4340648da68e51b528c34fdb39ccbf118166e5d3b8c21db9f6241c451642"
+    "47844c665fba14b23b5a008b3736c71c2a3843ed950fc85b2481823e6fa51d75"
 )
 
 

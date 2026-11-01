@@ -44,7 +44,7 @@ def register_misc_tools(mcp: FastMCP, *, context: McpToolContext | None = None) 
         enumerator and pushes them (typed :GitRepository nodes with vcs/clone_url/web_url/
         default_branch provenance) into the knowledge graph via the fast engine client.
         Best-effort: returns ``{"ingested": None}`` when no engine is reachable.
-        CONCEPT:AU-KG.ingest.enterprise-source-extractor.
+        CONCEPT:MERISTEM-KG.ingest.enterprise-source-extractor.
         """
         from repository_manager.kg_ingest import ingest_repositories
         from repository_manager.vcs_enumerator import (

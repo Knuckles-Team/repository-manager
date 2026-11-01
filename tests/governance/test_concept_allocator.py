@@ -21,7 +21,10 @@ def repo(tmp_path: Path) -> Path:
         yaml.safe_dump(
             {
                 "concepts": [
-                    {"id": "AU-KG.compute.registered-feature", "pillar": "AU-KG"},
+                    {
+                        "id": "MERISTEM-KG.compute.registered-feature",
+                        "pillar": "MERISTEM-KG",
+                    },
                 ]
             }
         ),
@@ -32,13 +35,13 @@ def repo(tmp_path: Path) -> Path:
 
 def test_reserve_exact_current_id_and_persist_only_references(repo: Path) -> None:
     rec = ca.reserve_concept_id(
-        "AU-KG.compute.new-feature",
+        "MERISTEM-KG.compute.new-feature",
         session_id="operator-name",
         design_doc="/private/workspace/design.md",
         repo_root=repo,
     )
-    assert rec["id"] == "AU-KG.compute.new-feature"
-    assert rec["slug"] == "AU"
+    assert rec["id"] == "MERISTEM-KG.compute.new-feature"
+    assert rec["slug"] == "MERISTEM"
     assert rec["pillar"] == "KG"
     assert rec["domain"] == "compute"
     assert rec["session_ref"].startswith("pref_concept_session_")
@@ -50,7 +53,12 @@ def test_reserve_exact_current_id_and_persist_only_references(repo: Path) -> Non
 
 @pytest.mark.parametrize(
     "concept_id",
-    ["KG-2.101", "AU-KG.compute", "AUX-KG.compute.feature", "AU-KG.unknown.feature"],
+    [
+        "KG-2.101",
+        "MERISTEM-KG.compute",
+        "A-KG.compute.feature",
+        "MERISTEM-KG.unknown.feature",
+    ],
 )
 def test_noncanonical_or_unregistered_domain_is_rejected(
     repo: Path, concept_id: str
@@ -63,14 +71,14 @@ def test_registry_and_code_ids_cannot_be_reserved(repo: Path) -> None:
     # Built by concatenation, never as a literal marker in this file's own
     # source: a literal one would make this fixture id a LIVE concept for the
     # repo-wide scanner (check_concept_governance.all_registered_concepts), which
-    # is how `AU-KG.compute.code-feature` ended up in the undocumented-concept
+    # is how `MERISTEM-KG.compute.code-feature` ended up in the undocumented-concept
     # backlog with no code behind it. Same trap, same fix, as commit 38a9b918.
     (repo / "scion_sdk" / "feature.py").write_text(
-        "# " + "CONCEPT:" + "AU-KG.compute.code-feature\n", encoding="utf-8"
+        "# " + "CONCEPT:" + "MERISTEM-KG.compute.code-feature\n", encoding="utf-8"
     )
     for concept_id in (
-        "AU-KG.compute.registered-feature",
-        "AU-KG.compute.code-feature",
+        "MERISTEM-KG.compute.registered-feature",
+        "MERISTEM-KG.compute.code-feature",
     ):
         with pytest.raises(ValueError, match="already registered or reserved"):
             ca.reserve_concept_id(concept_id, session_id="s", repo_root=repo)
@@ -78,7 +86,7 @@ def test_registry_and_code_ids_cannot_be_reserved(repo: Path) -> None:
 
 def test_ledger_rejects_raw_identity_and_retired_fields(repo: Path) -> None:
     ca.ledger_path(repo).write_text(
-        "- {id: AU-KG.compute.old-feature, slug: AU, pillar: KG, domain: compute, "
+        "- {id: MERISTEM-KG.compute.old-feature, slug: MERISTEM, pillar: KG, domain: compute, "
         "session: local-operator, reserved_at: '2026-01-01T00:00:00+00:00', "
         "expires_at: '2026-01-02T00:00:00+00:00', status: reserved}\n",
         encoding="utf-8",
@@ -89,7 +97,7 @@ def test_ledger_rejects_raw_identity_and_retired_fields(repo: Path) -> None:
 
 
 def test_open_reservation_blocks_duplicate_and_release_frees_it(repo: Path) -> None:
-    concept_id = "AU-KG.compute.claimed-feature"
+    concept_id = "MERISTEM-KG.compute.claimed-feature"
     ca.reserve_concept_id(concept_id, session_id="s1", repo_root=repo)
     with pytest.raises(ValueError, match="already registered or reserved"):
         ca.reserve_concept_id(concept_id, session_id="s2", repo_root=repo)
@@ -101,7 +109,7 @@ def test_open_reservation_blocks_duplicate_and_release_frees_it(repo: Path) -> N
 
 
 def test_reconcile_marks_landed(repo: Path) -> None:
-    concept_id = "AU-KG.compute.landed-feature"
+    concept_id = "MERISTEM-KG.compute.landed-feature"
     ca.reserve_concept_id(concept_id, session_id="s", repo_root=repo)
     (repo / "scion_sdk" / "feature.py").write_text(
         f"# CONCEPT:{concept_id}\n", encoding="utf-8"
@@ -123,7 +131,7 @@ def test_reconcile_marks_landed_in_a_non_default_scan_root(
     because _default_scan_roots() never walked anything but the one default
     package. This exercises reconcile()'s scan_roots override directly
     rather than depending on a specific extra package existing by default."""
-    concept_id = "AU-KG.compute.gateway-landed-feature"
+    concept_id = "MERISTEM-KG.compute.gateway-landed-feature"
     ca.reserve_concept_id(concept_id, session_id="s", repo_root=repo)
     (repo / "other_package").mkdir()
     (repo / "other_package" / "tracing.py").write_text(
@@ -137,7 +145,7 @@ def test_reconcile_marks_landed_in_a_non_default_scan_root(
 
 
 def test_reconcile_expires_stale_claim(repo: Path) -> None:
-    concept_id = "AU-KG.compute.expired-feature"
+    concept_id = "MERISTEM-KG.compute.expired-feature"
     ca.reserve_concept_id(concept_id, session_id="s", repo_root=repo, ttl_seconds=-1)
     assert ca.reconcile(repo_root=repo)["expired"] == [concept_id]
     assert (
@@ -162,7 +170,7 @@ def _reserve_worker(repo_str: str, concept_id: str, queue: Any) -> None:
 def test_concurrent_duplicate_claim_has_one_winner(repo: Path) -> None:
     ctx = mp.get_context("spawn")
     queue = ctx.Queue()
-    concept_id = "AU-KG.compute.concurrent-feature"
+    concept_id = "MERISTEM-KG.compute.concurrent-feature"
     processes = [
         ctx.Process(target=_reserve_worker, args=(str(repo), concept_id, queue))
         for _ in range(2)

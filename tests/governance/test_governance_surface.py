@@ -58,7 +58,8 @@ def test_registry_paths_are_supplied_by_the_governed_repository(
     concepts = tmp_path / ch.CONCEPTS_YAML_RELPATH
     concepts.parent.mkdir(parents=True)
     concepts.write_text(
-        yaml.safe_dump({"concepts": [{"id": "AU-KG.compute.a"}]}), encoding="utf-8"
+        yaml.safe_dump({"concepts": [{"id": "MERISTEM-KG.compute.a"}]}),
+        encoding="utf-8",
     )
     assert ch.total_concept_count(concepts) == 1
     assert cl.load_lineage(tmp_path / cl.LINEAGE_RELPATH) == cl.Lineage(
@@ -77,11 +78,11 @@ def test_generated_view_check_follows_the_fragment_directory(tmp_path: Path) -> 
 
 
 def test_cli_resolves_a_concept_id(capsys: pytest.CaptureFixture[str]) -> None:
-    exit_code = gov_cli.main(["concept", "resolve", "--id", "AU-KG.compute.a"])
+    exit_code = gov_cli.main(["concept", "resolve", "--id", "MERISTEM-KG.compute.a"])
 
     out = json.loads(capsys.readouterr().out)
     assert exit_code == 0
-    assert (out["slug"], out["pillar"], out["domain"]) == ("AU", "KG", "compute")
+    assert (out["slug"], out["pillar"], out["domain"]) == ("MERISTEM", "KG", "compute")
 
 
 def test_cli_reports_a_missing_id_without_mutating(

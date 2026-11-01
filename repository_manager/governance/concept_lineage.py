@@ -1,7 +1,7 @@
 """Concept lineage — a concept may declare that a *parent* concept documents it.
 
-CONCEPT:AU-OS.governance.concept-lineage-parent-doc — parent-satisfied documentation.
-CONCEPT:AU-OS.governance.concept-lineage-rename — first-class RENAME disposition.
+CONCEPT:MERISTEM-OS.governance.concept-lineage-parent-doc — parent-satisfied documentation.
+CONCEPT:MERISTEM-OS.governance.concept-lineage-rename — first-class RENAME disposition.
 
 Why this exists
 ---------------
@@ -11,8 +11,8 @@ mention it? On 2026-07-31 that audit found **1,039 live concepts with no design
 doc**, clustered into just 80 ``pillar.domain`` groups. Read naively, that is a
 demand for 1,039 design documents.
 
-It is not. Auditing one whole group (``AU-KG.compute``, 79 live concepts — see
-``.specify/triage/AU-KG.compute.yaml``) resolved it to **21 design documents,
+It is not. Auditing one whole group (``MERISTEM-KG.compute``, 79 live concepts — see
+``.specify/triage/MERISTEM-KG.compute.yaml``) resolved it to **21 design documents,
 47 pointers and 11 retirements**. The pointers are markers *on code that
 realises an already-decided thing*: sixteen ``source_sync``/``owl_bridge``/
 ``mcp_tool`` per-connector markers all realising ONE decision about how a
@@ -29,7 +29,7 @@ machine-checked, hand-authored declaration that ``child`` is covered by
 
 The registry also records **retirements**: markers that were removed because
 they never named a decision at all (an id auto-derived from a prose fragment,
-say ``AU-KG.compute.when-exposes`` minted from the sentence "when the engine
+say ``MERISTEM-KG.compute.when-exposes`` minted from the sentence "when the engine
 exposes the native..."). Recording them is what makes retirement a ratchet
 rather than a deletion — re-introducing a deliberately retired id is a gate
 failure, not a silent regression.
@@ -38,8 +38,8 @@ A third disposition, **rename**, covers the case neither of the above fits: the
 marker names a real decision, kept whole, that simply needs a different id —
 most often because its domain word is not (or is no longer) in the closed
 vocabulary (``repository_manager/governance/domain_vocab.yaml``,
-``scripts/check_domain_vocab.py``). ``AU-KG.trace.canonical-id-non-idempotence``
-was moved to ``AU-KG.identity.canonical-id-non-idempotence`` this way — before
+``scripts/check_domain_vocab.py``). ``MERISTEM-KG.trace.canonical-id-non-idempotence``
+was moved to ``MERISTEM-KG.identity.canonical-id-non-idempotence`` this way — before
 this registry supported it as a first-class disposition, a sibling lane did it
 by hand (source-edit + full ``docs/concepts.yaml`` regen) because ``trace`` was
 never a registered ``KG`` domain. Unlike ``retire``, a rename is not "this named
@@ -108,7 +108,7 @@ LINEAGE_RELPATH = Path("docs") / "concept_lineage.yaml"
 
 #: A rationale must carry this many words *beyond* the words already present in
 #: the child and parent ids. Eight was chosen by reading the shortest honest
-#: pointer written during the AU-KG.compute pilot ("one of twelve per-source
+#: pointer written during the MERISTEM-KG.compute pilot ("one of twelve per-source
 #: entity-type declarations under the single decision that a dedicated tracker
 #: reaches its upstream only through its fleet MCP server") and leaving no
 #: headroom below it.

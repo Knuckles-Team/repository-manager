@@ -999,7 +999,7 @@ class GraphRepositoryJobPort:
         )
 
     def execution_input_authority_available(self) -> bool:
-        """Report the absent EG-native atomic exact-input port."""
+        """Report the absent Medulla-native atomic exact-input port."""
 
         return False
 

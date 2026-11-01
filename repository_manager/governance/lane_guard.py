@@ -25,7 +25,7 @@ enforces:
 3. **A ``CARGO_TARGET_DIR`` env override defeats PARTITION.** cargo's own
    precedence lets an exported env var beat a repo's ``.cargo/config.toml``, so a
    stray global export (the exact hazard PARTITION exists to prevent — see
-   CONCEPT:AU-OS.governance.lane-partitioned-resources) would silently re-share
+   CONCEPT:MERISTEM-OS.governance.lane-partitioned-resources) would silently re-share
    the target dir. When ``AU_LANE_TEMP_ROOT`` selects an external lane root,
    omitting the export is also unsafe because cargo would fall back to the
    worktree's default target. The guard detects both cases loudly instead of
@@ -204,7 +204,7 @@ def _cargo_target_policy_message(
         f"      exported: {override}\n"
         f"      expected: {expected}\n"
         "  A shared/global CARGO_TARGET_DIR both serializes and CORRUPTS concurrent\n"
-        "  cargo builds across worktrees (CONCEPT:AU-OS.governance.lane-partitioned-resources).\n"
+        "  cargo builds across worktrees (CONCEPT:MERISTEM-OS.governance.lane-partitioned-resources).\n"
         "  cargo's env var always wins over this repo's .cargo/config.toml, so this\n"
         "  export would silently defeat the per-worktree binding. "
         f"{binding_advice}"

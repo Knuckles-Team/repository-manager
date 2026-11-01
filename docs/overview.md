@@ -16,13 +16,13 @@ All agents in the ecosystem inherit enterprise-grade infrastructure from `scion-
 | **JWT/OIDC Authentication** | ✅ Built-in | `scion-sdk` — Authlib JWKS + API key middleware |
 | **OpenTelemetry Instrumentation** | ✅ Built-in | `scion-sdk` — OTLP export, FastAPI auto-instrumentation |
 | **HashiCorp Vault Integration** | ✅ Built-in | `scion-sdk` — `secret://`, `env://`, `vault://` URI schemes |
-| **Audit Logging** | ✅ Built-in | Append-only compliance trail with 30+ action types (CONCEPT:AU-OS.governance.wasm-micro-agent-sandbox) |
-| **Token Usage Analytics** | ✅ Built-in | 4-bucket tracking with budget alerting (CONCEPT:AU-OS.governance.wasm-micro-agent-sandbox) |
-| **Prompt Injection Defense** | ✅ Built-in | 25+ pattern scanner + jailbreak taxonomy (CONCEPT:AU-OS.config.secrets-authentication) |
-| **Guardrail Engine** | ✅ Built-in | Input/output interception with block/redact/warn (CONCEPT:AU-OS.governance.reactive-multi-axis-budget) |
-| **Action Execution Pipeline** | ✅ Built-in | Token, cost, duration, and node transition limits Dry-run / commit / rollback phases (CONCEPT:AU-ORCH.adapter.kg-graph-materialization) |
-| **Resource Scheduling** | ✅ Built-in | Priority queuing + preemption limits (CONCEPT:AU-OS.state.cognitive-scheduler-preemption) |
-| **Session Concurrency** | ✅ Built-in | Enqueue/reject/interrupt/rollback (CONCEPT:AU-OS.governance.reactive-multi-axis-budget) |
+| **Audit Logging** | ✅ Built-in | Append-only compliance trail with 30+ action types (CONCEPT:MERISTEM-OS.governance.wasm-micro-agent-sandbox) |
+| **Token Usage Analytics** | ✅ Built-in | 4-bucket tracking with budget alerting (CONCEPT:MERISTEM-OS.governance.wasm-micro-agent-sandbox) |
+| **Prompt Injection Defense** | ✅ Built-in | 25+ pattern scanner + jailbreak taxonomy (CONCEPT:MERISTEM-OS.config.secrets-authentication) |
+| **Guardrail Engine** | ✅ Built-in | Input/output interception with block/redact/warn (CONCEPT:MERISTEM-OS.governance.reactive-multi-axis-budget) |
+| **Action Execution Pipeline** | ✅ Built-in | Token, cost, duration, and node transition limits Dry-run / commit / rollback phases (CONCEPT:MERISTEM-ORCH.adapter.kg-graph-materialization) |
+| **Resource Scheduling** | ✅ Built-in | Priority queuing + preemption limits (CONCEPT:MERISTEM-OS.state.cognitive-scheduler-preemption) |
+| **Session Concurrency** | ✅ Built-in | Enqueue/reject/interrupt/rollback (CONCEPT:MERISTEM-OS.governance.reactive-multi-axis-budget) |
 
 ## Concept Registry
 

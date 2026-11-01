@@ -596,7 +596,7 @@ class GraphBuildAuthority:
         return GraphRepositoryJobPort._view(view)  # noqa: SLF001 - adapter boundary
 
     def execution_input_authority_available(self) -> bool:
-        """EG-native atomic exact-input authority is not installed yet."""
+        """Medulla-native atomic exact-input authority is not installed yet."""
 
         return False
 

@@ -1,13 +1,13 @@
 # OKF-CIS repo SLUG registry (CONCEPT:OS-5.77).
 #
-# The `<SLUG>` of a concept id is the 2-letter, globally-unique code of the repo
+# The `<SLUG>` of a concept id is the globally-unique code of the repo
 # that OWNS the concept (provenance). SLUG is derived from a marker's file path
 # (which repo it physically lives in) — NEVER from its old id prefix, because the
 # old prefix conflated provenance with taxonomy (the root disease this fixes).
 #
 # This is the SINGLE provenance source: agent-packages/scripts/generate_concepts.py
 # PREFIX_MAP is regenerated from it, and the migration planner resolves SLUG here.
-# Every value MUST be exactly two uppercase letters and globally unique
+# Every value MUST be two or more uppercase letters and globally unique
 # (enforced by scripts/check_domain_vocab.py's slug-uniqueness assertion).
 #
 # Reserve a new SLUG when onboarding a repo; keep the file sorted by key.
@@ -16,13 +16,13 @@ version: 1
 
 slugs:
   # ── core framework + engine + frontends ──────────────────────────────────
-  scion-sdk: AU
-  epistemic-graph: EG
+  scion-sdk: SCION
+  epistemic-graph: MEDULLA
   universal-skills: US
   skill-graphs: SG
-  agent-webui: WU
-  agent-terminal-ui: TU
-  geniusbot: GB
+  agent-webui: OVERSTORY
+  agent-terminal-ui: TUIG
+  geniusbot: AXIL
   design-system: DZ
 
   # ── agents / MCP servers / API clients ───────────────────────────────────

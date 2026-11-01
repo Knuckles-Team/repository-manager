@@ -1,4 +1,4 @@
-"""Atomic OKF-CIS concept-ID reservation (CONCEPT:AU-OS.governance.concept-id-allocation).
+"""Atomic OKF-CIS concept-ID reservation (CONCEPT:MERISTEM-OS.governance.concept-id-allocation).
 
 Many sessions work the package ecosystem at once, each in its own git worktree,
 all merging to a shared branch. Semantic concept IDs are a contended resource:
@@ -54,7 +54,7 @@ from typing import Any
 # POSIX-only `import fcntl`.
 from scion_sdk.file_lock import lock_exclusive, unlock
 
-# CONCEPT:AU-OS.governance.concept-id-allocation — Multi-session concept-ID allocation & coordination protocol.
+# CONCEPT:MERISTEM-OS.governance.concept-id-allocation — Multi-session concept-ID allocation & coordination protocol.
 # The grammar lives in concept_hierarchy; every scanner imports this exact regex.
 from repository_manager.governance.concept_hierarchy import (
     OKF_MARKER_RE,
