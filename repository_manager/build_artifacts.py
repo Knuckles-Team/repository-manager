@@ -631,9 +631,11 @@ def _fsync_file(path: Path) -> None:
 
     descriptor: int | None = None
     try:
+        # Windows ``_commit`` rejects a read-only descriptor (EBADF).
+        access = os.O_RDWR if pfs.is_windows() else os.O_RDONLY
         descriptor = os.open(
             path,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+            access | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
         )
         file_stat = os.fstat(descriptor)
         if not stat.S_ISREG(file_stat.st_mode):
@@ -644,7 +646,7 @@ def _fsync_file(path: Path) -> None:
             os.close(descriptor)
             descriptor = None
     except OSError as exc:
-        raise ArtifactStoreError(f"could not fsync artifact {path}") from exc
+        raise ArtifactStoreError(f"could not fsync artifact {path}: {exc}") from exc
     finally:
         if descriptor is not None:
             try:
