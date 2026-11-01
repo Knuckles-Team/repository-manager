@@ -1356,7 +1356,7 @@ def _stage_one_artifact(
             "artifact source escapes its declared output root"
         ) from exc
     relative = source.relative_to(paths.output_root)
-    relative_name = str(relative)
+    relative_name = relative.as_posix()  # manifests are portable across hosts
     if relative_name in accumulator.seen:
         return
     accumulator.seen.add(relative_name)

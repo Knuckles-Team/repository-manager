@@ -1326,7 +1326,7 @@ def test_heavy_output_boundary_rejects_links_and_caps_writes(
             "cpu-heavy",
             operation="device output",
             host_id="host-primary",
-            output_path=Path("/dev/null"),
+            output_path=Path(os.devnull),
             path=canonical,
         ):
             pass

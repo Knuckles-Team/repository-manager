@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -35,6 +36,16 @@ from repository_manager.repository_manager import Git, GitResult
 
 def _run(argv: list[str], cwd: Path) -> None:
     subprocess.run(argv, cwd=cwd, check=True, capture_output=True, text=True)
+
+
+# Windows cannot pin a directory by an open descriptor across a rename, so a
+# parent or checkout swapped between admission and the child process cannot be
+# prevented there, only detected afterwards.  The tests below assert the
+# descriptor-pinning guarantee itself, which exists only on POSIX.
+NEEDS_DESCRIPTOR_PINNING = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="descriptor-pinned directories (swap-proof checkout) do not exist on Windows",
+)
 
 
 def _kernel_mount_id(descriptor: int) -> int | None:
@@ -525,7 +536,12 @@ def test_git_action_keeps_git_metadata_on_the_pinned_checkout(tmp_path, monkeypa
     assert result.status == "error"
     assert result.error is not None
     assert "symlink" in result.error.message
-    assert _config_value(checkout / ".git-original", "phase7.boundary") == "anchored"
+    if sys.platform != "win32":
+        # POSIX anchors the mutation on the original, descriptor-pinned .git.
+        # Windows refuses the swapped checkout before any mutation runs.
+        assert (
+            _config_value(checkout / ".git-original", "phase7.boundary") == "anchored"
+        )
     assert not _config_value(source / ".git", "phase7.boundary")
 
 
@@ -552,9 +568,16 @@ def test_pre_push_gate_uses_the_pinned_checkout_path(tmp_path, monkeypatch):
         with pin_existing(root, checkout) as pinned:
             assert manager._gate_before_push(str(checkout), pinned=pinned) is None
 
-    assert observed and observed[0].startswith("/proc/self/fd/")
+    assert observed
+    if sys.platform == "win32":
+        # No /proc descriptor path exists on Windows; the gate receives the
+        # checkout path itself.
+        assert Path(observed[0]).samefile(checkout)
+    else:
+        assert observed[0].startswith("/proc/self/fd/")
 
 
+@NEEDS_DESCRIPTOR_PINNING
 def test_clone_parent_swap_cannot_redirect_into_external_directory(
     tmp_path, monkeypatch
 ):
@@ -897,6 +920,7 @@ def test_linked_worktree_handle_rejects_common_config_content_append(tmp_path):
             pinned.assert_operation_identity()
 
 
+@NEEDS_DESCRIPTOR_PINNING
 def test_pre_commit_rejects_checkout_swap_after_handle_pin(tmp_path, monkeypatch):
     manager = _manager_with_project(tmp_path)
     project = Path(next(iter(manager.project_map.values())))

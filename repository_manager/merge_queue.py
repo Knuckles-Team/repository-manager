@@ -227,8 +227,11 @@ def _run_git(
     process_env = os.environ.copy()
     if env:
         process_env.update(env)
+    # Deep build trees (cargo target dirs) exceed MAX_PATH on Windows; without
+    # long-path support git cannot delete a disposable worktree.
+    long_paths = ["-c", "core.longpaths=true"] if pfs.is_windows() else []
     proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        [git_executable, *args],
+        [git_executable, *long_paths, *args],
         cwd=str(cwd),
         capture_output=True,
         text=True,

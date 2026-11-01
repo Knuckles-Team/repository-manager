@@ -192,6 +192,14 @@ def _isolate_process_state(monkeypatch):
     """
     monkeypatch.setattr(sys, "argv", ["repository-manager"])
     saved_env = dict(os.environ)
+    if sys.platform == "win32":
+        # Git for Windows defaults to core.autocrlf=true: a fixture written
+        # through text mode (CRLF) commits as LF, then reads as modified under
+        # any sealed/isolated git config that does not carry that default.
+        # Fixtures stay byte-stable by turning conversion off for the run.
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.autocrlf")
+        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "false")
     for name in list(os.environ):
         if name in _GIT_ENV_LEAK_NAMES or name.startswith(_GIT_ENV_LEAK_PREFIXES):
             monkeypatch.delenv(name, raising=False)

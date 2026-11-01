@@ -36,7 +36,10 @@ from repository_manager.lane_registry import FakeDurableLaneAuthority, LaneRegis
 from tests.portable_paths import SHELL, sh_arg
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO_PYTHON = (
+# The declared interpreter token, exactly as the repo's .mergequeue.yaml spells it.
+REPO_PYTHON = ".venv/bin/python"
+# Where that interpreter lives on disk on this platform.
+REPO_PYTHON_FILE = (
     ".venv/Scripts/python.exe" if sys.platform == "win32" else ".venv/bin/python"
 )
 QUEUE_TEST_COMMAND = (
@@ -545,7 +548,7 @@ def _timeout_drift_repo(tmp_path: Path, *, slow_recheck: bool = False) -> Path:
             baseline_timeout: 10
             compare: lines
             timeout_recheck_pattern: '^TIMEOUT (?P<item>checks/[^ ]+\\.sh)$'
-            timeout_recheck_command: ["/bin/sh", "{item}"]
+            timeout_recheck_command: ["sh", "{item}"]
             timeout_recheck_timeout: 1
         """,
     )
@@ -600,7 +603,7 @@ def test_timeout_recheck_refuses_output_derived_path_escape(tmp_path: Path) -> N
         command=("true",),
         compare="lines",
         timeout_recheck_pattern=r"^TIMEOUT (?P<item>.+)$",
-        timeout_recheck_command=("/bin/sh", "{item}"),
+        timeout_recheck_command=("sh", "{item}"),
         timeout_recheck_timeout=1,
     )
     result = mq._recheck_candidate_new_timeouts(
@@ -1166,7 +1169,7 @@ def test_materialized_snapshot_attaches_only_an_existing_ignored_venv(
     with mq.materialized(repo, head, scope=scope) as snapshot:
         assert not (snapshot / ".venv").exists()
 
-    interpreter = repo / REPO_PYTHON
+    interpreter = repo / REPO_PYTHON_FILE
     interpreter.parent.mkdir(parents=True)
     interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     interpreter.chmod(0o755)
@@ -1175,7 +1178,7 @@ def test_materialized_snapshot_attaches_only_an_existing_ignored_venv(
         attached = snapshot / ".venv"
         assert attached.is_symlink()
         assert attached.resolve() == (repo / ".venv").resolve()
-        assert (snapshot / REPO_PYTHON).is_file()
+        assert (snapshot / REPO_PYTHON_FILE).is_file()
 
 
 def test_a_repo_with_no_config_is_refused_not_defaulted(tmp_path: Path) -> None:

@@ -99,7 +99,7 @@ def repo_with_origin(tmp_path: Path) -> Path:
             base: main
             specs:
               - name: widget
-                command: ["bash", "-c", "echo remote-build-ran"]
+                command: ["sh", "-c", "echo remote-build-ran"]
                 workdir: "."
                 timeout: 30
             """

@@ -28,7 +28,7 @@ import stat
 import subprocess  # nosec B404 - taskkill with a fixed argv
 import sys
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -489,9 +489,13 @@ def launchable_argv(argv: Sequence[str], cwd: str | os.PathLike[str]) -> list[st
     head = command[0].replace("\\", "/")
     parts = head.split("/")
     if len(parts) >= 2 and parts[-2] == "bin" and parts[-1].startswith("python"):
+        declared = Path(cwd) / command[0]
         parts[-2:] = ["Scripts", "python.exe"]
-        command[0] = "/".join(parts)
-        return command
+        if (Path(cwd) / "/".join(parts)).exists() or not declared.is_file():
+            command[0] = "/".join(parts)
+            return command
+        # No Windows interpreter exists, but the declared ``bin/python`` is a
+        # real file (a launcher script): run that file under its interpreter.
     script = Path(cwd) / command[0]
     if not script.is_file():
         return command
@@ -510,3 +514,17 @@ def launchable_argv(argv: Sequence[str], cwd: str | os.PathLike[str]) -> list[st
             "is not available on Windows"
         )
     return [resolved, *command]
+
+
+def pre_commit_launcher(env: Mapping[str, str] | None = None) -> list[str]:
+    """The argv prefix that starts pre-commit on this host.
+
+    A ``pre-commit`` console script reachable on ``PATH`` wins.  When it is not
+    (a venv ``Scripts`` directory that is not on ``PATH``, common on Windows),
+    the running interpreter launches the same package with ``-m pre_commit``.
+    """
+    path = (env if env is not None else os.environ).get("PATH")
+    found = shutil.which("pre-commit", path=path)
+    if found:
+        return [found]
+    return [sys.executable, "-m", "pre_commit"]

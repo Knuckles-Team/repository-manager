@@ -17,6 +17,7 @@ import pytest
 
 from repository_manager import build_artifacts as artifact_module
 from repository_manager import build_queue as bq
+from repository_manager import portable_fs as pfs
 from repository_manager.build_artifacts import (
     ArtifactFenceLost,
     ArtifactStoreError,
@@ -1917,8 +1918,8 @@ def test_legacy_compatibility_artifacts_reject_symlinks_and_bound_gc(
         bq._publish_artifacts(tree, spec, "v1:legacy", tree)  # noqa: SLF001
 
     root = bq._artifact_root(tree)  # noqa: SLF001
-    (root / "v1:one").mkdir(parents=True, exist_ok=True)
-    (root / "v1:two").mkdir(parents=True, exist_ok=True)
+    (root / pfs.cache_entry_name("v1:one")).mkdir(parents=True, exist_ok=True)
+    (root / pfs.cache_entry_name("v1:two")).mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(bq, "_MAX_LEGACY_SCAN_ENTRIES", 1)
     result = bq.gc(repo_path=tree, keep_recent=0, max_age_days=0)
     assert result["removed"] == []

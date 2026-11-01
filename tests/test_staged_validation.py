@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from repository_manager import portable_fs as pfs
 from repository_manager.development import (
     ExecutionCommand,
     ExecutionOutcome,
@@ -240,8 +241,11 @@ def test_dirty_feedback_tree_uses_safe_commit_and_evaluates_deletion(
             argv = tuple(command.argv)
             self.commands.append(argv)
             started = datetime.now(UTC)
+            launch = list(argv)
+            if launch[0] == "pre-commit":
+                launch[:1] = pfs.pre_commit_launcher()
             completed = subprocess.run(
-                list(argv),
+                launch,
                 cwd=command.workdir,
                 capture_output=True,
                 text=True,

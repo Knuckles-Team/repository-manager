@@ -14,7 +14,9 @@ positive half is what makes the refusal meaningful.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -118,9 +120,19 @@ def test_a_uv_workspace_managed_worktree_venv_passes(worktree: Path) -> None:
     venv = worktree / ".venv"
     python = pfs.venv_python(venv)
     python.parent.mkdir(parents=True)
-    python.write_text("#!/usr/bin/env python3\n")
-    python.chmod(0o755)
-    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    if sys.platform == "win32":
+        # The doctor judges an interpreter by running it, and Windows cannot
+        # execute a text file named python.exe: stage a real venv layout (the
+        # base interpreter beside a pyvenv.cfg that names its home).
+        base = Path(sys.base_prefix)
+        shutil.copy2(base / "python.exe", python)
+        for dll in base.glob("*.dll"):
+            shutil.copy2(dll, python.parent / dll.name)
+        (venv / "pyvenv.cfg").write_text(f"home = {base}\n")
+    else:
+        python.write_text("#!/usr/bin/env python3\n")
+        python.chmod(0o755)
+        (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
     (venv / ".uv-workspace-selection.json").write_text(
         '{"label": "", "selection": ["--all-extras"]}\n'
     )
