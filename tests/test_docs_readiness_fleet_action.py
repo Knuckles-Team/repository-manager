@@ -992,19 +992,19 @@ def test_mcp_and_cli_register_one_shared_action_surface(
     assert observed[0][0] == "preview"
 
 
-def _make_writable_and_retry(function, path, _error) -> None:
+def _rmtree_writable(path: Path) -> None:
     """Git object files are read-only; Windows refuses to delete them."""
-    os.chmod(path, stat.S_IWRITE)
-    function(path)
+    for entry in path.rglob("*"):
+        if entry.is_file() and not entry.is_symlink():
+            os.chmod(entry, stat.S_IWRITE)
+    shutil.rmtree(path)
 
 
 def test_missing_other_fleet_checkout_blocks_exact_repository(
     fleet_workspace: tuple[Path, set[str]],
 ) -> None:
     root, _ = fleet_workspace
-    shutil.rmtree(
-        root / "agent-packages/skills/skill-graphs", onexc=_make_writable_and_retry
-    )
+    _rmtree_writable(root / "agent-packages/skills/skill-graphs")
     calls: list[tuple[Path, bool]] = []
     result = docs_readiness.dispatch(
         workspace_root=root,
