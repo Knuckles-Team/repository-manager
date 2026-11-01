@@ -81,6 +81,23 @@ def _is_link(result: os.stat_result) -> bool:
     return bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
 
 
+def stat_no_follow(target: str | os.PathLike[str]) -> os.stat_result:
+    """Stat one entry without following links, with a comparable identity.
+
+    On Windows ``os.lstat`` and ``os.stat`` report different ``st_dev`` and
+    ``st_ino`` for the same directory, so an identity captured by one never
+    equals one captured by the other.  Links and reparse points are detected
+    with ``lstat`` and returned as is; everything else is re-read with
+    ``os.stat`` so all identities come from the same source.
+    """
+    result = os.lstat(target)
+    if not is_windows() or stat.S_ISLNK(result.st_mode):
+        return result
+    if _is_link(result):
+        raise OSError(f"{str(target)!r} is a reparse point")
+    return os.stat(target)
+
+
 def directory_open_flags() -> int:
     """Flags for opening a directory that cannot follow a symlink."""
     return (
@@ -144,7 +161,7 @@ def open_entry(name: str, flags: int, mode: int = 0o777, *, dir_fd: int | None) 
 def stat_entry(name: str, *, dir_fd: int) -> os.stat_result:
     if native_dir_fd():
         return os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-    return os.lstat(_child(dir_fd, name))
+    return stat_no_follow(_child(dir_fd, name))
 
 
 def fstat(fd: int) -> os.stat_result:

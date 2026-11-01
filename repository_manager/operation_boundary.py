@@ -593,7 +593,7 @@ def _stat_path_without_symlinks(path: Path, label: str) -> os.stat_result:
     components = raw_path.parts[1:]
     if not components:
         try:
-            return os.stat(raw_path, follow_symlinks=False)
+            return pfs.stat_no_follow(raw_path)
         except OSError as exc:
             raise OperationBoundaryError(
                 f"{label} disappeared or is inaccessible"
@@ -615,7 +615,7 @@ def _stat_path_without_symlinks(path: Path, label: str) -> os.stat_result:
 def _stat_path_component(path: Path, label: str) -> os.stat_result:
     """Read one path component without following its final link."""
     try:
-        return os.stat(path, follow_symlinks=False)
+        return pfs.stat_no_follow(path)
     except OSError as exc:
         raise OperationBoundaryError(f"{label} disappeared or is inaccessible") from exc
 
