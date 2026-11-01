@@ -3586,6 +3586,9 @@ class Git:
             raise OperationBoundaryError("push target has no admitted origin URL")
         if any(ord(char) < 0x20 or ord(char) == 0x7F for char in configured):
             raise OperationBoundaryError("push target contains control characters")
+        if pfs.is_windows() and re.match(r"^[A-Za-z]:[\\/]", configured):
+            # A drive-qualified path is a local path, not a URL scheme.
+            return os.path.abspath(configured)
         parsed = urlsplit(configured)
         if parsed.scheme in {"http", "https"}:
             return canonical_repository_url(configured)
@@ -3819,7 +3822,10 @@ class Git:
             logger.error("Push refused because repository status could not be verified")
             return status_check
         if status_check.data.strip():
-            logger.warning("Push refused because the configured project is dirty")
+            logger.warning(
+                "Push refused because the configured project is dirty: %r",
+                status_check.data.strip()[:200],
+            )
             return self._dirty_push_refusal(target_path)
         return self._gate_before_push(target_path, pinned=pinned)
 

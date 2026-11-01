@@ -19,17 +19,41 @@ the same primitive can protect sync, pull, push, and release-plan snapshots.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import dataclasses
 import fnmatch
 import hashlib
 import os
 import re
+import shutil
 import stat
+import tempfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from repository_manager import portable_fs as pfs
+
+_EMPTY_GIT_CONFIG: list[str] = []
+
+
+def _empty_git_config() -> str:
+    """A path Git reads as an empty global config.
+
+    POSIX uses the null device.  Git for Windows prints a warning on the
+    ``nul`` device when it is named as a config file, which then lands in
+    captured command output, so Windows names a real empty file kept in a
+    private per-process directory instead.
+    """
+    if not pfs.is_windows():
+        return os.devnull
+    if not _EMPTY_GIT_CONFIG:
+        directory = tempfile.mkdtemp(prefix="rm-empty-gitconfig-")
+        atexit.register(shutil.rmtree, directory, True)
+        empty = Path(directory) / "gitconfig"
+        empty.write_bytes(b"")
+        _EMPTY_GIT_CONFIG.append(str(empty))
+    return _EMPTY_GIT_CONFIG[0]
 
 _PINNED_GIT_ENVIRONMENT = frozenset(
     {
@@ -318,7 +342,7 @@ class PinnedDirectory:
             and not key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
         }
         isolated["GIT_CONFIG_NOSYSTEM"] = "1"
-        isolated["GIT_CONFIG_GLOBAL"] = os.devnull
+        isolated["GIT_CONFIG_GLOBAL"] = _empty_git_config()
         return isolated
 
     def assert_root_identity(self) -> None:

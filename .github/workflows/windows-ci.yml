@@ -76,7 +76,7 @@ jobs:
           cache-dependency-glob: uv.lock
 
       - name: Sync test environment
-        run: uv sync --frozen --extra test
+        run: uv sync --frozen --extra test --extra all
 
       - name: Cross-platform import safety (real Windows interpreter)
         run: uv run --no-sync python scripts/check_import_safety.py

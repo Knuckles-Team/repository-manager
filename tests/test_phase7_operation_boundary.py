@@ -505,6 +505,7 @@ def test_git_action_rejects_a_symlinked_git_directory(tmp_path):
     assert "symlink" in result.error.message
 
 
+@NEEDS_DESCRIPTOR_PINNING
 def test_git_action_keeps_git_metadata_on_the_pinned_checkout(tmp_path, monkeypatch):
     """A .git swap after admission cannot redirect the Git mutation."""
     source_root = tmp_path / "source-root"
@@ -536,12 +537,7 @@ def test_git_action_keeps_git_metadata_on_the_pinned_checkout(tmp_path, monkeypa
     assert result.status == "error"
     assert result.error is not None
     assert "symlink" in result.error.message
-    if sys.platform != "win32":
-        # POSIX anchors the mutation on the original, descriptor-pinned .git.
-        # Windows refuses the swapped checkout before any mutation runs.
-        assert (
-            _config_value(checkout / ".git-original", "phase7.boundary") == "anchored"
-        )
+    assert _config_value(checkout / ".git-original", "phase7.boundary") == "anchored"
     assert not _config_value(source / ".git", "phase7.boundary")
 
 
