@@ -220,7 +220,9 @@ def test_canonical_serialization_is_stable_for_mapping_order_and_round_trips() -
             repository=_repository(),
             branch="feature/one",
             base_sha=SHA0,
-            worktree_path=native_abs("/home/app/worktrees/repository-manager/rmdd-01-contracts-0808"),
+            worktree_path=native_abs(
+                "/home/app/worktrees/repository-manager/rmdd-01-contracts-0808"
+            ),
             owner_id="agent:one",
             session_id="session:one",
             created_at=NOW,

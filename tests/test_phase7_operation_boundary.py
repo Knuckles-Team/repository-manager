@@ -786,7 +786,9 @@ def test_push_refuses_included_config_and_later_include_drift(tmp_path):
         stream.write(f"\n[include]\n\tpath = {included}\n")
 
     first = manager.push_project(str(source))
-    included.write_text(f'[url "{Path(attacker).as_posix()}"]\n\tpushInsteadOf = {Path(authorized).as_posix()}\n')
+    included.write_text(
+        f'[url "{Path(attacker).as_posix()}"]\n\tpushInsteadOf = {Path(authorized).as_posix()}\n'
+    )
     second = manager.push_project(str(source))
 
     assert first.status == second.status == "error"

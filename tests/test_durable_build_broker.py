@@ -1970,7 +1970,9 @@ def test_submission_is_immediate_and_bounded_by_the_same_capacity_profile(
 
     submitted_job_ids: list[str] = []
     for index in range(3):
-        repo = _repo_named(tmp_path, f"contributor-{index}", resource_class="frontend-build")
+        repo = _repo_named(
+            tmp_path, f"contributor-{index}", resource_class="frontend-build"
+        )
         result = service.submit(repo_path=repo, spec_name="test-build")
         job_id = result["job_id"]
         submitted_job_ids.append(job_id)
@@ -1993,7 +1995,11 @@ def test_submission_is_immediate_and_bounded_by_the_same_capacity_profile(
     reservation_port = InMemoryWorkItemReservationPort()
     scheduler = ResourceScheduler(
         capacity=CapacityInventory(
-            [HostCapacity("local", ResourceVector(64, 100_000, 100_000, 32), heartbeat_at=now)]
+            [
+                HostCapacity(
+                    "local", ResourceVector(64, 100_000, 100_000, 32), heartbeat_at=now
+                )
+            ]
         ),
         work_item_port=reservation_port,
     )

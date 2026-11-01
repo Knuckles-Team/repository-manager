@@ -484,7 +484,9 @@ def _prepare_result_root(root: Path, result_root: str) -> Path:
     return resolved_results
 
 
-def _hook_evidence_path(root: Path, resolved_results: Path, hook: dict[str, Any]) -> Path:
+def _hook_evidence_path(
+    root: Path, resolved_results: Path, hook: dict[str, Any]
+) -> Path:
     evidence = root.joinpath(hook["evidence"])
     try:
         evidence.relative_to(resolved_results)

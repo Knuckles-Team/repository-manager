@@ -2282,7 +2282,10 @@ class Git:
 
     def _append_debug_log(self, text: str) -> None:
         """Append one entry to the debug log under the shared lock."""
-        with self.debug_lock, open(self.debug_log_path, "a", encoding="utf-8") as log_file:
+        with (
+            self.debug_lock,
+            open(self.debug_log_path, "a", encoding="utf-8") as log_file,
+        ):
             log_file.write(text)
             log_file.flush()
 

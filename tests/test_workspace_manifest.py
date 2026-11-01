@@ -437,7 +437,10 @@ def test_default_workspace_yml_is_the_packaged_seed_and_lists_repositories(monke
 
     monkeypatch.delenv("WORKSPACE_YML", raising=False)
     rm = importlib.reload(rm)
-    assert Path(rm.DEFAULT_WORKSPACE_YML) == workspace_manifest.default_packaged_seed_path()
+    assert (
+        Path(rm.DEFAULT_WORKSPACE_YML)
+        == workspace_manifest.default_packaged_seed_path()
+    )
     seed = yaml.safe_load(Path(rm.DEFAULT_WORKSPACE_YML).read_text(encoding="utf-8"))
     repositories, _, _ = select_repositories(seed)
     assert len(repositories) > 200

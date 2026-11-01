@@ -35,8 +35,13 @@ def verify_source(source: Path, revision: str) -> str:
     if git(source, "rev-parse", "HEAD") != revision:
         raise ValueError("graph client checkout differs from scripts/siblings.lock")
     dirty = git(
-        source, "status", "--porcelain", "--untracked-files=all", "--",
-        "epistemic_graph", "contract",
+        source,
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+        "--",
+        "epistemic_graph",
+        "contract",
     )
     if dirty:
         raise ValueError("graph client/contract source is modified or untracked")
@@ -74,7 +79,9 @@ def configure(root: Path, purelib: Path, *, native: bool) -> None:
     except PackageNotFoundError:
         pass
     else:
-        raise ValueError("non-native bootstrap refuses to mix installed engine and source")
+        raise ValueError(
+            "non-native bootstrap refuses to mix installed engine and source"
+        )
     source, revision = pinned_source(root)
     digest = verify_source(source, revision)
     overlay.write_text(str(source) + "\n")
