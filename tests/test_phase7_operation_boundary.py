@@ -138,6 +138,11 @@ def test_git_subprocess_uses_an_inherited_descriptor_cwd(tmp_path, monkeypatch):
     assert result.status == "success"
     assert calls
     cwd = str(calls[0]["cwd"])
+    if os.name == "nt":
+        # Windows has no inherited directory descriptors; the pinned
+        # directory is addressed by its verified path instead.
+        assert Path(cwd) == repo
+        return
     assert cwd.startswith("/proc/self/fd/")
     descriptor = int(cwd.rsplit("/", 1)[-1])
     assert descriptor in tuple(calls[0]["pass_fds"])
@@ -277,6 +282,8 @@ def test_mount_identity_matches_the_kernel_descriptor_mount():
 
 
 def test_mount_identity_is_read_fresh_after_descriptor_reuse():
+    if os.name == "nt":
+        pytest.skip("kernel mount IDs and /proc descriptors do not exist on Windows")
     root_fd = os.open(os.sep, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     proc_fd = os.open("/proc", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
@@ -758,7 +765,9 @@ def test_git_action_rejects_multiple_preexisting_push_urls(tmp_path):
 def test_push_refuses_local_destination_rewrite_before_network(tmp_path, directive):
     manager, source, authorized, attacker = _push_fixture(tmp_path)
     with (source / ".git" / "config").open("a", encoding="utf-8") as stream:
-        stream.write(f'\n[url "{attacker}"]\n\t{directive} = {authorized}\n')
+        stream.write(
+            f'\n[url "{Path(attacker).as_posix()}"]\n\t{directive} = {Path(authorized).as_posix()}\n'
+        )
 
     result = manager.push_project(str(source))
 
@@ -777,7 +786,7 @@ def test_push_refuses_included_config_and_later_include_drift(tmp_path):
         stream.write(f"\n[include]\n\tpath = {included}\n")
 
     first = manager.push_project(str(source))
-    included.write_text(f'[url "{attacker}"]\n\tpushInsteadOf = {authorized}\n')
+    included.write_text(f'[url "{Path(attacker).as_posix()}"]\n\tpushInsteadOf = {Path(authorized).as_posix()}\n')
     second = manager.push_project(str(source))
 
     assert first.status == second.status == "error"

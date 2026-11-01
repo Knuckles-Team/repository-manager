@@ -308,7 +308,7 @@ def test_worker_recomputes_enabled_toolchain_fingerprint_on_materialized_sha(
     result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
     )
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert calls and calls[0][1] == (
         "python3",
         "-c",
@@ -362,7 +362,7 @@ def test_worker_rechecks_uncacheable_toolchain_without_publishing_cache(
     result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
     )
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["degraded"] is True
     assert calls == [("python3", "-c", "import sys; sys.exit(1)")]
     assert list(store.iter_entries()) == []
@@ -1138,7 +1138,7 @@ def test_worker_uses_submitted_argv_when_current_config_drifts(
     result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
     )
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     manifest = store.read_manifest(result["key"])
     assert manifest is not None
     artifact = Path(manifest["artifacts"][0]["stored_at"])
@@ -1154,7 +1154,7 @@ def test_worker_executes_after_admission_and_recovers_terminal_manifest(
     result = worker.run_job(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
     )
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["state"] == "succeeded"
     assert scheduler.releases == ["reservation:test"]
     manifest = store.read_manifest(result["key"])
@@ -1374,7 +1374,7 @@ def test_degraded_recover_requires_exact_terminal_result_ref(
     result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
     )
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["result_ref"] == (f"build-degraded:{authority.row.job_id}:fence:f1")
     recovered = BuildWorker(authority, scheduler, artifact_store=store).recover(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
@@ -1750,7 +1750,7 @@ def test_worker_surfaces_release_reconciliation_without_rerunning(
     result = worker.run_job(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
     )
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["release_pending"] is True
     assert result["reconciliation_pending"] is True
     assert worker.release_failures()
