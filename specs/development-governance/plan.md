@@ -61,3 +61,7 @@ fixtures. Legacy-compatibility tests explicitly assert their intended warnings
 instead of leaking deprecations into unrelated acceptance checks. Register the
 existing spec marker so requirement-bound tests remain warning-free. Shipped
 presets may migrate only with parsed-configuration equivalence proof.
+
+## Cross-repo seams
+
+- Meristem run loop and repository operations: [meristem repository-manager seam contract](https://github.com/Knuckles-Team/meristem/blob/main/specs/run/contracts/repository-manager.md). Provider row `RM-GOVERNANCE-R001`; consumer row `MERISTEM-RUN-R016`.
