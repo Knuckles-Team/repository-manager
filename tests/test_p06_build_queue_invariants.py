@@ -116,7 +116,7 @@ def _buildcache_yaml(*, disk_estimate_mb: int = 0) -> str:
         base: main
         specs:
           - name: widget
-            command: ["bash", "-c", "echo payload > out.txt"]
+            command: ["python3", "-c", "open('out.txt', 'w').write('payload')"]
             workdir: "."
             cache_key_paths: ["src.txt"]
             artifacts: ["out.txt"]

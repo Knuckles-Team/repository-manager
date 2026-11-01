@@ -67,7 +67,7 @@ def _counter_spec(counter_path: Path) -> str:
         base: main
         specs:
           - name: widget
-            command: ["bash", "-c", "echo built >> {Path(counter_path).as_posix()}; echo payload > out.txt"]
+            command: ["python3", "-c", {json.dumps("open(%r, 'a').write('built\\n'); open('out.txt', 'w').write('payload\\n')" % str(counter_path))}]
             workdir: "."
             cache_key_paths: ["src.txt"]
             artifacts: ["out.txt"]
@@ -219,7 +219,7 @@ def test_two_concurrent_same_key_requests_build_exactly_once(tmp_path: Path):
             base: main
             specs:
               - name: widget
-                command: ["bash", "-c", "sleep 0.5; echo built >> {Path(counter).as_posix()}; echo payload > out.txt"]
+                command: ["python3", "-c", {json.dumps("import time; time.sleep(0.5); open(%r, 'a').write('built\\n'); open('out.txt', 'w').write('payload\\n')" % str(counter))}]
                 workdir: "."
                 cache_key_paths: ["src.txt"]
                 artifacts: ["out.txt"]
