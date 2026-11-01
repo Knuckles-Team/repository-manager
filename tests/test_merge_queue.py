@@ -706,7 +706,7 @@ def test_a_conflict_confined_to_generated_files_is_regenerated_not_rejected(
             compare: exit
         generated_files: ["INDEX.md"]
         regenerate:
-          - ["{sys.executable}", "gen.py"]
+          - [{json.dumps(sys.executable)}, "gen.py"]
         """,
     )
     _commit(repo, "init")
@@ -750,7 +750,7 @@ def test_a_conflict_touching_a_handwritten_file_is_still_rejected(
             stage: integration
             compare: exit
         generated_files: ["INDEX.md"]
-        regenerate: [["{sys.executable}", "gen.py"]]
+        regenerate: [[{json.dumps(sys.executable)}, "gen.py"]]
         """,
     )
     _commit(repo, "init")
