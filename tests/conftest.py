@@ -7,6 +7,30 @@ import sys
 
 import pytest
 
+
+def _prefer_git_bash_on_windows() -> None:
+    """Put Git for Windows' POSIX ``bash`` ahead of the WSL launcher.
+
+    ``C:\\Windows\\System32\\bash.exe`` is a WSL shim that fails without an
+    installed distribution; fixtures that run ``bash -c`` need a real shell.
+    """
+    if os.name != "nt":
+        return
+    import shutil
+    from pathlib import Path
+
+    git = shutil.which("git")
+    if git is None:
+        return
+    root = Path(git).resolve().parent.parent
+    for candidate in (root / "bin", root / "usr" / "bin"):
+        if (candidate / "bash.exe").exists():
+            os.environ["PATH"] = str(candidate) + os.pathsep + os.environ["PATH"]
+            return
+
+
+_prefer_git_bash_on_windows()
+
 #: Env vars a git hook invocation sets that git honors over a subprocess's
 #: `cwd=` -- this repo's own `pre-commit` runs pytest as a `language: system`
 #: hook of `git commit`, so any test that shells out to `git init`/`git
