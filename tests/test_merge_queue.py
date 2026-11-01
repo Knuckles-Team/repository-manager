@@ -36,7 +36,9 @@ from repository_manager.lane_registry import FakeDurableLaneAuthority, LaneRegis
 from tests.portable_paths import SHELL, sh_arg
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO_PYTHON = ".venv/bin/python"
+REPO_PYTHON = (
+    ".venv/Scripts/python.exe" if sys.platform == "win32" else ".venv/bin/python"
+)
 QUEUE_TEST_COMMAND = (
     REPO_PYTHON,
     "-m",

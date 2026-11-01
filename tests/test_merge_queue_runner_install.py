@@ -40,6 +40,19 @@ def test_install_is_hash_verified_and_daemon_reloaded(tmp_path: Path) -> None:
     units = tmp_path / "units"
     systemctl, marker = _systemctl(tmp_path)
     python_link = tmp_path / "python"
+    if sys.platform == "win32":
+        # systemd user units exist only on Linux: Windows refuses explicitly.
+        with pytest.raises(
+            MergeQueueRunnerInstallError, match="not available on Windows"
+        ):
+            install(
+                root,
+                bin_path=bin_path,
+                unit_directory=units,
+                systemctl=str(systemctl),
+                python_executable=Path(sys.executable),
+            )
+        return
     python_link.symlink_to(sys.executable)
     report = install(
         root,
@@ -89,7 +102,9 @@ def test_daemon_reload_failure_rolls_back_the_entire_bundle(tmp_path: Path) -> N
     for path, content in old.items():
         path.write_bytes(content)
     systemctl, _ = _systemctl(tmp_path, status=1)
-    with pytest.raises(MergeQueueRunnerInstallError, match="daemon-reload failed"):
+    with pytest.raises(
+        MergeQueueRunnerInstallError, match="daemon-reload (failed|is not available)"
+    ):
         install(root, bin_path=bin_path, unit_directory=units, systemctl=str(systemctl))
     assert {path: path.read_bytes() for path in old} == old
 

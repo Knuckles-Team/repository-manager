@@ -488,6 +488,10 @@ def test_selected_roots_stop_before_starting_past_global_deadline(
     assert result == 1
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="cgroups are a Linux kernel feature; Windows has no cgroup to escape",
+)
 def test_cgroup_escape_fails_closed_and_kills_the_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -870,7 +870,7 @@ def _launch_process(
 
     try:
         process = subprocess.Popen(
-            command,
+            pfs.launchable_argv(command, repository.path),
             cwd=str(repository.path),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

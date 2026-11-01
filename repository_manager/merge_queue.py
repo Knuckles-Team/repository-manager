@@ -1753,7 +1753,7 @@ def _timed_run(argv: list[str], cwd: Path, *, timeout: int, env: dict) -> tuple:
     start = time.monotonic()
     try:
         proc = subprocess.run(  # noqa: S603 - argv from repo-declared config, no shell
-            argv,
+            pfs.launchable_argv(argv, cwd),
             cwd=str(cwd),
             capture_output=True,
             text=True,
@@ -1843,7 +1843,7 @@ def _environment_signature(tree: Path, config: QueueConfig) -> str:
     if config.environment_signature:
         try:
             proc = subprocess.run(  # noqa: S603 - argv from repo-declared config
-                list(config.environment_signature),
+                pfs.launchable_argv(config.environment_signature, tree),
                 cwd=str(tree),
                 capture_output=True,
                 text=True,
@@ -2594,7 +2594,7 @@ def _regenerate_generated_files(
         for command in config.regenerate:
             try:
                 proc = subprocess.run(  # noqa: S603 - argv from repo-declared config
-                    list(command),
+                    pfs.launchable_argv(command, work_tree),
                     cwd=str(work_tree),
                     capture_output=True,
                     text=True,

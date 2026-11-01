@@ -564,6 +564,11 @@ def _restore(snapshots: tuple[_Snapshot, ...]) -> bool:
 
 
 def _daemon_reload(systemctl: str) -> None:
+    if pfs.is_windows():
+        raise MergeQueueRunnerInstallError(
+            "systemd daemon-reload is not available on Windows: the merge-queue "
+            "runner installs as systemd user units, which only exist on Linux"
+        )
     try:
         result = subprocess.run(
             [systemctl, "--user", "daemon-reload"],

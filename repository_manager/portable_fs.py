@@ -22,10 +22,13 @@ from __future__ import annotations
 
 import itertools
 import os
+import shutil
 import signal
 import stat
 import subprocess  # nosec B404 - taskkill with a fixed argv
+import sys
 import threading
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -434,3 +437,76 @@ def temp_root() -> Path:
     import tempfile
 
     return Path(tempfile.gettempdir())
+
+
+# --------------------------------------------------------------------------
+# Script launching
+# --------------------------------------------------------------------------
+
+
+def _windows_posix_shell() -> str | None:
+    """The POSIX ``sh`` shipped with Git for Windows, or a ``sh`` on PATH."""
+    found = shutil.which("sh")
+    if found:
+        return found
+    git = shutil.which("git")
+    if git:
+        root = Path(git).resolve().parent.parent
+        for candidate in (root / "usr" / "bin" / "sh.exe", root / "bin" / "sh.exe"):
+            if candidate.exists():
+                return str(candidate)
+    return None
+
+
+def _shebang_interpreter(script: Path) -> str | None:
+    try:
+        with script.open("rb") as handle:
+            first = handle.readline(512)
+    except OSError:
+        return None
+    if not first.startswith(b"#!"):
+        return None
+    words = first[2:].decode("utf-8", "replace").split()
+    if not words:
+        return None
+    if Path(words[0]).name == "env" and len(words) > 1:
+        return Path(words[1]).name
+    return Path(words[0]).name
+
+
+def launchable_argv(argv: Sequence[str], cwd: str | os.PathLike[str]) -> list[str]:
+    """Make a declared command line launchable on this platform.
+
+    POSIX returns *argv* unchanged.  Windows cannot execute a ``#!`` script or
+    a ``.venv/bin/python`` path directly, so the venv interpreter maps to
+    ``Scripts/python.exe`` and a shebang script runs under its interpreter
+    (``sh`` from Git for Windows, or the running Python).  An interpreter that
+    is not available raises ``OSError`` naming the script and interpreter.
+    """
+    command = list(argv)
+    if not is_windows() or not command:
+        return command
+    head = command[0].replace("\\", "/")
+    parts = head.split("/")
+    if len(parts) >= 2 and parts[-2] == "bin" and parts[-1].startswith("python"):
+        parts[-2:] = ["Scripts", "python.exe"]
+        command[0] = "/".join(parts)
+        return command
+    script = Path(cwd) / command[0]
+    if not script.is_file():
+        return command
+    interpreter = _shebang_interpreter(script)
+    if interpreter is None:
+        return command
+    if interpreter.startswith("python"):
+        resolved: str | None = sys.executable
+    elif interpreter in {"sh", "bash"}:
+        resolved = _windows_posix_shell()
+    else:
+        resolved = shutil.which(interpreter)
+    if resolved is None:
+        raise OSError(
+            f"cannot run {command[0]}: its shebang interpreter {interpreter!r} "
+            "is not available on Windows"
+        )
+    return [resolved, *command]
