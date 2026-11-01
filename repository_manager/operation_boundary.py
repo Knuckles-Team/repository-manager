@@ -576,7 +576,10 @@ def _assert_path_identity(path: Path, expected: DirectoryIdentity, label: str) -
     result = _stat_path_without_symlinks(path, label)
     actual = DirectoryIdentity.from_stat(result, _mount_id_for_path(path))
     if actual != expected:
-        raise OperationBoundaryError(f"{label} identity changed")
+        raise OperationBoundaryError(
+            f"{label} identity changed: expected {expected.as_dict()} "
+            f"but found {actual.as_dict()} at {path}"
+        )
 
 
 def _stat_path_without_symlinks(path: Path, label: str) -> os.stat_result:
