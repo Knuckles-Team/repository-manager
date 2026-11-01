@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import tempfile
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -35,6 +36,38 @@ from pathlib import Path
 from repository_manager import portable_fs as pfs
 
 _EMPTY_GIT_CONFIG: list[str] = []
+_AUTOCRLF_VALUES = frozenset({"true", "false", "input"})
+_HOST_AUTOCRLF: list[str | None] = []
+
+
+def _host_autocrlf() -> str | None:
+    """The host's default ``core.autocrlf`` (Windows only), as a validated enum.
+
+    A sealed Git ignores system and user config, which on Windows silently
+    drops the ``core.autocrlf=true`` default the checkout was made under and
+    makes every CRLF working file read as modified.  Only this single enum
+    value crosses the seal; nothing else from host config does.
+    """
+    if not pfs.is_windows():
+        return None
+    if not _HOST_AUTOCRLF:
+        value: str | None = None
+        try:
+            probe = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+                ["git", "config", "--get", "core.autocrlf"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+                cwd=tempfile.gettempdir(),
+            )
+            candidate = probe.stdout.strip().lower()
+            if probe.returncode == 0 and candidate in _AUTOCRLF_VALUES:
+                value = candidate
+        except (OSError, subprocess.SubprocessError):
+            value = None
+        _HOST_AUTOCRLF.append(value)
+    return _HOST_AUTOCRLF[0]
 
 
 def _empty_git_config() -> str:
@@ -344,6 +377,11 @@ class PinnedDirectory:
         }
         isolated["GIT_CONFIG_NOSYSTEM"] = "1"
         isolated["GIT_CONFIG_GLOBAL"] = _empty_git_config()
+        autocrlf = _host_autocrlf()
+        if autocrlf is not None:
+            isolated["GIT_CONFIG_COUNT"] = "1"
+            isolated["GIT_CONFIG_KEY_0"] = "core.autocrlf"
+            isolated["GIT_CONFIG_VALUE_0"] = autocrlf
         return isolated
 
     def assert_root_identity(self) -> None:
