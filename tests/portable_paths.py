@@ -15,3 +15,30 @@ def native_abs(posix_path: str) -> str:
     if os.name != "nt":
         return posix_path
     return Path.cwd().anchor + posix_path.lstrip("/").replace("/", "\\")
+
+
+SHELL = os.name != "nt"
+
+
+def _git_sh() -> str:
+    import shutil
+
+    git = shutil.which("git")
+    if git is not None:
+        root = Path(git).resolve().parent.parent
+        for candidate in (root / "usr" / "bin" / "sh.exe", root / "bin" / "sh.exe"):
+            if candidate.exists():
+                return str(candidate)
+    return "sh"
+
+
+def sh_arg(command: str) -> str | list[str]:
+    """Argument for ``subprocess.run(..., shell=SHELL)`` running a POSIX shell line.
+
+    POSIX passes the line to the system shell.  Windows has no POSIX shell
+    (``cmd.exe`` mis-parses single quotes and ``&&`` chains), so the line runs
+    through the POSIX ``sh`` that ships with Git for Windows.
+    """
+    if SHELL:
+        return command
+    return [_git_sh(), "-c", command]

@@ -19,11 +19,17 @@ import pytest
 from repository_manager import build_queue as bq
 from repository_manager.disk_policy import DiskDecisionCode
 from repository_manager.governance.lanes import partitioned_paths
+from tests.portable_paths import SHELL, sh_arg
 
 
 def _run(cmd: str, cwd: Path) -> str:
     proc = subprocess.run(
-        cmd, shell=True, cwd=str(cwd), capture_output=True, text=True, check=True
+        sh_arg(cmd),
+        shell=SHELL,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return proc.stdout.strip()
 

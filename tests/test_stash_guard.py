@@ -32,6 +32,7 @@ import pytest
 
 from repository_manager import stash_guard
 from repository_manager.canonical_guard import hold_canonical_lease
+from tests.portable_paths import SHELL, sh_arg
 
 
 class FakeGit:
@@ -48,7 +49,7 @@ class FakeGit:
     ) -> SimpleNamespace:
         del env, timeout, raw_output
         p = subprocess.run(
-            command, shell=True, cwd=path, capture_output=True, text=True
+            sh_arg(command), shell=SHELL, cwd=path, capture_output=True, text=True
         )
         out = (p.stdout + p.stderr).strip()
         return SimpleNamespace(
@@ -92,7 +93,7 @@ class HookedGit(FakeGit):
 
 def _run(cmd, cwd, check=True):
     return subprocess.run(
-        cmd, shell=True, cwd=cwd, check=check, capture_output=True, text=True
+        sh_arg(cmd), shell=SHELL, cwd=cwd, check=check, capture_output=True, text=True
     )
 
 

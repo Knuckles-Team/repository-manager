@@ -33,6 +33,7 @@ import pytest
 
 from repository_manager import merge_queue as mq
 from repository_manager.lane_registry import FakeDurableLaneAuthority, LaneRegistry
+from tests.portable_paths import SHELL, sh_arg
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO_PYTHON = ".venv/bin/python"
@@ -48,7 +49,12 @@ QUEUE_TEST_COMMAND = (
 
 def _run(cmd: str, cwd: Path) -> str:
     proc = subprocess.run(
-        cmd, shell=True, cwd=str(cwd), capture_output=True, text=True, check=True
+        sh_arg(cmd),
+        shell=SHELL,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return proc.stdout.strip()
 
@@ -65,7 +71,11 @@ class FakeGit:
     ):
         del env, timeout, raw_output, quiet
         p = subprocess.run(
-            command, shell=True, cwd=path or self.path, capture_output=True, text=True
+            sh_arg(command),
+            shell=SHELL,
+            cwd=path or self.path,
+            capture_output=True,
+            text=True,
         )
         out = (p.stdout + p.stderr).strip()
         return SimpleNamespace(
@@ -806,8 +816,8 @@ def test_prune_removes_a_clean_worktree_and_anchors_the_branch(
     assert _run(f"git rev-parse {prune['branch_anchor']}", repo) == tip
     assert (
         subprocess.run(
-            "git rev-parse --verify feat/clean",
-            shell=True,
+            sh_arg("git rev-parse --verify feat/clean"),
+            shell=SHELL,
             cwd=repo,
             capture_output=True,
         ).returncode

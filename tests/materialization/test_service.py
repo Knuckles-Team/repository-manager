@@ -41,6 +41,7 @@ from tests.materialization.fakes import (
     FakeMergeQueuePort,
     InMemoryReceiptStore,
 )
+from tests.portable_paths import SHELL, sh_arg
 
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 FUTURE = NOW + timedelta(hours=1)
@@ -59,7 +60,11 @@ class FakeGit:
     ):
         del env, timeout, raw_output
         proc = subprocess.run(
-            command, shell=True, cwd=path or self.path, capture_output=True, text=True
+            sh_arg(command),
+            shell=SHELL,
+            cwd=path or self.path,
+            capture_output=True,
+            text=True,
         )
         out = (proc.stdout + proc.stderr).strip()
         return SimpleNamespace(

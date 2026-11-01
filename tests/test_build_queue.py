@@ -17,6 +17,7 @@ import pytest
 
 from repository_manager import build_queue as bq
 from repository_manager import task_queue as tq
+from tests.portable_paths import SHELL, sh_arg
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +37,12 @@ def healthy_build_disk(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _run(cmd: str, cwd: Path) -> str:
     proc = subprocess.run(
-        cmd, shell=True, cwd=str(cwd), capture_output=True, text=True, check=True
+        sh_arg(cmd),
+        shell=SHELL,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return proc.stdout.strip()
 
@@ -55,6 +61,17 @@ def _commit(repo: Path, message: str = "commit") -> str:
     return _run("git rev-parse HEAD", repo)
 
 
+def _py_command(counter: Path, *, delay: bool = False) -> str:
+    """JSON-quoted python build step: bump ``counter``, write ``out.txt``."""
+    nl = chr(92) + "n"
+    code = (
+        ("import time; time.sleep(0.5); " if delay else "")
+        + f"open({str(counter)!r}, 'a').write('built{nl}'); "
+        + f"open('out.txt', 'w').write('payload{nl}')"
+    )
+    return json.dumps(code)
+
+
 def _counter_spec(counter_path: Path) -> str:
     # `counter_path` is an ABSOLUTE path outside the repo tree on purpose: a
     # cache-hit-eligible (clean-tree) build runs in a THROWAWAY materialized
@@ -67,7 +84,7 @@ def _counter_spec(counter_path: Path) -> str:
         base: main
         specs:
           - name: widget
-            command: ["python3", "-c", {json.dumps("open(%r, 'a').write('built\\n'); open('out.txt', 'w').write('payload\\n')" % str(counter_path))}]
+            command: ["python3", "-c", {_py_command(counter_path)}]
             workdir: "."
             cache_key_paths: ["src.txt"]
             artifacts: ["out.txt"]
@@ -219,7 +236,7 @@ def test_two_concurrent_same_key_requests_build_exactly_once(tmp_path: Path):
             base: main
             specs:
               - name: widget
-                command: ["python3", "-c", {json.dumps("import time; time.sleep(0.5); open(%r, 'a').write('built\\n'); open('out.txt', 'w').write('payload\\n')" % str(counter))}]
+                command: ["python3", "-c", {_py_command(counter, delay=True)}]
                 workdir: "."
                 cache_key_paths: ["src.txt"]
                 artifacts: ["out.txt"]

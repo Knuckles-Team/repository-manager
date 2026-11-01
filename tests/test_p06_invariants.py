@@ -21,6 +21,7 @@ from repository_manager.test_commands import (
     is_pytest_command,
     is_test_suite_command,
 )
+from tests.portable_paths import SHELL, sh_arg
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +187,12 @@ def test_timed_run_does_not_touch_a_non_test_gate(
 # ---------------------------------------------------------------------------
 def _run(cmd: str, cwd: Path) -> str:
     proc = subprocess.run(
-        cmd, shell=True, cwd=str(cwd), capture_output=True, text=True, check=True
+        sh_arg(cmd),
+        shell=SHELL,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return proc.stdout.strip()
 

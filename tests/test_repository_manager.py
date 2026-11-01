@@ -14,6 +14,7 @@ from repository_manager.models import (
     WorkspaceConfig,
 )
 from repository_manager.repository_manager import Git
+from tests.portable_paths import SHELL, sh_arg
 
 
 def get_mock_metadata(command="test"):
@@ -104,8 +105,6 @@ def test_setup_from_yaml(mock_pull, mock_git, sample_workspace_yml):
     result = wm.setup_from_yaml(str(yml_path))
 
     assert mock_pull.call_count > 0
-
-
 
 
 def test_git_init_with_default_workspace():
@@ -1077,13 +1076,15 @@ class TestUpdateDependencyPropagation:
 
 
 def _sh(cmd, cwd):
-    subprocess.run(cmd, shell=True, cwd=cwd, check=True, capture_output=True, text=True)
+    subprocess.run(
+        sh_arg(cmd), shell=SHELL, cwd=cwd, check=True, capture_output=True, text=True
+    )
 
 
 def _current_branch(cwd):
     return subprocess.run(
-        "git rev-parse --abbrev-ref HEAD",
-        shell=True,
+        sh_arg("git rev-parse --abbrev-ref HEAD"),
+        shell=SHELL,
         cwd=cwd,
         capture_output=True,
         text=True,
