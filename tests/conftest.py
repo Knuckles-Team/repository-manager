@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -17,7 +18,6 @@ def _prefer_git_bash_on_windows() -> None:
     if os.name != "nt":
         return
     import shutil
-    from pathlib import Path
 
     git = shutil.which("git")
     if git is None:
@@ -196,13 +196,22 @@ def _isolate_process_state(monkeypatch):
         if name in _GIT_ENV_LEAK_NAMES or name.startswith(_GIT_ENV_LEAK_PREFIXES):
             monkeypatch.delenv(name, raising=False)
     if sys.platform == "win32":
-        # Git for Windows defaults to core.autocrlf=true: a fixture written
-        # through text mode (CRLF) commits as LF, then reads as modified under
-        # any sealed/isolated git config that does not carry that default.
-        # Fixtures stay byte-stable by turning conversion off for the run.
-        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-        monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.autocrlf")
-        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "false")
+        # Fixtures written through text mode become CRLF on Windows, while the
+        # sealed git environments the product runs with ignore the system
+        # core.autocrlf=true default and would read every such file as
+        # modified.  Fixture text is LF so working tree and index agree.
+        original_write_text = Path.write_text
+
+        def write_text_lf(self, data, encoding=None, errors=None, newline=None):
+            return original_write_text(
+                self,
+                data,
+                encoding=encoding,
+                errors=errors,
+                newline="\n" if newline is None else newline,
+            )
+
+        monkeypatch.setattr(Path, "write_text", write_text_lf)
     try:
         yield
     finally:
