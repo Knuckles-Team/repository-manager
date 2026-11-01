@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from pydantic import ValidationError
 
@@ -72,12 +72,16 @@ class ArtifactTransferReceipt:
 
 
 def _require_relative(relative_path: str) -> str:
-    path = Path(relative_path)
+    posix = PurePosixPath(relative_path)
+    windows = PureWindowsPath(relative_path)
     if (
         not relative_path
         or relative_path.strip() != relative_path
-        or path.is_absolute()
-        or ".." in path.parts
+        or relative_path.startswith(("/", "\\"))
+        or posix.is_absolute()
+        or windows.is_absolute()
+        or ".." in posix.parts
+        or ".." in windows.parts
     ):
         raise PathTraversalError(f"unsafe relative artifact path: {relative_path!r}")
     return relative_path

@@ -751,7 +751,8 @@ class WorktreeManager:
             if line.startswith("worktree "):
                 if cur:
                     entries.append(cur)
-                entry_path = line[len("worktree ") :]
+                # git reports forward slashes on Windows; callers compare native paths.
+                entry_path = os.path.normpath(line[len("worktree ") :])
                 cur = {
                     "repo": name,
                     "path": entry_path,

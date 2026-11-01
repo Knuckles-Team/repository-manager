@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -572,7 +573,8 @@ def test_changed_path_derivation_preserves_deletion_rename_and_odd_names(
     tmp_path: Path,
 ) -> None:
     repo, sha = _repo(tmp_path)
-    odd_name = "odd\tname.py"
+    # A tab cannot be part of a Windows file name.
+    odd_name = "odd name.py" if sys.platform == "win32" else "odd\tname.py"
     (repo / odd_name).write_text("odd\n", encoding="utf-8")
     (repo / "removed.txt").unlink()
     profile = ValidationProfile(

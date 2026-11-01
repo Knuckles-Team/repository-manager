@@ -31,6 +31,7 @@ from repository_manager.development.jobs import (
 from repository_manager.development.models import DevelopmentRequest
 from repository_manager.development.payloads import BuildExecutionDescriptor
 from repository_manager.resource_profiles import default_resource_profiles
+from tests.portable_paths import native_abs
 
 NOW = datetime(2026, 8, 9, 3, 0, tzinfo=UTC)
 
@@ -158,7 +159,9 @@ def test_service_accepts_the_real_nested_development_request_model() -> None:
     payload.pop("repository_id")
     payload["repository"] = {
         "repository_id": "repo:agent-webui",
-        "canonical_path": "/home/app/workspace/agent-packages/agents/agent-webui",
+        "canonical_path": native_abs(
+            "/home/app/workspace/agent-packages/agents/agent-webui"
+        ),
     }
     payload["fairness_group"] = "frontend"
     request = DevelopmentRequest.model_validate(payload)
