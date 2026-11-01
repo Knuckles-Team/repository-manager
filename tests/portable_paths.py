@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 
@@ -41,4 +42,10 @@ def sh_arg(command: str) -> str | list[str]:
     """
     if SHELL:
         return command
-    return [_git_sh(), "-c", command]
+    # sh treats a backslash as an escape; drive paths need forward slashes.
+    posix_line = re.sub(
+        r"[A-Za-z]:(?:\\[^\s'\"&;|]*)+",
+        lambda match: match.group(0).replace("\\", "/"),
+        command,
+    )
+    return [_git_sh(), "-c", posix_line]
