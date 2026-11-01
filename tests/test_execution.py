@@ -343,9 +343,16 @@ def test_nonzero_and_signal_results_are_distinguishable(tmp_path: Path) -> None:
     assert failed.signal is None
     assert failed.failure_class == FailureClass.VALIDATION_CANDIDATE_FAILURE
     assert signalled.outcome == ExecutionOutcome.FAILED
-    assert signalled.exit_code is None
-    assert signalled.signal == signal.SIGTERM
-    assert signalled.failure_class == FailureClass.WORKER_ENVIRONMENT_FAILURE
+    if sys.platform == "win32":
+        # Windows has no POSIX signals: os.kill terminates the process with
+        # the signal number as its plain exit code.
+        assert signalled.exit_code == signal.SIGTERM
+        assert signalled.signal is None
+        assert signalled.failure_class == FailureClass.VALIDATION_CANDIDATE_FAILURE
+    else:
+        assert signalled.exit_code is None
+        assert signalled.signal == signal.SIGTERM
+        assert signalled.failure_class == FailureClass.WORKER_ENVIRONMENT_FAILURE
 
 
 def test_environment_reference_is_materialized_and_redacted(tmp_path: Path) -> None:

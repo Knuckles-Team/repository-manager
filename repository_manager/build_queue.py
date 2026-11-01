@@ -669,7 +669,8 @@ def _config_digest(repo: Path) -> str:
         data = _read_bounded_regular_file(config_path, _MAX_CONFIG_BYTES)
     except BuildQueueError as exc:
         raise BuildQueueError(f"could not read {config_path}: {exc}") from exc
-    return hashlib.sha256(data).hexdigest()
+    # Line endings are a checkout property (autocrlf), not config content.
+    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
 
 
 def _generation_digest(generation_id: str | None) -> str:
@@ -1085,7 +1086,7 @@ def _publish_artifacts(
             published.append(
                 {
                     "pattern": pattern,
-                    "relative_path": str(relative),
+                    "relative_path": relative.as_posix(),
                     "stored_at": str(dest),
                     "sha256": _sha256_file(dest),
                     "bytes": copied,

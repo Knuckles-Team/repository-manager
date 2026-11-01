@@ -631,6 +631,9 @@ def _fsync_file(path: Path) -> None:
 
     descriptor: int | None = None
     try:
+        if pfs.is_link(path):
+            # Windows has no O_NOFOLLOW; refuse links explicitly.
+            raise ArtifactStoreError(f"cannot fsync non-regular artifact {path}")
         # Windows ``_commit`` rejects a read-only descriptor (EBADF).
         access = os.O_RDWR if pfs.is_windows() else os.O_RDONLY
         descriptor = os.open(

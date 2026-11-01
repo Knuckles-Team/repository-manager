@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -51,6 +52,10 @@ from repository_manager.resource_scheduler import (
     ResourceScheduler,
 )
 
+PY = Path(
+    sys.executable
+).as_posix()  # portable interpreter token (no python3 on Windows)
+
 
 def _repo(
     tmp_path: Path,
@@ -66,7 +71,7 @@ def _repo(
     )
     subprocess.run(["git", "config", "user.name", "RMDD tests"], cwd=repo, check=True)
     toolchain_line = (
-        f"    toolchain_fingerprint: [python3, -c, {toolchain!r}]\n"
+        f"    toolchain_fingerprint: [{PY}, -c, {toolchain!r}]\n"
         if toolchain is not None
         else ""
     )
@@ -76,7 +81,7 @@ def _repo(
 base: main
 specs:
   - name: test-build
-    command: [python3, build_script.py]
+    command: [{PY}, build_script.py]
     artifacts: [out.txt]
 {toolchain_line}
     resource_class: light-check
@@ -122,7 +127,7 @@ def test_build_service_persists_typed_payload_through_normal_job_service(
     )
     payload = port.execution_inputs[result["job_id"]]
     assert payload.kind == "repository.build-execution/v1"
-    assert payload.argv == ("python3", "build_script.py")
+    assert payload.argv == (PY, "build_script.py")
     correlation_id = port.rows[result["job_id"]].correlation_id
     assert correlation_id is not None
     assert correlation_id.startswith("build:")
@@ -164,8 +169,8 @@ def test_build_service_rejects_shell_argv_without_secret_leak(tmp_path: Path) ->
     config_path = repo / ".buildcache.yaml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
-            "command: [python3, build_script.py]",
-            'command: [python3, -c, "TOKEN=topsecret"]',
+            f"command: [{PY}, build_script.py]",
+            f'command: [{PY}, -c, "TOKEN=topsecret"]',
         ),
         encoding="utf-8",
     )
@@ -210,15 +215,15 @@ def test_v2_key_busts_each_declared_input_dimension(tmp_path: Path) -> None:
         base.digest
         != bq.compute_cache_key(
             repo,
-            replace(spec, command=("python3", "-c", "print('different')")),
+            replace(spec, command=(PY, "-c", "print('different')")),
             repo_name=repository_id,
         ).digest
     )
     toolchain_one = replace(
-        spec, toolchain_fingerprint=("python3", "-c", "print('toolchain-one')")
+        spec, toolchain_fingerprint=(PY, "-c", "print('toolchain-one')")
     )
     toolchain_two = replace(
-        spec, toolchain_fingerprint=("python3", "-c", "print('toolchain-two')")
+        spec, toolchain_fingerprint=(PY, "-c", "print('toolchain-two')")
     )
     assert bq.compute_cache_key(
         repo, toolchain_one, repo_name=repository_id
@@ -274,7 +279,7 @@ def test_uncacheable_toolchain_submits_durable_without_cache_hit(
         config_path.read_text(encoding="utf-8").replace(
             "    artifacts: [out.txt]\n",
             "    artifacts: [out.txt]\n"
-            '    toolchain_fingerprint: [python3, -c, "import sys; sys.exit(1)"]\n',
+            f'    toolchain_fingerprint: [{PY}, -c, "import sys; sys.exit(1)"]\n',
         ),
         encoding="utf-8",
     )
@@ -310,7 +315,7 @@ def test_worker_recomputes_enabled_toolchain_fingerprint_on_materialized_sha(
     )
     assert result["ok"] is True, result
     assert calls and calls[0][1] == (
-        "python3",
+        PY,
         "-c",
         "print('stable-toolchain')",
     )
@@ -364,7 +369,7 @@ def test_worker_rechecks_uncacheable_toolchain_without_publishing_cache(
     )
     assert result["ok"] is True, result
     assert result["degraded"] is True
-    assert calls == [("python3", "-c", "import sys; sys.exit(1)")]
+    assert calls == [(PY, "-c", "import sys; sys.exit(1)")]
     assert list(store.iter_entries()) == []
 
 
@@ -445,7 +450,7 @@ def test_two_services_share_one_job_and_fresh_worker_reads_frozen_descriptor(
     _scope, spec, key, payload = worker._execution_plan(  # noqa: SLF001
         view, repo_path=repo, spec_name="test-build", claim=claim
     )
-    assert spec.command == ("python3", "build_script.py")
+    assert spec.command == (PY, "build_script.py")
     assert key is not None and payload.base_sha == view.base_sha
 
 
@@ -1941,7 +1946,7 @@ def _repo_named(tmp_path: Path, name: str, *, resource_class: str) -> Path:
 base: main
 specs:
   - name: test-build
-    command: [python3, build_script.py]
+    command: [{PY}, build_script.py]
     artifacts: [out.txt]
     resource_class: {resource_class}
 """,

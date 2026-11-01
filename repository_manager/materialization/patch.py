@@ -129,7 +129,7 @@ def apply_patch(
 
     patch_name = f".materialize-{uuid4().hex}.patch"
     patch_file = worktree_path / patch_name
-    patch_file.write_text(patch_text, encoding="utf-8")
+    patch_file.write_bytes(patch_text.encode("utf-8"))  # no newline translation
     try:
         check = run_git(["git", "apply", "--check", "--", patch_name], worktree_path)
         if check.returncode != 0:

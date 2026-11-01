@@ -5,6 +5,8 @@ from tests.portable_paths import SHELL, sh_arg
 import os
 import shutil
 import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1047,7 +1049,7 @@ def _add_fixed_result_gate(repo_path: str, *, exit_code: int) -> None:
             "  hooks:\n"
             "  - id: fixed-result\n"
             "    name: fixed-result\n"
-            f'    entry: python3 -c "import sys; sys.exit({exit_code})"\n'
+            f'    entry: {Path(sys.executable).as_posix()} -c "import sys; sys.exit({exit_code})"\n'
             "    language: system\n"
             "    always_run: true\n"
             "    pass_filenames: false\n"

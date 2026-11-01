@@ -289,9 +289,14 @@ def test_supervisor_spawn_and_signal_on_windows(
     # No killpg on Windows: group signals map to terminate/kill on the process.
     monkeypatch.delattr(os, "killpg", raising=False)
     proc = _Proc()
+    trees: list[bool] = []
+    monkeypatch.setattr(
+        pfs, "terminate_process_group", lambda _p, *, force=False: trees.append(force)
+    )
     supervisor._signal_group(proc, signal.SIGTERM)  # type: ignore[arg-type]
     supervisor._signal_group(proc, pfs.force_signal())  # type: ignore[arg-type]
-    assert proc.calls == ["terminate", "kill"]
+    # Windows has no graceful group signal: both steps kill the whole tree.
+    assert trees == [True, True]
 
 
 def test_merge_queue_runner_without_procfs_uses_portable_stop(

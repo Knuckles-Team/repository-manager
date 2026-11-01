@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from repository_manager import portable_fs as pfs
 
@@ -160,7 +160,12 @@ class ProcessSupervisor:
 
     def _signal_group(self, process: ProcessLike, sig: int) -> None:
         if pfs.is_windows() or not hasattr(os, "killpg"):
-            if sig == signal.SIGTERM:
+            # Windows has no process groups or graceful group signal: the
+            # whole tree is killed at once so no descendant keeps the output
+            # pipes open after the direct child is gone.
+            if pfs.is_windows() and hasattr(process, "pid"):
+                pfs.terminate_process_group(cast(Any, process), force=True)
+            elif sig == signal.SIGTERM:
                 process.terminate()
             else:
                 process.kill()

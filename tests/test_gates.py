@@ -8,12 +8,18 @@ does not.
 """
 
 import subprocess
+import sys
+from pathlib import Path
 from unittest import mock
 
 import pytest
 
 from repository_manager import gates
 from tests.conftest import isolated_git_subprocess_env
+
+PY = Path(
+    sys.executable
+).as_posix()  # portable interpreter token (no python3 on Windows)
 
 
 def _completed(returncode: int, stdout: str = "", stderr: str = ""):
@@ -310,13 +316,13 @@ def _init_repo_with_tiered_hooks(tmp_path):
         "  hooks:\n"
         "  - id: fast-only\n"
         "    name: fast-only\n"
-        "    entry: python3 -c \"print('FAST_ONLY_RAN')\"\n"
+        "    entry: " + PY + " -c \"print('FAST_ONLY_RAN')\"\n"
         "    language: system\n"
         "    always_run: true\n"
         "    pass_filenames: false\n"
         "  - id: heavy-only\n"
         "    name: heavy-only\n"
-        "    entry: python3 -c \"print('HEAVY_ONLY_RAN')\"\n"
+        "    entry: " + PY + " -c \"print('HEAVY_ONLY_RAN')\"\n"
         "    language: system\n"
         "    always_run: true\n"
         "    pass_filenames: false\n"
@@ -384,14 +390,14 @@ def _init_repo_with_two_heavy_hooks(tmp_path):
         "  hooks:\n"
         "  - id: heavy-one\n"
         "    name: heavy-one\n"
-        "    entry: python3 -c \"print('HEAVY_ONE_RAN')\"\n"
+        "    entry: " + PY + " -c \"print('HEAVY_ONE_RAN')\"\n"
         "    language: system\n"
         "    always_run: true\n"
         "    pass_filenames: false\n"
         "    stages: [pre-push, manual]\n"
         "  - id: heavy-two\n"
         "    name: heavy-two\n"
-        "    entry: python3 -c \"print('HEAVY_TWO_RAN')\"\n"
+        "    entry: " + PY + " -c \"print('HEAVY_TWO_RAN')\"\n"
         "    language: system\n"
         "    always_run: true\n"
         "    pass_filenames: false\n"

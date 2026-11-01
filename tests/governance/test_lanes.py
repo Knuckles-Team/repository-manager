@@ -1321,18 +1321,6 @@ def test_heavy_output_boundary_rejects_links_and_caps_writes(
         ):
             pass
 
-    fifo = tmp_path / "output.fifo"
-    os.mkfifo(fifo)
-    with pytest.raises(lanes.LaneArbitrationError, match="regular file"):
-        with lanes.hold_lease(
-            "cpu-heavy",
-            operation="fifo output",
-            host_id="host-primary",
-            output_path=fifo,
-            path=canonical,
-        ):
-            pass
-
     with pytest.raises(lanes.LaneArbitrationError, match="regular file"):
         with lanes.hold_lease(
             "cpu-heavy",
@@ -1375,6 +1363,24 @@ def test_heavy_output_boundary_rejects_links_and_caps_writes(
             operation="stdout output",
             host_id="host-primary",
             output_path="-",
+            path=canonical,
+        ):
+            pass
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "mkfifo"),
+    reason="named pipes do not exist on Windows, so there is no FIFO to refuse",
+)
+def test_heavy_output_boundary_rejects_a_fifo(canonical: Path, tmp_path: Path) -> None:
+    fifo = tmp_path / "output.fifo"
+    os.mkfifo(fifo)
+    with pytest.raises(lanes.LaneArbitrationError, match="regular file"):
+        with lanes.hold_lease(
+            "cpu-heavy",
+            operation="fifo output",
+            host_id="host-primary",
+            output_path=fifo,
             path=canonical,
         ):
             pass

@@ -2057,6 +2057,12 @@ def _write_exclusive_lease_file(path: Path, serialized: str) -> LeaseIdentity:
     fd: int | None = None
     identity: LeaseIdentity | None = None
     try:
+        if pfs.is_link(path):
+            # Windows has no O_NOFOLLOW: refuse an existing link explicitly.
+            raise LaneArbitrationError(
+                f"cannot publish lease file {path} without following links: "
+                "path is a link"
+            )
         fd = os.open(str(path), _lease_publication_flags(), 0o600)
         info = os.fstat(fd)
         identity = (info.st_dev, info.st_ino)
