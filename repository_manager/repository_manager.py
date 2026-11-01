@@ -2272,7 +2272,9 @@ class Git:
         # Ensure ~/.local/bin is in PATH for tools like bump2version
         local_bin = os.path.expanduser("~/.local/bin")
         if local_bin not in current_env.get("PATH", ""):
-            current_env["PATH"] = f"{local_bin}:{current_env.get('PATH', '')}"
+            current_env["PATH"] = (
+                f"{local_bin}{os.pathsep}{current_env.get('PATH', '')}"
+            )
 
         # Ensure Python output is unbuffered so we get real-time logs
         current_env["PYTHONUNBUFFERED"] = "1"

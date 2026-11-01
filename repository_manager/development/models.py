@@ -8,10 +8,11 @@ those effects and consume these models at their boundaries.
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterable
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, ClassVar, Literal
 
 from pydantic import (
@@ -122,6 +123,23 @@ def _require_absolute_path(value: str) -> str:
     return str(path)
 
 
+def _require_execution_workdir(value: str) -> str:
+    """Validate an execution workdir, local or on a remote POSIX host.
+
+    Remote execution hosts are POSIX machines.  A POSIX-rooted workdir is
+    therefore validated by POSIX rules even when this process runs on a
+    platform whose own absolute paths are drive-qualified.
+    """
+    if os.name == "nt" and value.startswith("/"):
+        posix = PurePosixPath(value)
+        if ".." in posix.parts:
+            raise ValueError("path must not contain a parent traversal component")
+        if str(posix) != value:
+            raise ValueError(f"path is not canonical: {value!r}")
+        return value
+    return _require_absolute_path(value)
+
+
 def _require_relative_path(value: str) -> str:
     path = Path(value)
     if path.is_absolute() or ".." in path.parts:
@@ -175,6 +193,7 @@ GitSha = Annotated[StrictStr, AfterValidator(_require_git_sha)]
 Digest = Annotated[StrictStr, AfterValidator(_require_digest)]
 GitRef = Annotated[StrictStr, AfterValidator(_require_git_ref)]
 AbsolutePath = Annotated[StrictStr, AfterValidator(_require_absolute_path)]
+ExecutionWorkdir = Annotated[StrictStr, AfterValidator(_require_execution_workdir)]
 RelativePath = Annotated[StrictStr, AfterValidator(_require_relative_path)]
 UtcDateTime = Annotated[datetime, AfterValidator(_require_utc)]
 JobId = Annotated[
@@ -489,7 +508,7 @@ class ExecutionCommand(ContractModel):
     """A fixed argv command with bounded, canonical execution inputs."""
 
     argv: tuple[StrictStr, ...]
-    workdir: AbsolutePath
+    workdir: ExecutionWorkdir
     environment_refs: tuple[StrictStr, ...] = ()
     timeout_seconds: StrictInt = Field(default=3600, ge=1, le=86_400)
     max_stdout_bytes: StrictInt = Field(

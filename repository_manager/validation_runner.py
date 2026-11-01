@@ -1011,7 +1011,7 @@ class ValidationRunner:
 
     def _verify_head_matches(self, request: ValidationRequest, tree: Path) -> None:
         current = self._git_output(["rev-parse", "--show-toplevel"], tree)
-        if current != str(tree):
+        if Path(current) != tree:
             raise ValidationPreparationError(
                 "tree path is not the Git worktree top-level"
             )

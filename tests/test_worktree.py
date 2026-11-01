@@ -210,6 +210,7 @@ def test_list_linked_status_is_independent_of_configured_worktree_root(
     be configured with — the split-brain was git-truth being overridden by a
     path-prefix guess tied to one process's own config."""
     made = repo.wm.add("myrepo", "feat-x")
+    assert made["ok"], made
     assert os.path.commonpath([made["path"], wt_mod.WORKTREE_ROOT]) == os.path.abspath(
         wt_mod.WORKTREE_ROOT
     )
@@ -732,6 +733,7 @@ def test_worktree_hygiene_prune_removes_only_merged(tmp_path, monkeypatch):
 def _merged_worktree(wm, branch="feat-merged"):
     """A worktree whose branch really is merged back into main."""
     made = wm.add("myrepo", branch)
+    assert made["ok"], made
     _commit_in(made["path"], f"{branch}.txt", "feat")
     assert wm.merge("myrepo", branch)["ok"]
     return made
@@ -839,6 +841,7 @@ def test_delete_merged_branch_refuses_an_unmerged_branch(repo):
     """The ref gate on its own: `git branch -D` would take this; the guard and
     git's own `-d` both refuse it."""
     made = repo.wm.add("myrepo", "feat-unmerged")
+    assert made["ok"], made
     _commit_in(made["path"], "wip.txt", "wip")
     deleted, reason, anchor = repo.wm._delete_merged_branch(
         repo.path, "feat-unmerged", "main"
@@ -855,6 +858,7 @@ def test_remove_with_delete_branch_refuses_an_unmerged_branch(repo):
     """An explicit `remove --delete-branch` is still not authorisation to orphan
     commits; `force` covers the recoverable directory, never the ref."""
     made = repo.wm.add("myrepo", "feat-unmerged")
+    assert made["ok"], made
     _commit_in(made["path"], "wip.txt", "wip")
     result = repo.wm.remove("myrepo", "feat-unmerged", delete_branch=True)
     assert result["ok"] is True
@@ -956,6 +960,7 @@ def test_sync_rebases_onto_local_main_not_stale_origin_main(repo, tmp_path):
     """NEW behavior: local main is authoritative. A lane branch forked BEFORE
     the landing must pick it up on sync, even though origin/main never saw it."""
     made = repo.wm.add("myrepo", "feat-sync")
+    assert made["ok"], made
     landed_sha = _add_origin_with_stale_main(repo.path, str(tmp_path))
 
     result = repo.wm.sync("myrepo", "feat-sync")
@@ -979,6 +984,7 @@ def test_old_stale_origin_rebase_would_have_dropped_the_landed_commit(repo, tmp_
     origin/<base> after a best-effort fetch) to prove the failure this item
     was opened against was real, not hypothetical."""
     made = repo.wm.add("myrepo", "feat-sync-old")
+    assert made["ok"], made
     landed_sha = _add_origin_with_stale_main(repo.path, str(tmp_path))
 
     # the exact OLD implementation: fetch, then rebase onto origin/<base>.
@@ -1089,6 +1095,7 @@ def test_remove_refuses_an_occupied_worktree_even_with_force(repo):
     clean) and holds a live lease - `force=True` must not bypass it."""
     lanes = pytest.importorskip("repository_manager.governance.lanes")
     made = repo.wm.add("myrepo", "rm-buildbroker-0802")
+    assert made["ok"], made
     _commit_in(made["path"], "wip.txt", "fresh-wip-commit")
 
     with lanes.hold_lease(
@@ -1106,6 +1113,7 @@ def test_remove_still_works_on_a_genuinely_abandoned_worktree(repo):
     """The guard must not become a universal refusal - an unoccupied worktree
     with no lease and no uncommitted work removes exactly as before."""
     made = repo.wm.add("myrepo", "feat-abandoned")
+    assert made["ok"], made
     result = repo.wm.remove("myrepo", "feat-abandoned", force=True)
     assert result["ok"] is True
     assert not os.path.isdir(made["path"])
@@ -1116,6 +1124,7 @@ def test_reset_branch_refuses_an_occupied_worktree_with_unmerged_commits(repo):
     commits is refused rather than reset."""
     lanes = pytest.importorskip("repository_manager.governance.lanes")
     made = repo.wm.add("myrepo", "rm-buildbroker-0802")
+    assert made["ok"], made
     _commit_in(made["path"], "wip.txt", "five-wip-commits")
     tip_before = _ref(repo.path, "refs/heads/rm-buildbroker-0802")
 
@@ -1134,6 +1143,7 @@ def test_reset_branch_refuses_unmerged_commits_even_when_unoccupied(repo):
     a branch that carries commits not reachable from the target would make
     them unreachable from any ref this branch still names - refused."""
     made = repo.wm.add("myrepo", "feat-unmerged-reset")
+    assert made["ok"], made
     _commit_in(made["path"], "wip.txt", "unlanded-work")
     tip_before = _ref(repo.path, "refs/heads/feat-unmerged-reset")
 

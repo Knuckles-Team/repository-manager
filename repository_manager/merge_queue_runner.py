@@ -682,8 +682,14 @@ def _process_tree(root_pid: int) -> set[int]:
 
 
 def _process_cgroup(pid: int) -> str:
-    """Return a process' unified cgroup, refusing unverifiable execution."""
+    """Return a process' unified cgroup, refusing unverifiable execution.
 
+    Platforms without procfs (Windows) have no cgroups; containment there is
+    process-tree termination, so membership is the empty string.
+    """
+
+    if not _procfs_available():
+        return ""
     try:
         content = Path(f"/proc/{pid}/cgroup").read_text(encoding="ascii")
     except (OSError, UnicodeError) as exc:
@@ -706,6 +712,8 @@ def _cgroup_violation(
 ) -> str | None:
     """Check the full observed process tree against the runner's cgroup."""
 
+    if not _procfs_available():
+        return None
     current = _process_tree(root_pid)
     seen.update(current)
     for pid in current | seen:

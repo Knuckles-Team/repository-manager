@@ -1152,7 +1152,10 @@ def _read_stable_config(descriptor: int) -> tuple[FileIdentity, bytes]:
         chunks.append(chunk)
     after = _regular_file_identity(descriptor, mount_id)
     if before != after:
-        raise OperationBoundaryError("git common config changed during read")
+        raise OperationBoundaryError(
+            "git common config changed during read: "
+            f"before {before.as_dict()} after {after.as_dict()}"
+        )
     return after, b"".join(chunks)
 
 
@@ -1171,7 +1174,10 @@ def _assert_config_entry_identity(directory_fd: int, expected: FileIdentity) -> 
         raise OperationBoundaryError("git common config disappeared during read")
     actual = FileIdentity.from_stat(current, expected.mount_id)
     if actual != expected:
-        raise OperationBoundaryError("git common config changed during read")
+        raise OperationBoundaryError(
+            "git common config changed during read: "
+            f"expected {expected.as_dict()} found {actual.as_dict()}"
+        )
 
 
 def _assert_config_snapshot(
