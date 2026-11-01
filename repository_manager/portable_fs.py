@@ -137,11 +137,16 @@ def open_directory(name: str, parent_fd: int | None = None) -> int:
     return _register(target)
 
 
-def open_root() -> int:
-    """Open the filesystem root (the current drive's anchor on Windows)."""
+def open_root(anchor: str | None = None) -> int:
+    """Open the filesystem root; on Windows the root of ``anchor``'s drive.
+
+    ``anchor`` is the drive anchor of the path being opened (``C:\\``); it
+    defaults to the current drive.  A path on another drive must not be
+    resolved against the working directory's drive.
+    """
     if native_dir_fd():
         return os.open(os.sep, directory_open_flags())
-    return _register(Path(os.getcwd()).anchor or os.sep)
+    return _register(anchor or Path(os.getcwd()).anchor or os.sep)
 
 
 def open_entry(name: str, flags: int, mode: int = 0o777, *, dir_fd: int | None) -> int:

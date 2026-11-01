@@ -644,7 +644,7 @@ def open_directory(path: str | Path, *, create: bool = False) -> PinnedDirectory
     components = _path_components(candidate)
     absolute = Path(os.path.abspath(candidate))
     try:
-        root_fd = pfs.open_root()
+        root_fd = pfs.open_root(absolute.anchor)
     except OSError as exc:
         raise OperationBoundaryError("cannot open filesystem root") from exc
 
