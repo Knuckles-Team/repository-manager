@@ -1788,7 +1788,14 @@ def _scan_cache_manifests(
                 continue
             manifest = _read_manifest(entry.name, scope.tree)
             if manifest:
-                entries.append((entry.name, manifest))
+                recorded = manifest.get("key")
+                key = (
+                    recorded
+                    if isinstance(recorded, str)
+                    and pfs.cache_entry_name(recorded) == entry.name
+                    else entry.name
+                )
+                entries.append((key, manifest))
     return entries, None
 
 
@@ -1818,7 +1825,7 @@ def _gc_entry_is_protected(
 
 def _gc_reclaim_entry(root: Path, digest: str) -> int | None:
     """Remove one cache entry's tree; ``None`` means keep (size probe failed)."""
-    entry_dir = root / digest
+    entry_dir = root / pfs.cache_entry_name(digest)
     try:
         total_bytes = _bounded_legacy_tree_size(entry_dir)
     except BuildQueueError:

@@ -45,6 +45,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from repository_manager import portable_fs as pfs
+
 __all__ = [
     "Check",
     "OK",
@@ -410,7 +412,7 @@ def _check_no_local_venv(tree: Path) -> Check:
 
     launcher = tree / "scripts" / "uv_workspace.py"
     marker = venv / ".uv-workspace-selection.json"
-    python = venv / "bin" / "python"
+    python = pfs.venv_python(venv)
     expected = {"label": "", "selection": ["--all-extras"]}
     reason, unevaluable, loaded = _venv_ownership_state(
         venv, launcher, marker, python, expected
@@ -563,7 +565,7 @@ def _check_venv_package_count(tree: Path) -> Check:
     named "alpha", reported OK by the marker-only check).
     """
     venv = tree / ".venv"
-    python = venv / "bin" / "python"
+    python = pfs.venv_python(venv)
     no_venv = _no_usable_venv_check(venv, python)
     if no_venv is not None:
         return no_venv

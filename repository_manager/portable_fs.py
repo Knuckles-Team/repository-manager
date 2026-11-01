@@ -113,6 +113,13 @@ def file_flags(flags: int) -> int:
     return flags | getattr(os, "O_BINARY", 0)
 
 
+def venv_python(venv: Path) -> Path:
+    """The interpreter inside a virtual environment (``Scripts`` on Windows)."""
+    if is_windows():
+        return venv / "Scripts" / "python.exe"
+    return venv / "bin" / "python"
+
+
 def cache_entry_name(key: str) -> str:
     """Directory name for a cache key such as ``v2:<digest>``.
 
