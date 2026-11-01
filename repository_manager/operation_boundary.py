@@ -106,7 +106,10 @@ class FileIdentity:
             links=int(result.st_nlink),
             size=int(result.st_size),
             modified_ns=int(result.st_mtime_ns),
-            changed_ns=int(result.st_ctime_ns),
+            # Windows reports creation time as ``st_ctime`` and the value
+            # differs between handle and path lookups of the same file, so
+            # it cannot witness a change there; mtime/size/inode still do.
+            changed_ns=0 if os.name == "nt" else int(result.st_ctime_ns),
             mount_id=mount_id,
         )
 

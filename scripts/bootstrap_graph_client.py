@@ -5,11 +5,11 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
-from importlib.metadata import PackageNotFoundError, distribution
 import json
 import subprocess
 import sys
 import sysconfig
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 
 
