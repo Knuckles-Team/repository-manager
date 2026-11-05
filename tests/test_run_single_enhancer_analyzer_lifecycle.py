@@ -181,6 +181,7 @@ def test_missing_report_and_sdd_generators_do_not_raise(
     # Must not raise.
     module.run_enhancer()
     assert (tmp_project / ".specify" / "results.json").is_file()
+    assert not (tmp_project / ".specify" / "reports" / "code-enhancement-report.md").exists()
     assert not (tmp_project / ".specify" / "reports" / "code_enhancement_report.md").exists()
 
 
@@ -214,7 +215,8 @@ def test_report_and_sdd_generators_are_invoked_when_present(
 
     module.run_enhancer()
 
-    report_path = tmp_project / ".specify" / "reports" / "code_enhancement_report.md"
+    report_path = tmp_project / ".specify" / "reports" / "code-enhancement-report.md"
     assert report_path.is_file()
     assert "report for project" in report_path.read_text()
+    assert not (report_path.parent / "code_enhancement_report.md").exists()
     assert (tmp_project / "sdd_handoff_marker.txt").is_file()

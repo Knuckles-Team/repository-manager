@@ -136,7 +136,7 @@ def run_enhancer():
     results_json_path.write_text(json.dumps(safe_results, indent=2), encoding="utf-8")
     print("💾 Sanitized results saved successfully")
 
-    _write_report(safe_results, SPECIFY_DIR / "reports" / "code_enhancement_report.md")
+    _write_report(safe_results, SPECIFY_DIR / "reports" / "code-enhancement-report.md")
     _write_sdd_handoff(results)
 
 
