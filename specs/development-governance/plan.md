@@ -52,12 +52,11 @@ repository_manager/gates.py                      existing: run_gate_stage
 .pre-commit-hooks.yaml                           existing: phase-direction, lane-guard
 tests/governance/, tests/test_worktree.py, tests/test_safe_commit.py, tests/test_merge_queue.py   existing
 tests/test_resource_lease.py                     new (planned)
-tests/test_governance_hooks.py                   new (planned)
 ```
 
 ## Phase 0: Research
 
-No unknowns that block planning; no `research.md`. Rows that describe gates this repository does not run (the readme-deploy-block hook, the KISS hook, the duplication gate and its registry, the status page, the extracted-tree verification, the secret-history exception) are owner decisions recorded in the pull request.
+No unknowns that block planning; no `research.md`. The gates this repository does not run (the readme-deploy-block hook, the complexity, KISS, clone and secret-history gates, the status page and extracted-tree verification) are owned by the pipelines gates spec (`PIPE-GATES-R076` to `PIPE-GATES-R084`); the retired rows here point to them.
 
 ## Phase 1: Design
 

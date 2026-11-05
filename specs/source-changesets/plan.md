@@ -49,7 +49,7 @@ tests/source_changesets/                           new: unit and served tests (p
 
 ## Phase 0: Research
 
-No unknowns that block planning; no `research.md`. The open choices (import through per-commit `commit` calls or through the engine `ImportGitHistory` stream, how landings made outside `rm_source_land` reach the sync, where the primary side is stored, how wave criteria reach the connector, and the module names) are owner decisions recorded in the pull request.
+No unknowns that block planning; no `research.md`. The open choices (import through per-commit `commit` calls or through the engine `ImportGitHistory` stream, how landings made outside `rm_source_land` reach the sync, where the primary side is stored, how wave criteria reach the connector) are owner decisions recorded in the pull request. The module names are accepted as the rows list them.
 
 ## Phase 1: Design
 

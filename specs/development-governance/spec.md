@@ -74,6 +74,7 @@ Independent test: the bound tests of `RM-GOVERNANCE-R019` and the planned tests 
 - **FR-008**: The lane guard is exported as a consumer hook (`RM-GOVERNANCE-R031`).
 - **FR-009**: The package runs on Windows (`RM-GOVERNANCE-R032`).
 - **FR-010**: Quality gates fail closed and pass together (`RM-GOVERNANCE-R019`, `RM-GOVERNANCE-R022`).
+- **FR-012**: The generated code-enhancement report uses the standard hyphenated name (`RM-GOVERNANCE-R033`).
 - **FR-011**: Heavy gates run on a leased inventory host slot (`RM-GOVERNANCE-R023`).
 
 ## Success Criteria

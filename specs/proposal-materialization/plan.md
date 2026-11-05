@@ -52,7 +52,7 @@ tests/test_materialization_mcp.py                  new (planned)
 
 ## Phase 0: Research
 
-No unknowns that block planning; no `research.md`. The open choices (adapter names, the gate-profile binding and the receipt additions) are owner decisions recorded in the pull request, not unknowns of the build.
+No unknowns that block planning; no `research.md`. The adapter names are accepted as this plan lists them. The open choices (the gate-profile binding and the receipt additions) are owner decisions recorded in the pull request, not unknowns of the build.
 
 ## Phase 1: Design
 

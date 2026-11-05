@@ -1,6 +1,6 @@
 # repository-manager constitution
 
-Status: PROPOSED. Drafted: 2026-09-28. Version: 0.1.0. Specification index: [specs/README.md](../../specs/README.md).
+Status: RATIFIED. Drafted: 2026-09-28. Ratified: 2026-11-05. Version: 0.1.0. Specification index: [specs/README.md](../../specs/README.md).
 
 ## I. Single owner and reusable architecture
 

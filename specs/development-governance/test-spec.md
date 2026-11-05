@@ -8,6 +8,7 @@ Proof level: every case runs against disposable Git repositories with determinis
 - Test: `tests/governance/test_no_parallel_lane_authority.py::test_no_production_module_imports_the_retired_lane_module`. *(RM-GOVERNANCE-R024)*
 - Test: `tests/governance/test_lanes.py::test_gate_still_refuses_a_canonical_commit_in_a_foreign_repo`, `tests/governance/test_lanes.py::test_gate_refuses_a_hand_edited_generated_ledger_view` and `tests/governance/test_lanes.py::test_gate_detects_a_stray_cargo_target_dir_export_in_a_foreign_cargo_repo`. *(RM-GOVERNANCE-R031)*
 - Test: `tests/test_windows_portability.py::test_emulated_handles_read_write_and_nest` and the other tests of that module. *(RM-GOVERNANCE-R032)*
+- Test: `tests/test_run_single_enhancer_analyzer_lifecycle.py::test_report_and_sdd_generators_are_invoked_when_present` and `::test_missing_report_and_sdd_generators_do_not_raise`. *(RM-GOVERNANCE-R033)*
 - Test: `tests/test_native_lane_authority.py::test_allocate_branch_conflict_refused_by_both`, `tests/test_native_lane_authority.py::test_stale_fence_refused_by_both` and `tests/test_lane_registry.py::test_restart_heartbeat_and_fence_refusal_with_injected_clock`. *(RM-GOVERNANCE-R025)*
 - Test: `tests/test_worktree.py::test_concurrent_worktree_creation_keeps_shared_repo_usable_and_not_bare`. *(RM-GOVERNANCE-R026)*
 - Test: `tests/test_safe_commit.py::test_safe_commit_stages_only_the_reviewed_paths`, `tests/test_safe_commit.py::test_baseline_binds_the_declared_gate_identity_to_the_committed_tree`, `tests/test_safe_commit.py::test_safe_commit_refuses_without_explicit_paths` and `tests/test_merge_queue.py::test_enqueue_refuses_an_unregistered_checkout`. *(RM-GOVERNANCE-R027)*
@@ -26,19 +27,9 @@ Proof level: every case runs against disposable Git repositories with determinis
 
 ## Planned
 
-- Test: `tests/test_governance_hooks.py::test_readme_deploy_block_runs_from_a_linked_worktree` (planned). *(RM-GOVERNANCE-R002)*
-- Test: `tests/test_check_complexity_staged.py::test_match_dispatch_function_is_scored_by_its_structure` (planned). *(RM-GOVERNANCE-R005)*
-- Test: `tests/test_governance_hooks.py::test_duplication_gate_reports_zero_new_pairs_on_the_pushed_tree` (planned). *(RM-GOVERNANCE-R006)*
-- Test: `tests/test_governance_hooks.py::test_kiss_hook_resolves_a_test_mod_declaration` (planned). *(RM-GOVERNANCE-R008)*
-- Test: `tests/test_governance_hooks.py::test_comment_only_commit_is_refused_by_the_duplication_gate` (planned). *(RM-GOVERNANCE-R009)*
-- Test: `tests/test_governance_hooks.py::test_only_registered_pairs_are_exempt` (planned). *(RM-GOVERNANCE-R010)*
-- Test: `tests/test_build_status_page.py::test_builder_leaves_no_diff_against_the_committed_page` (planned). *(RM-GOVERNANCE-R011)*
-- Test: `tests/test_remote_execution_source_staging.py::test_content_hash_detects_a_change_where_git_diff_reports_none` (planned). *(RM-GOVERNANCE-R012)*
 - Test: `tests/test_gates.py::test_full_hook_output_is_captured_and_an_interrupted_run_is_not_a_pass` (planned). *(RM-GOVERNANCE-R014)*
 - Test: `tests/test_governance_protocol.py::test_protocol_names_review_merge_notify_rebase_in_order` (planned). *(RM-GOVERNANCE-R015)*
 - Test: `tests/test_worktree.py::test_remove_deletes_backup_refs_and_build_scratch_of_the_branch` (planned). *(RM-GOVERNANCE-R016)*
-- Test: `tests/test_governance_hooks.py::test_split_file_reports_zero_new_pairs_against_the_base` (planned). *(RM-GOVERNANCE-R020)*
-- Test: `tests/test_governance_hooks.py::test_secret_exception_self_check_matches_only_the_pinned_occurrence` (planned). *(RM-GOVERNANCE-R021)*
 - Test: `tests/test_resource_lease.py::test_host_lease_fields` (planned). *(RM-GOVERNANCE-R023.1)*
 - Test: `tests/test_resource_lease.py::test_capacity_read_from_inventory` (planned). *(RM-GOVERNANCE-R023.2)*
 - Test: `tests/test_resource_lease.py::test_slot_counted_per_host` (planned). *(RM-GOVERNANCE-R023.3)*
