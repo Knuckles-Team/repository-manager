@@ -84,7 +84,7 @@ none
 
 ## Production caller chain
 
-Today the chain starts at `MaterializationService.materialize` (`repository_manager/materialization/service.py:156`) and no production module calls it; the callers are tests. The planned entries are `run_materialize_cli`, dispatched next to `run_merge_queue_cli` at `repository_manager/cli_commands/parser.py:781`, and `register_materialization_tools`, added to the registration list at `repository_manager/mcp_tools/registry.py:62`. From `materialize` the chain is `_admit` (`service.py:220`), `_create_worktree` (:237), `_apply_and_commit` (:264), `_submit` (:292) and `_finish` (:361). Effects: a worktree under the shared worktree root, one commit, one queue entry through `merge_queue.enqueue`, one receipt through the injected store. Obsolete paths to delete: any caller route that publishes a proposal with direct Git commands.
+Today the chain starts at `MaterializationService.materialize` (`repository_manager/materialization/service.py:156`) and no production module calls it; the callers are tests. The planned entries are `run_materialize_cli`, dispatched next to `run_merge_queue_cli` at `repository_manager/cli_commands/parser.py:781`, and `register_materialization_tools`, added as an entry of `MCP_TOOL_REGISTRY` at `repository_manager/mcp_tools/registry.py:105`. From `materialize` the chain is `_admit` (`service.py:220`), `_create_worktree` (:237), `_apply_and_commit` (:264), `_submit` (:292) and `_finish` (:361). Effects: a worktree under the shared worktree root, one commit, one queue entry through `merge_queue.enqueue`, one receipt through the injected store. Obsolete paths to delete: any caller route that publishes a proposal with direct Git commands.
 
 ## Cross-repo seams
 
