@@ -1,10 +1,13 @@
-# RM-MATERIALIZE delivery tasks
+# RM-MATERIALIZE — Tasks
 
-- [ ] Define versioned proposal, approval proof, receipt, and typed failure schemas with canonical digest goldens.
-- [ ] Implement authenticated admission and path/base/size validation before any worktree effect.
-- [ ] Compose existing lane, worktree, validation, explicit commit, and merge queue services in one materializer.
-- [ ] Add idempotent state persistence and uncertain-delivery reconciliation.
-- [ ] Expose one CLI/MCP application operation and migrate callers; delete direct Git fallback routes.
-- [ ] Add all positive, negative, failure injection, and temporary Git integration tests in `test-spec.md`.
-- [ ] Run exact-head full gates and queue rehearsal; store commit/CI/receipt evidence before LANDED or ACCEPTED labels.
-- [ ] Confirm every ID in [`requirements.md`](requirements.md) — `RM-MATERIALIZE-R001` and `RM-MATERIALIZE-R002` through `RM-MATERIALIZE-R007` — is covered by the tasks above; file a follow-up task for any gap found during implementation.
+One task per leaf row of `requirements.md`, producer first: admission precedes the worktree, the patch, the commit and the queue. Each task names its row; the row holds the files, the caller chain and the proof.
+
+## Tasks
+
+- [ ] T001 [US2] RM-MATERIALIZE-R002 Verify the approval binding and the approval authority before any worktree
+- [ ] T002 [US2] RM-MATERIALIZE-R003 Create the isolated worktree at the approved base and apply only the allowlisted patch
+- [ ] T003 [US1] RM-MATERIALIZE-R004 Commit the explicit path list after the declared gate
+- [ ] T004 [US1] RM-MATERIALIZE-R005 Submit to the merge queue and reconcile the landing
+- [ ] T005 [US3] RM-MATERIALIZE-R006 Persist the immutable receipt and replay idempotently
+- [ ] T006 [US3] RM-MATERIALIZE-R007 Keep the request pending when a dependency is unavailable
+- [ ] T007 [US1] RM-MATERIALIZE-R001 Expose the materializer through one CLI verb and one MCP tool
