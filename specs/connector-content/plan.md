@@ -44,7 +44,7 @@ tests/test_graph_reads.py                           new (planned)
 
 ## Phase 0: Research
 
-No unknowns that block planning; no `research.md`. The open choices (the `RepositoryIndexState` type name in the SDK, the code-read tool names and whether the server drops its explicit `content=` argument) are owner decisions recorded in the pull request.
+No unknowns that block planning; no `research.md`. `RepositoryIndexState` is a planned SDK type owned by `SCION-SOURCE-INGEST-R004.13`, and the code-read tool names are accepted as `CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R004` names them; whether the server drops its explicit `content=` argument is an owner decision recorded in the pull request.
 
 ## Phase 1: Design
 

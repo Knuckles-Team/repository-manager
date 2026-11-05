@@ -51,7 +51,7 @@ tests/test_retired_names.py                         new (planned)
 
 ## Phase 0: Research
 
-No unknowns that block planning; no `research.md`. The class names and file location of the import inventory are an owner decision recorded in the pull request.
+No unknowns that block planning; no `research.md`. The class names and file location of the import inventory are accepted as `RM-CONNECTOR-R002` names them.
 
 ## Phase 1: Design
 
