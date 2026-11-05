@@ -1,9 +1,12 @@
-# RM-CONNECTOR delivery tasks
+# RM-CONNECTOR — Tasks
 
-- [ ] Produce reviewed import inventory and stable tool schema baseline.
-- [ ] Complete the [`RM-GOVERNANCE-R001`](../development-governance/spec.md) governance cut and route all RM governance callers locally.
-- [ ] Migrate connector transport to the SDK public interface and retain only legitimate orchestration imports.
-- [ ] Remove private, dead, and fallback adapters after tests prove no caller remains.
-- [ ] Add clean-install, import-direction, MCP/CLI contract, and negative tests in `test-spec.md`.
-- [ ] Run exact-head quality and package gates, merge, and record commit/CI evidence before marking LANDED or ACCEPTED.
-- [ ] Confirm every ID in [`requirements.md`](requirements.md) — `RM-CONNECTOR-R001` and `RM-CONNECTOR-R002` through `RM-CONNECTOR-R006` — is covered by the tasks above; file a follow-up task for any gap found during implementation.
+One task per row of `requirements.md`, in dependency order: governance first, connector transport second, the inventory and contract golden next, and removal of dead adapters last. Each task names its row; the row holds the files, the caller chain and the proof.
+
+## Tasks
+
+- [x] T001 [US2] RM-CONNECTOR-R004 Keep governance imports under repository-manager authority
+- [x] T002 [US2] RM-CONNECTOR-R003 Route connector transport imports through the public SDK
+- [x] T003 [US1] RM-CONNECTOR-R001 Migrate connector imports to the public SDK boundary
+- [ ] T004 [US2] RM-CONNECTOR-R002 Classify every import from the orchestration package
+- [x] T005 [US1] RM-CONNECTOR-R005 Preserve MCP/CLI contract during connector migration
+- [ ] T006 [US2] RM-CONNECTOR-R006 Remove dead connector adapters after cutover
