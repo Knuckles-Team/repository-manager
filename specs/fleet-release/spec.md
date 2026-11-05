@@ -1,35 +1,82 @@
 # RM-RELEASE — Dependency aware fleet release
 
-**Owner:** repository-manager. **Delivery state:** BUILDING; source exists, fleet activation and acceptance are unverified. See [requirements.md](requirements.md) for the definition of every requirement ID and [status.json](status.json) for current delivery state.
+Component: Fleet release
+
+**Owner:** repository-manager. See [requirements.md](requirements.md) for the definition of every requirement ID.
 
 ## Outcome
 
-A maintainer can release a selected set of repositories in an order derived from declared and observed dependency edges. A contributor can reproduce the planner with fixtures in a fresh checkout, without access to any operator infrastructure. The release refuses incomplete evidence, cycles, stale inputs, and partial publication before mutating a repository.
+A maintainer can release a selected set of repositories in an order derived from declared and observed dependency edges. A contributor can reproduce the planner with fixtures in a fresh checkout, without access to any operator infrastructure. The release refuses incomplete evidence, cycles, stale inputs and partial publication before mutating a repository.
 
-## Users and scenarios
+## Scope
 
-1. A release operator selects repository IDs from a portable manifest and receives a frozen plan with deterministic stages, a digest, and a reason for each edge.
-2. A contributor changes dependency metadata and sees the changed plan or an actionable diagnostic before any push.
-3. A recovery operator inspects a failed run and sees which immutable stages completed, which did not, and whether retry is safe.
+Owner: `repository-manager`, the sole owner of census, ordering, Git execution and receipts. The code is `repository_manager/development/` (`fleet_census.py`, `fleet_manifest.py`, `fleet_source_universe.py`, `workspace_release.py`, `workspace_release_plan.py`, `fleet_release_gate.py`, `fleet_evidence_provider.py`), `repository_manager/dependency_readiness.py` and `repository_manager/rollout.py`. Package managers and forges remain external systems; adapters return evidence rather than becoming alternate planners. No feature requires a pre-existing local fleet, private registry or live service. Unknown identity, private path, unverified version, missing mirror, unsupported syntax, uncertain publication and timeout fail closed with a diagnostic.
+
+Why a spec: no other spec owns release planning and the dependency-floor rollout. Search: `git grep -n "release" -- specs` finds only this spec.
+
+## User Scenarios & Testing
+
+### User Story 1 - Plan a dependency-ordered release (Priority: P1)
+
+The user is a release operator. The outcome is a frozen plan with deterministic stages, a digest and a reason for each edge.
+
+**Acceptance scenarios**
+
+1. **Given** a portable manifest and complete source observations, **When** the operator plans a release, **Then** the plan has deterministic stages and one digest that does not change when the input order changes.
+2. **Given** an omitted repository or source, **When** the operator plans a release, **Then** the receipt is incomplete and no executable plan exists.
+3. **Given** a two-node cycle or an upward phase edge, **When** the operator plans a release, **Then** a typed diagnostic names the members and no graph is returned.
+
+Independent test: the bound tests of `RM-RELEASE-R001` to `RM-RELEASE-R004`.
+
+### User Story 2 - Execute and recover safely (Priority: P1)
+
+The user is a recovery operator. The outcome is that no stage mutates anything without trusted evidence, and a failed run shows what completed.
+
+**Acceptance scenarios**
+
+1. **Given** a missing artifact, a failed check or a stale predecessor, **When** a dependent stage starts, **Then** it is blocked before any mutation.
+2. **Given** a dependency version with only an sdist, **When** readiness is checked, **Then** it fails unless the consumer allow-lists the package.
+3. **Given** an injected push failure, **When** the run stops, **Then** a reconcilable partial record exists and success is never reported.
+
+Independent test: the bound tests of `RM-RELEASE-R005` to `RM-RELEASE-R007`.
+
+### User Story 3 - Roll a dependency floor across the fleet (Priority: P2)
+
+The user is a maintainer. The outcome is one auto-merging pull request per repository and a tag after merge.
+
+**Acceptance scenarios**
+
+1. **Given** a dependency and a floor, **When** the maintainer runs `rollout`, **Then** each selected repository gets one pull request with the floor, a verified relock, a patch bump, a changelog entry and regenerated spec status.
+2. **Given** a re-run, **When** a rollout pull request is open or merged, **Then** it is adopted and never duplicated.
+3. **Given** a merged pull request whose main meets the floor, **When** `release` runs, **Then** it tags once and skips an existing tag.
+
+Independent test: the bound tests of `RM-RELEASE-R009`.
 
 ## Requirements
 
-| ID | Contract | Acceptance |
-|---|---|---|
-| RM-RELEASE-R002 | The census identifies each selected repository, package, version source, dependency group, and production source observation for Python, Rust, and JavaScript/TypeScript. Missing or contradictory metadata is explicit. Documentation readiness derives expected agent identities from the caller's canonical manifest and rejects identity drift before generation. | A fixture with an omitted repository or source yields an incomplete receipt and no executable plan. |
-| RM-RELEASE-R003 | Build a directed graph with classified runtime, build, development, optional, deployment, and frontend edges. Reject cycles in each declared release scope; never silently drop an edge to make the graph acyclic. | A two-node cycle and a cross-phase upward edge produce stable, typed diagnostics. |
-| RM-RELEASE-R004 | Bind selected repository identities, source revisions, manifest and census digests, edge evidence, stage order, and version-floor rewrites into an immutable plan digest. | Reordering input data does not change the digest; changing a relevant source revision does. |
-| RM-RELEASE-R005 | Execute setup, install, validation, build, publication, and downstream readiness in dependency order. Mutations require a complete, current plan and trusted publication evidence. | A missing artifact, failed CI check, or stale predecessor blocks dependents before their mutation. |
-| RM-RELEASE-R006 | Git, CLI, and MCP release routes use the same admission and executor contract. A failed activation preserves the prior route with no partially switched entry point. | Each route yields the same stage and refusal result from a shared fixture. |
-| RM-RELEASE-R009 | Roll a dependency floor across the fleet deterministically and resumably: select, plan into a ledger, apply one auto-merging PR per repository (floor, verified relock, patch bump, CHANGELOG, spec-status regen, pre-commit), track, and tag after merge. Replaces the retired phased bump/push. | `tests/test_rollout.py`: resume idempotency, unresolved lock fails the row, existing PR not duplicated, tag only after merge and floor met. |
-| RM-RELEASE-R007 | Each stage records exact artifact and repository identity, outcome, retry key, and rollback or repair action. | Injected push failure gives a reconciliable partial state and never reports success. |
+- **FR-001**: Planning derives order from declared and observed edges and rejects cycles (`RM-RELEASE-R001`, `RM-RELEASE-R003`).
+- **FR-002**: The census is complete or explicit about what is missing (`RM-RELEASE-R002`).
+- **FR-003**: The plan digest is content-addressed and order-independent (`RM-RELEASE-R004`).
+- **FR-004**: Stages execute in order with trusted gating and receipts (`RM-RELEASE-R005`, `RM-RELEASE-R007`).
+- **FR-005**: All routes share one admission contract (`RM-RELEASE-R006`).
+- **FR-006**: Package publication happens only from version tags (`RM-RELEASE-R008`).
+- **FR-007**: The dependency-floor rollout is deterministic and resumable (`RM-RELEASE-R009`).
 
-## Boundaries and failure behavior
+## Success Criteria
 
-repository-manager owns census, ordering, Git execution, and receipts. Package managers and forges remain external systems; adapters return evidence rather than becoming alternate planners. No feature requires a pre-existing local fleet, private registry, or live service. Offline fixtures cover all logic; optional live qualification may use a contributor's own repositories. Unknown identity, private path, unverified version, missing mirror, unsupported syntax, uncertain publication, and timeout fail closed with a diagnostic.
+- **SC-001**: Permuted equivalent input yields one plan digest (`RM-RELEASE-R004`).
+- **SC-002**: A blocked predecessor leaves every dependent repository unmodified (`RM-RELEASE-R005`).
+- **SC-003**: Re-running a rollout opens no second pull request (`RM-RELEASE-R009`).
 
-## Trace and evidence
+## Edge Cases
 
-This directory is the complete contribution contract for **RM-RELEASE-R001**. Related public repository contracts may use the same ID, but this spec stands alone. Source implementation is not acceptance. Mark **LANDED** only after the exact code commit reaches `main`; mark **ACCEPTED** only after the tests in [test-spec.md](test-spec.md), full applicable quality gates, and a checked-in release receipt have passed for that commit. Record commit, CI run, and artifact digest here when verified.
+- A same-basename package in two repositories: identity is explicit and an ambiguous owner refuses.
+- A cargo plain version: read as a caret floor; a node tag or compound range fails closed.
+- A lock that resolves below the floor: the row fails and a re-run retries it.
+- The forge is unreachable during readiness: the check degrades to the wheel rule.
 
-Requirement IDs are defined in [requirements.md](requirements.md); delivery state per ID is in `status.json`.
+## Assumptions
+
+- The manifest is a portable input; on-disk Git repositories and hosted artifacts are execution evidence.
+- Fleet activation stays closed until canonical metadata and live consumers can cut over together.
+- Offline fixtures cover all logic; a live rehearsal on a contributor's own repositories is optional.
