@@ -1,13 +1,15 @@
-# RM-RELEASE delivery tasks
+# RM-RELEASE — Tasks
 
-- [x] Establish typed graph, plan, and frozen digest source in `development/workspace_release*.py` (source only, not yet merged; acceptance pending).
-- [ ] Complete portable census and independent source-universe proof for every selected repository and package ecosystem.
-- [ ] Close all dependency cycles or document an explicit supported scope that excludes them; prove no hidden edge omissions.
-- [ ] Bind trusted artifact, forge, and repository evidence to every stage and retry.
-- [ ] Route Git, CLI, and MCP through one fail-closed admission/executor, then retire the legacy path atomically.
-- [ ] Add the positive/negative tests in `test-spec.md`, including failure/retry and stale-plan tests.
-- [ ] Run full applicable gates and record exact-head CI, digest, source tree, and release rehearsal evidence in `spec.md`.
-- [ ] Mark LANDED and ACCEPTED separately after merge and independent verification.
-- [ ] Confirm every ID in [`requirements.md`](requirements.md) — `RM-RELEASE-R001` and `RM-RELEASE-R002` through `RM-RELEASE-R007` — is covered by the tasks above; file a follow-up task for any gap found during implementation.
-- [x] Bind this package publication wrapper to version-tag pushes and shared tag admission (RM-RELEASE-R008); preserve source CI and secret wiring.
-- [x] Retire phased bump/push and add the deterministic dependency rollout (`repository-manager rollout`, MCP `rm_rollout`) with ledger resume, PR-only landing and post-merge tagging (RM-RELEASE-R009); bind `tests/test_rollout.py`.
+One task per leaf row of `requirements.md`, producer first: census, graph and digest precede execution gating, routes and receipts; the rollout and the tag-only publication are independent. Each task names its row; the row holds the files, the caller chain and the proof.
+
+## Tasks
+
+- [ ] T001 [US1] RM-RELEASE-R001 Dependency-ordered fleet release planning
+- [ ] T002 [US1] RM-RELEASE-R002 Complete per-repository dependency census
+- [x] T003 [US1] RM-RELEASE-R003 Acyclic, typed dependency graph per release scope
+- [x] T004 [US1] RM-RELEASE-R004 Immutable, content-addressed release plan digest
+- [ ] T005 [US2] RM-RELEASE-R005 Dependency-ordered execution with trusted gating
+- [ ] T006 [US2] RM-RELEASE-R006 One shared admission contract across release routes
+- [ ] T007 [US2] RM-RELEASE-R007 Per-stage receipts with retry and rollback evidence
+- [x] T008 [P] [US2] RM-RELEASE-R008 Publish this package only from version tags
+- [x] T009 [P] [US3] RM-RELEASE-R009 Deterministic, resumable dependency-floor rollout through PRs
