@@ -101,8 +101,6 @@ subdirectories:
         - url: https://github.com/Knuckles-Team/fan-manager.git
           description: Dell PowerEdge fan speed + CPU temperature control via IPMI.
             MCP Server + A2A Server. CONCEPT:FAN-001
-        - url: https://github.com/Knuckles-Team/genius-agent.git
-          description: GeniusAgent Search Engine for Agentic AI!
         - url: https://github.com/Knuckles-Team/github-agent.git
           description: GitHub Agent for MCP
         - url: https://github.com/Knuckles-Team/gitlab-api.git
@@ -598,7 +596,6 @@ selectors:
     - arbora/connectors/emerald-exchange
     - arbora/connectors/erpnext-agent
     - arbora/connectors/fan-manager
-    - arbora/connectors/genius-agent
     - arbora/connectors/github-agent
     - arbora/connectors/gitlab-api
     - arbora/connectors/ciso-assistant-api
