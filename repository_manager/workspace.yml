@@ -203,8 +203,6 @@ subdirectories:
           description: Twenty CRM REST/GraphQL MCP Server for Agentic AI!
         - url: https://github.com/Knuckles-Team/audiobookshelf-mcp.git
           description: Audiobookshelf media-server MCP server for Agentic AI.
-        - url: https://github.com/Knuckles-Team/firefly-iii-mcp.git
-          description: Firefly III personal-finance MCP server for Agentic AI.
         - url: https://github.com/Knuckles-Team/freshrss-agent.git
           description: FreshRSS API, MCP Server, and A2A Server.
         - url: https://github.com/Knuckles-Team/paperless-ngx-mcp.git
@@ -637,7 +635,6 @@ selectors:
     - arbora/connectors/technitium-dns-mcp
     - arbora/connectors/twenty-mcp
     - arbora/connectors/audiobookshelf-mcp
-    - arbora/connectors/firefly-iii-mcp
     - arbora/connectors/freshrss-agent
     - arbora/connectors/paperless-ngx-mcp
     - arbora/connectors/gramps-mcp
@@ -825,10 +822,6 @@ services:
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/audiobookshelf-mcp.git
     domain: audiobookshelf-mcp.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
     description: Audiobookshelf media-server MCP server stack.
-  - name: firefly-iii-mcp
-    url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/firefly-iii-mcp.git
-    domain: firefly-iii-mcp.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
-    description: Firefly III personal-finance MCP server stack.
   - name: paperless-ngx-mcp
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/paperless-ngx-mcp.git
     domain: paperless-ngx-mcp.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
