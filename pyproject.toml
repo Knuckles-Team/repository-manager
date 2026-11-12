@@ -60,7 +60,7 @@ repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "docs_rea
 [tool.uv]
 managed = true
 # fastmcp-slim ships no non-prerelease under the fastmcp>=4.0.0b1 floor
-# scion-sdk[mcp]>=0.11.0,<0.12 requires, and uv allows prereleases only when a
+# scion-sdk[mcp] requires, and uv allows prereleases only when a
 # root requirement names one.
 override-dependencies = [
     "fastmcp-slim[client,server]>=4.0.0b1",
