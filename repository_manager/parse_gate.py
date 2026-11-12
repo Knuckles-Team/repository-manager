@@ -2,7 +2,7 @@
 
 CONCEPT:RM-PARSE-GATE
 
-Why this exists, concretely. On 2026-08-10 five ``epistemic-graph`` branches
+Why this exists, concretely. On 2026-08-10 five ``medulla`` branches
 were merged by a mechanical keep-both-sides resolution. The result was not
 subtly wrong — **four files did not parse at all**, and the workspace
 ``Cargo.toml`` was rejected outright with ``duplicate key``, so cargo could not

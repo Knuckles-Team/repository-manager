@@ -93,7 +93,7 @@ def _workspace(root: Path) -> None:
         "pipelines",
         "gitlab-pipelines",
         "agent-packages/scion-sdk",
-        "agent-packages/platform/epistemic-graph",
+        "agent-packages/platform/medulla",
         "open-source-libraries/research-input",
     )
     for relative in paths:
@@ -111,9 +111,7 @@ def _workspace(root: Path) -> None:
                 "repositories": [{"url": "https://example.invalid/scion-sdk.git"}],
                 "subdirectories": {
                     "platform": {
-                        "repositories": [
-                            {"url": "https://example.invalid/epistemic-graph.git"}
-                        ]
+                        "repositories": [{"url": "https://example.invalid/medulla.git"}]
                     }
                 },
             },
@@ -147,7 +145,7 @@ def test_manifest_recurses_root_and_nested_repositories_but_excludes_research(
         "pipelines",
         "gitlab-pipelines",
         "agent-packages/scion-sdk",
-        "agent-packages/platform/epistemic-graph",
+        "agent-packages/platform/medulla",
     ]
     assert all("open-source-libraries" not in item.identifier for item in repositories)
 
@@ -173,12 +171,12 @@ def test_discovery_folds_latest_record_and_ignores_canonical_stale_terminal(
         [_record("canonical-queued")],
     )
     _fragment(
-        tmp_path / "agent-packages/platform/epistemic-graph",
+        tmp_path / "agent-packages/platform/medulla",
         "lane.yaml",
         [_record("same", enqueued="2026-08-31T11:00:00+00:00")],
     )
     _fragment(
-        tmp_path / "agent-packages/platform/epistemic-graph",
+        tmp_path / "agent-packages/platform/medulla",
         CANONICAL_FRAGMENT,
         [_record("same", state="landed", recorded="2026-08-31T11:30:00+00:00")],
     )

@@ -129,7 +129,7 @@ TOOLCHAIN_BINARIES: dict[str, str] = {
     "npx": "Node package runner (ships with node)",
     "pnpm": "JS package manager (agent-webui/agent-terminal-ui/geniusbot gates)",
     "yarn": "JS package manager (alternate)",
-    "cargo": "Rust build tool (epistemic-graph gates)",
+    "cargo": "Rust build tool (medulla gates)",
     "rustc": "Rust compiler",
     "rustup": "Rust toolchain manager",
     "go": "Go toolchain",

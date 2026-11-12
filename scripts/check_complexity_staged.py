@@ -178,7 +178,7 @@ def _walk(fn: dict, prefix: str, out: dict) -> None:
        of that name cccc emitted LAST and discards the others. Two classes in one
        module may each define `submit`; cccc reports both at the same level with
        the same qualified name. Measured when this was found:
-       epistemic_graph/client.py collapsed 740 rows to 654 names, hiding 86 --
+       medulla/client.py collapsed 740 rows to 654 names, hiding 86 --
        including a `submit` at cyclomatic 22 / cognitive 20 sitting behind a
        clean one, over which the sibling gate reported "every function under both
        caps". In au: core/config.py hides 10 rows, multiplexer.py 1,

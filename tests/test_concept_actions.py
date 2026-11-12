@@ -31,7 +31,7 @@ def test_authority_module_points_at_the_in_repo_governance_package() -> None:
 def test_default_authority_is_none_because_no_factory_not_a_dead_import() -> None:
     """Honest degrade: the module is reachable; it just exposes no
     documented ``build_default_authority()`` construction entrypoint yet
-    (constructing a live one needs a connected epistemic-graph engine
+    (constructing a live one needs a connected medulla engine
     handle, out of this package's scope -- see ``concept_actions.py``)."""
     module = importlib.import_module(AUTHORITY_MODULE)
     assert getattr(module, "build_default_authority", None) is None

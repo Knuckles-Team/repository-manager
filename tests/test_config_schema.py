@@ -311,7 +311,7 @@ def test_duplicate_yaml_keys_and_packaged_presets_are_checked(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize(
-    "filename", ["agent-utilities.mergequeue.yaml", "epistemic-graph.mergequeue.yaml"]
+    "filename", ["meristem.mergequeue.yaml", "medulla.mergequeue.yaml"]
 )
 def test_versioned_merge_presets_preserve_legacy_execution_contract(
     filename: str,

@@ -49,7 +49,7 @@ class Clock:
 # ---------------------------------------------------------------------------
 # Fake RMDD-28 native transport: an in-memory, deliberately independent
 # reimplementation of the reserve/renew/observe/finish/status decision
-# vocabulary described in the RMDD-28 lane brief and the frozen epistemic-graph
+# vocabulary described in the RMDD-28 lane brief and the frozen medulla
 # Rust protocol.  This is a TEST DOUBLE ONLY -- it is never wired into
 # NativeLaneAuthority.from_graph_client / create_production_lane_registry.
 # ---------------------------------------------------------------------------
@@ -471,9 +471,9 @@ def test_native_lane_authority_refuses_construction_without_claimer() -> None:
 
 
 def test_native_lane_authority_refuses_against_the_real_generated_client() -> None:
-    """The genuine, current, no-fallback refusal against real epistemic-graph.
+    """The genuine, current, no-fallback refusal against real medulla.
 
-    ``epistemic_graph.client.EpistemicGraphClient``/``SyncEpistemicGraphClient``
+    ``medulla.client.EpistemicGraphClient``/``SyncEpistemicGraphClient``
     do not yet expose a ``development_lanes`` namespace (only ``work_items``
     for RMDD-27's resource reservation). Importing the real package and
     attempting to build the EG transport against a bare namespace-less stand-in

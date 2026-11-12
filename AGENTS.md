@@ -453,13 +453,13 @@ From a fresh clone (locally, in CI, or in a Claude Code cloud session, where
 
 ```bash
 scripts/bootstrap.sh            # uv >= 0.9, pinned Python, pinned siblings, .venv, git hooks
-scripts/bootstrap.sh --native   # also build the epistemic-graph kernel (slow; `pytest -m native` only)
+scripts/bootstrap.sh --native   # also build the medulla kernel (slow; `pytest -m native` only)
 ```
 
 The sibling checkouts `uv.lock` installs editable (scion-sdk, the
-connector SDK, epistemic-graph) are cloned under the ignored
+connector SDK, medulla) are cloned under the ignored
 `.uv-workspace-siblings/` at the commits in `scripts/siblings.lock`, the only
-place those pins live. A symlink there, or `AGENT_UTILITIES_ROOT`, points the
+place those pins live. A symlink there, or `MERISTEM_ROOT`, points the
 gates at the operator's own checkout instead.
 
 ## Commands (run these exactly)
@@ -708,7 +708,7 @@ When adding new utility modules to the scion_sdk package:
 ## Gate Execution — the ledger, `retest`, and the fast development loop
 
 **Stop validating a fix by re-running the whole wave.** On 2026-08-21 a single
-`epistemic-graph` push cost roughly **six hours** because every one of six
+`medulla` push cost roughly **six hours** because every one of six
 failing pre-commit hooks was re-proven, on every fix, by re-running the
 repo's entire 90-minute heavy wave — there was no way to ask "just the hooks
 that were failing." The same push's integration suite was independently
@@ -1159,7 +1159,7 @@ Working in parallel with other sessions/worktrees? **Reserve a concept id before
 scion-sdk --json concept reserve --ns MEDULLA-KG.compute.backend   # or a package prefix, e.g. KEY
 ```
 
-Full protocol (ledger, merge=union, reconcile, MCP/REST): <https://knuckles-team.github.io/agent-connector-sdk/concept_coordination/>
+Full protocol (ledger, merge=union, reconcile, MCP/REST): <https://knuckles-team.github.io/scion-sdk/concept_coordination/>
 <!-- END concept-coordination (generated) -->
 
 ## Version & lockfile drift edict (keep the version mirrors AND every generated lock artifact in sync)

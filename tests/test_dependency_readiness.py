@@ -4,7 +4,7 @@ Covers both layers off the SAME primitives -- no network in these tests: every
 test supplies a fake :class:`~repository_manager.dependency_readiness.IndexBackend`
 so behavior is proven deterministically, and the live-index proof (does this
 correctly fail against scion-sdk' real, currently-unsatisfiable
-``epistemic-graph`` constraint, and pass for a satisfiable one) is demonstrated
+``medulla`` constraint, and pass for a satisfiable one) is demonstrated
 separately, out of band, against the real PyPI index.
 """
 
@@ -43,7 +43,7 @@ class _FakeBackend:
 
 
 def _constraint(
-    package="epistemic-graph", spec=">=2.23.2,<3.0.0", declared_by="pyproject.toml"
+    package="medulla", spec=">=2.23.2,<3.0.0", declared_by="pyproject.toml"
 ):
     return dr.DeclaredConstraint(
         package=package,
@@ -60,9 +60,7 @@ def _constraint(
 
 
 def test_check_constraint_satisfied():
-    backend = _FakeBackend(
-        {"epistemic-graph": ["2.22.0", "2.23.0", "2.23.2", "2.24.0"]}
-    )
+    backend = _FakeBackend({"medulla": ["2.22.0", "2.23.0", "2.23.2", "2.24.0"]})
     result = dr.check_constraint(
         _constraint(), index_urls=["https://pypi.org/simple"], backend=backend
     )
@@ -73,7 +71,7 @@ def test_check_constraint_satisfied():
 
 def test_check_constraint_unsatisfied_names_package_constraint_and_available():
     """The live-instance shape: 2.23.0 published, >=2.23.2 declared."""
-    backend = _FakeBackend({"epistemic-graph": ["2.22.4", "2.23.0"]})
+    backend = _FakeBackend({"medulla": ["2.22.4", "2.23.0"]})
     result = dr.check_constraint(
         _constraint(), index_urls=["https://pypi.org/simple"], backend=backend
     )
@@ -81,15 +79,13 @@ def test_check_constraint_unsatisfied_names_package_constraint_and_available():
     assert result.satisfied is False
     assert result.latest_available == "2.23.0"
     # Message must name the package, the declared constraint, and what's available.
-    assert "epistemic-graph" in result.detail
+    assert "medulla" in result.detail
     assert "2.23.2" in result.detail
     assert "2.23.0" in result.detail
 
 
 def test_check_constraint_index_unreachable_is_distinguished_from_unsatisfied():
-    backend = _FakeBackend(
-        {"epistemic-graph": dr.IndexUnreachableError("connection refused")}
-    )
+    backend = _FakeBackend({"medulla": dr.IndexUnreachableError("connection refused")})
     result = dr.check_constraint(
         _constraint(),
         index_urls=["https://pypi.example/simple"],
@@ -163,7 +159,7 @@ def test_declared_fleet_constraints_scopes_to_fleet_packages_only(tmp_path):
 [project]
 name = "some-repo"
 dependencies = [
-  "epistemic-graph[full]>=2.23.2,<3.0.0",
+  "medulla[full]>=2.23.2,<3.0.0",
   "requests>=2.34.2",
 ]
 [project.optional-dependencies]
@@ -173,14 +169,14 @@ extra = ["skill-graphs>=1.1.0"]
     constraints = cast(
         list[dr.DeclaredConstraint],
         dr.declared_fleet_constraints(
-            tmp_path, fleet_packages={"epistemic-graph", "skill-graphs"}
+            tmp_path, fleet_packages={"medulla", "skill-graphs"}
         ),
     )
     names = {c.package for c in constraints}
-    assert names == {"epistemic-graph", "skill-graphs"}
+    assert names == {"medulla", "skill-graphs"}
     assert "requests" not in names  # not a fleet package -- out of scope by design
 
-    eg = next(c for c in constraints if c.package == "epistemic-graph")
+    eg = next(c for c in constraints if c.package == "medulla")
     assert eg.extras == ("full",)
     assert eg.specifier == "<3.0.0,>=2.23.2"
 
@@ -190,18 +186,18 @@ def test_declared_fleet_constraints_excludes_own_package_name(tmp_path):
     (tmp_path / "pyproject.toml").write_text(
         """
 [project]
-name = "epistemic-graph"
-dependencies = ["epistemic-graph-stubs>=1.0.0"]
+name = "medulla"
+dependencies = ["medulla-stubs>=1.0.0"]
 """
     )
     constraints = cast(
         list[dr.DeclaredConstraint],
         dr.declared_fleet_constraints(
             tmp_path,
-            fleet_packages={"epistemic-graph", "epistemic-graph-stubs"},
+            fleet_packages={"medulla", "medulla-stubs"},
         ),
     )
-    assert [c.package for c in constraints] == ["epistemic-graph-stubs"]
+    assert [c.package for c in constraints] == ["medulla-stubs"]
 
 
 @pytest.mark.parametrize(
@@ -221,9 +217,7 @@ dependencies = ["epistemic-graph-stubs>=1.0.0"]
 def test_invalid_dependency_metadata_returns_typed_blocking_state(tmp_path, content):
     (tmp_path / "pyproject.toml").write_bytes(content)
 
-    constraints = dr.declared_fleet_constraints(
-        tmp_path, fleet_packages={"epistemic-graph"}
-    )
+    constraints = dr.declared_fleet_constraints(tmp_path, fleet_packages={"medulla"})
 
     assert len(constraints) == 1
     invalid = constraints[0]
@@ -254,7 +248,7 @@ repositories: []
 subdirectories:
   agent-packages:
     repositories:
-      - url: https://example.com/org/epistemic-graph.git
+      - url: https://example.com/org/medulla.git
   services:
     repositories:
       - url: https://example.com/org/langfuse.git
@@ -264,7 +258,7 @@ subdirectories:
 """
     )
     names = dr.fleet_package_names(manifest)
-    assert "epistemic-graph" in names
+    assert "medulla" in names
     assert "langfuse" not in names
     assert "some-base-image" not in names
 
@@ -301,7 +295,7 @@ maintenance:
             "subdirectories:\n"
             "  agent-packages:\n"
             "    repositories:\n"
-            "      - url: https://example.invalid/org/../epistemic-graph.git\n"
+            "      - url: https://example.invalid/org/../medulla.git\n"
         ),
         (
             "subdirectories:\n"
@@ -313,7 +307,7 @@ maintenance:
             "subdirectories:\n"
             "  agent-packages:\n"
             "    repositories:\n"
-            "      - url: ' https://example.invalid/org/epistemic-graph.git'\n"
+            "      - url: ' https://example.invalid/org/medulla.git'\n"
         ),
         "maintenance:\n  phases:\n    - projects: [org/scion-sdk]\n",
     ],
@@ -347,10 +341,10 @@ def test_non_distribution_repository_is_a_valid_manifest_entry(tmp_path) -> None
         "  agent-packages:\n"
         "    repositories:\n"
         "      - url: https://example.invalid/org/.github.git\n"
-        "      - url: https://example.invalid/org/epistemic-graph.git\n"
+        "      - url: https://example.invalid/org/medulla.git\n"
     )
 
-    assert dr.fleet_package_names(manifest) == {".github", "epistemic-graph"}
+    assert dr.fleet_package_names(manifest) == {".github", "medulla"}
     assert not any(
         isinstance(item, dr.InvalidDependencyMetadata)
         for item in dr.declared_fleet_constraints(tmp_path, workspace_yml_path=manifest)
@@ -413,13 +407,11 @@ def test_check_tree_fails_on_unsatisfiable_fleet_constraint(tmp_path, monkeypatc
         """
 [project]
 name = "scion-sdk"
-dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
+dependencies = ["medulla[full]>=2.23.2,<3.0.0"]
 """
     )
-    backend = _FakeBackend({"epistemic-graph": ["2.22.4", "2.23.0"]})
-    report = dr.check_tree(
-        tmp_path, fleet_packages={"epistemic-graph"}, backend=backend
-    )
+    backend = _FakeBackend({"medulla": ["2.22.4", "2.23.0"]})
+    report = dr.check_tree(tmp_path, fleet_packages={"medulla"}, backend=backend)
     assert report.ok is False
     assert len(report.checks) == 1
     assert report.checks[0].status == "unsatisfied"
@@ -430,13 +422,11 @@ def test_check_tree_passes_for_satisfiable_constraint(tmp_path):
         """
 [project]
 name = "scion-sdk"
-dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
+dependencies = ["medulla[full]>=2.23.2,<3.0.0"]
 """
     )
-    backend = _FakeBackend({"epistemic-graph": ["2.23.2", "2.24.0"]})
-    report = dr.check_tree(
-        tmp_path, fleet_packages={"epistemic-graph"}, backend=backend
-    )
+    backend = _FakeBackend({"medulla": ["2.23.2", "2.24.0"]})
+    report = dr.check_tree(tmp_path, fleet_packages={"medulla"}, backend=backend)
     assert report.ok is True
     assert report.checks[0].status == "satisfied"
 
@@ -449,7 +439,7 @@ name = "solo-repo"
 dependencies = ["requests>=2.0"]
 """
     )
-    report = dr.check_tree(tmp_path, fleet_packages={"epistemic-graph"})
+    report = dr.check_tree(tmp_path, fleet_packages={"medulla"})
     assert report.ok is True
     assert report.checks == []
 
@@ -489,18 +479,16 @@ def test_override_bypasses_failure_but_is_never_silent(tmp_path, monkeypatch, ca
         """
 [project]
 name = "scion-sdk"
-dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
+dependencies = ["medulla[full]>=2.23.2,<3.0.0"]
 """
     )
     (tmp_path / ".git").mkdir()
-    backend = _FakeBackend({"epistemic-graph": ["2.23.0"]})
+    backend = _FakeBackend({"medulla": ["2.23.0"]})
     monkeypatch.setenv(
         dr.OVERRIDE_ENV_VAR, "shipping an urgent fix, eg 2.23.2 not yet cut"
     )
 
-    report = dr.check_tree(
-        tmp_path, fleet_packages={"epistemic-graph"}, backend=backend
-    )
+    report = dr.check_tree(tmp_path, fleet_packages={"medulla"}, backend=backend)
 
     assert report.ok is True  # the override lets the push proceed
     assert report.overridden is True
@@ -514,7 +502,7 @@ dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
     assert log_path.exists()
     record = json.loads(log_path.read_text().strip().splitlines()[-1])
     assert record["reason"] == "shipping an urgent fix, eg 2.23.2 not yet cut"
-    assert record["failures"][0]["package"] == "epistemic-graph"
+    assert record["failures"][0]["package"] == "medulla"
 
 
 def test_no_override_env_var_means_no_bypass(tmp_path, monkeypatch):
@@ -523,13 +511,11 @@ def test_no_override_env_var_means_no_bypass(tmp_path, monkeypatch):
         """
 [project]
 name = "scion-sdk"
-dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
+dependencies = ["medulla[full]>=2.23.2,<3.0.0"]
 """
     )
-    backend = _FakeBackend({"epistemic-graph": ["2.23.0"]})
-    report = dr.check_tree(
-        tmp_path, fleet_packages={"epistemic-graph"}, backend=backend
-    )
+    backend = _FakeBackend({"medulla": ["2.23.0"]})
+    report = dr.check_tree(tmp_path, fleet_packages={"medulla"}, backend=backend)
     assert report.ok is False
     assert report.overridden is False
 
@@ -597,7 +583,7 @@ def test_main_exits_nonzero_on_unsatisfiable(tmp_path, monkeypatch):
         """
 [project]
 name = "scion-sdk"
-dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
+dependencies = ["medulla[full]>=2.23.2,<3.0.0"]
 """
     )
     monkeypatch.setattr(
@@ -607,13 +593,13 @@ dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
         dr,
         "check_constraint",
         lambda *a, **k: dr.ConstraintCheck(
-            package="epistemic-graph",
-            raw_requirement="epistemic-graph>=2.23.2,<3.0.0",
+            package="medulla",
+            raw_requirement="medulla>=2.23.2,<3.0.0",
             specifier=">=2.23.2,<3.0.0",
             declared_by=str(tmp_path / "pyproject.toml"),
             status="unsatisfied",
             latest_available="2.23.0",
-            detail="epistemic-graph declares >=2.23.2 but only 2.23.0 is available",
+            detail="medulla declares >=2.23.2 but only 2.23.0 is available",
         ),
     )
     rc = dr.main([str(tmp_path)])
@@ -634,13 +620,13 @@ def test_main_exits_zero_when_no_constraints(tmp_path, monkeypatch):
 _PURE = "py3-none-any"
 _FILES = {
     "files": [
-        {"filename": f"epistemic_graph-2.23.2-{_PURE}.whl", "yanked": False},
-        {"filename": "epistemic_graph-2.23.2.tar.gz", "yanked": False},
-        {"filename": f"epistemic_graph-2.23.3-{_PURE}.whl", "yanked": False},
-        {"filename": "epistemic_graph-2.23.4.tar.gz", "yanked": False},
-        {"filename": "epistemic_graph-2.23.5-cp399-cp399-win_arm64.whl"},
-        {"filename": f"epistemic_graph-2.23.6-{_PURE}.whl", "yanked": True},
-        {"filename": "epistemic_graph-2.23.6.tar.gz", "yanked": True},
+        {"filename": f"medulla-2.23.2-{_PURE}.whl", "yanked": False},
+        {"filename": "medulla-2.23.2.tar.gz", "yanked": False},
+        {"filename": f"medulla-2.23.3-{_PURE}.whl", "yanked": False},
+        {"filename": "medulla-2.23.4.tar.gz", "yanked": False},
+        {"filename": "medulla-2.23.5-cp399-cp399-win_arm64.whl"},
+        {"filename": f"medulla-2.23.6-{_PURE}.whl", "yanked": True},
+        {"filename": "medulla-2.23.6.tar.gz", "yanked": True},
     ]
 }
 
@@ -674,7 +660,7 @@ def test_pypi_backend_buckets_versions_by_the_wheel_rule(monkeypatch):
     )
     backend = dr.PyPISimpleIndexBackend()
     available = backend.available_versions(
-        "epistemic-graph", index_url="https://pypi.org/simple"
+        "medulla", index_url="https://pypi.org/simple"
     )
     assert available.versions == ["2.23.2", "2.23.3"]
     assert available.latest == "2.23.3"
@@ -693,7 +679,7 @@ def test_pypi_backend_honours_the_target_tags(monkeypatch):
     )
     backend = dr.PyPISimpleIndexBackend([Tag("cp399", "cp399", "win_arm64")])
     available = backend.available_versions(
-        "epistemic-graph", index_url="https://pypi.org/simple"
+        "medulla", index_url="https://pypi.org/simple"
     )
     assert available.versions == ["2.23.5"]
 
@@ -716,7 +702,7 @@ class _RichFakeBackend:
 
 def _available(**buckets):
     return dr.AvailableVersions(
-        package="epistemic-graph",
+        package="medulla",
         index_url="https://pypi.org/simple",
         versions=buckets.pop("versions", ["2.22.4"]),
         latest=buckets.pop("latest", "2.22.4"),
@@ -771,7 +757,7 @@ def test_sdist_only_version_fails():
 def test_sdist_only_version_on_the_allow_list_passes():
     result = _check(
         _available(source_only_versions=["2.23.2"]),
-        allow_source_build=["Epistemic_Graph"],
+        allow_source_build=["Medulla"],
     )
     assert result.satisfied
     assert result.matching_version == "2.23.2"
@@ -800,7 +786,7 @@ def test_in_progress_release_run_reports_partial_publish():
     assert result.satisfied is False
     assert result.partial_publish_version == "2.23.2"
     assert "in flight" in result.detail
-    assert seen == [("epistemic-graph", "2.23.2")]
+    assert seen == [("medulla", "2.23.2")]
 
 
 @pytest.mark.spec("RM-RELEASE-R005")
@@ -850,7 +836,7 @@ def test_allow_source_build_reads_exact_names_only(tmp_path):
 def test_check_tree_applies_the_allow_list(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "consumer"\n'
-        '[tool.pipelines]\nallow-source-build = ["epistemic-graph"]\n'
+        '[tool.pipelines]\nallow-source-build = ["medulla"]\n'
     )
     monkeypatch.setattr(
         dr, "declared_fleet_constraints", lambda *a, **k: [_constraint()]
@@ -866,7 +852,7 @@ def test_check_tree_applies_the_allow_list(tmp_path, monkeypatch):
 
 def test_check_constraint_reports_yanked_but_would_match_on_unsatisfied():
     available = dr.AvailableVersions(
-        package="epistemic-graph",
+        package="medulla",
         index_url="https://pypi.org/simple",
         versions=["2.22.4"],
         latest="2.22.4",

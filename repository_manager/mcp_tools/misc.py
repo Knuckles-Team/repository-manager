@@ -38,7 +38,7 @@ def register_misc_tools(mcp: FastMCP, *, context: McpToolContext | None = None) 
             default=None, description="MCP context for progress reporting"
         ),
     ) -> dict[str, Any]:
-        """Natively ingest git repositories into epistemic-graph as typed :GitRepository nodes.
+        """Natively ingest git repositories into medulla as typed :GitRepository nodes.
 
         Enumerates repositories across a GitLab instance / GitHub org via the real VCS
         enumerator and pushes them (typed :GitRepository nodes with vcs/clone_url/web_url/

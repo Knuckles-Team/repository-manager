@@ -48,7 +48,7 @@ _PRIVATE_IPV6_REFERENCE = re.compile(
 _PORTABLE_ENVIRONMENT_REFERENCES = {
     "REPOSITORY_MANAGER_WORKSPACE_ROOT",
     "ARBORA_REPO_ORIGIN",
-    "AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX",
+    "MERISTEM_SERVICE_DOMAIN_SUFFIX",
 }
 _SECRET_FIELD_NAMES = {
     "access_token",
@@ -268,13 +268,13 @@ def _portable_private_references(value: str) -> str:
             return match.group(0)
         label = _portable_host_label(host)
         port = match.group("port") or ""
-        return f"{label}.${{AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}}{port}"
+        return f"{label}.${{MERISTEM_SERVICE_DOMAIN_SUFFIX}}{port}"
 
     def replace_ipv6(match: re.Match[str]) -> str:
         host = match.group("bracketed") or match.group("bare")
         if not _is_private_host(host):
             return match.group(0)
-        return "service.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}"
+        return "service.${MERISTEM_SERVICE_DOMAIN_SUFFIX}"
 
     projected = _PRIVATE_HOST_REFERENCE.sub(replace_host, value)
     return _PRIVATE_IPV6_REFERENCE.sub(replace_ipv6, projected)
@@ -349,7 +349,7 @@ def _portable_endpoint(value: str) -> str:
         raise WorkspaceManifestError("Cannot project a machine-local endpoint safely")
     label = _portable_host_label(host)
     port = f":{parsed.port}" if parsed.port is not None else ""
-    return f"{label}.${{AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}}{port}"
+    return f"{label}.${{MERISTEM_SERVICE_DOMAIN_SUFFIX}}{port}"
 
 
 def project_portable_seed(data: dict[str, Any]) -> dict[str, Any]:

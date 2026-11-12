@@ -24,7 +24,7 @@ The base install is intentionally minimal. Install the extra for what the operat
 | Extra | Install | Pulls in |
 |---|---|---|
 | `mcp` | `pip install "repository-manager[mcp]"` | FastMCP MCP-server runtime (`scion-sdk`) |
-| `test` | `pip install "repository-manager[test]"` | `pytest` tooling plus `scion-sdk` and the certified `epistemic-graph` test kernel |
+| `test` | `pip install "repository-manager[test]"` | `pytest` tooling plus `scion-sdk` and the certified `medulla` test kernel |
 | `all` | `pip install "repository-manager[all]"` | Everything above |
 
 ```bash
@@ -53,10 +53,10 @@ The framework-owned checks run from this repository's locked uv project, with
 the live `scion-sdk` checkout linked through the ignored
 `.uv-workspace-siblings/` path declared in `pyproject.toml`. The pytest hook
 selects the repository's `test` extra, which includes the certified
-`epistemic-graph` kernel required by RM's ingestion tests; it always collects
+`medulla` kernel required by RM's ingestion tests; it always collects
 the current repository's test root, never a sibling checkout's `tests/` tree.
 In a normal workspace the hook discovers the sibling automatically. For a
-standalone clone, set `AGENT_UTILITIES_ROOT` to that checkout before running
+standalone clone, set `MERISTEM_ROOT` to that checkout before running
 `pre-commit run --all-files`.
 
 Docker Compose validation uses the checked-in synthetic digest fixture at

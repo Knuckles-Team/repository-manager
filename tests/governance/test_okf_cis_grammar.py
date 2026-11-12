@@ -75,7 +75,7 @@ def test_domain_vocab_closed_and_covers_all_pillars() -> None:
 def test_slug_registry_unique_and_uppercase() -> None:
     reg = ch.load_slug_registry()
     assert ch.slug_for_repo("scion-sdk") == "SCION"
-    assert ch.slug_for_repo("epistemic-graph") == "MEDULLA"
+    assert ch.slug_for_repo("medulla") == "MEDULLA"
     assert len(set(reg.values())) == len(reg)  # globally unique
     assert all(len(s) >= 2 and s.isupper() for s in reg.values())
 

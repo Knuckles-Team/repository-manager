@@ -23,10 +23,10 @@ def pinned_source(root: Path) -> tuple[Path, str]:
     entries = [
         line.split()
         for line in (root / "scripts/siblings.lock").read_text().splitlines()
-        if line.startswith("epistemic-graph ")
+        if line.startswith("medulla ")
     ]
     if len(entries) != 1 or len(entries[0]) != 4:
-        raise ValueError("expected one pinned epistemic-graph source")
+        raise ValueError("expected one pinned medulla source")
     return (root / entries[0][3]).resolve(), entries[0][2]
 
 
@@ -40,12 +40,12 @@ def verify_source(source: Path, revision: str) -> str:
         "--porcelain",
         "--untracked-files=all",
         "--",
-        "epistemic_graph",
+        "medulla",
         "contract",
     )
     if dirty:
         raise ValueError("graph client/contract source is modified or untracked")
-    receipt_path = "epistemic_graph/contract/receipt.json"
+    receipt_path = "medulla/contract/receipt.json"
     receipt = json.loads(git(source, "show", f"{revision}:{receipt_path}"))
     for relative, expected in receipt["artifact_digests"].items():
         artifact = (source / relative).resolve()
@@ -59,7 +59,7 @@ def verify_source(source: Path, revision: str) -> str:
 
 def verify_upstream_receipt(source: Path, expected_digest: str) -> None:
     """Use the shipped RF-RULING-003 verifier without importing the client first."""
-    path = source / "epistemic_graph/contract/__init__.py"
+    path = source / "medulla/contract/__init__.py"
     spec = importlib.util.spec_from_file_location("_bootstrap_graph_contract", path)
     if spec is None or spec.loader is None:
         raise ValueError("upstream contract verifier is unavailable")
@@ -75,7 +75,7 @@ def configure(root: Path, purelib: Path, *, native: bool) -> None:
     if native:
         return
     try:
-        distribution("epistemic-graph")
+        distribution("medulla")
     except PackageNotFoundError:
         pass
     else:

@@ -28,7 +28,7 @@ metadata:
 network/tests, target ≤5s warm); `stage="heavy"` runs its `pre-push`-stage
 hooks (pytest, cargo, `uv lock --check`, ...) via
 `pre-commit run --hook-stage <stage>`. The measured reason this skill exists:
-on 2026-08-21 a single `epistemic-graph` push cost roughly **six hours**
+on 2026-08-21 a single `medulla` push cost roughly **six hours**
 because every one of six failing pre-commit hooks was re-proven, on every
 fix, by re-running the repo's entire 90-minute heavy wave — there was no way
 to ask "just the hooks that were failing." The same push's integration suite
@@ -96,12 +96,12 @@ rm_gates_run(stage="fast")
 ```
 Run the heavy gate against two repos:
 ```
-rm_gates_run(stage="heavy", repos="scion-sdk,epistemic-graph")
+rm_gates_run(stage="heavy", repos="scion-sdk,medulla")
 ```
 After fixing what a wave reported failing, retest only that — narrows
 automatically, escalates to a full wave on an all-pass:
 ```
-rm_gates_retest(stage="heavy", repos="epistemic-graph")
+rm_gates_retest(stage="heavy", repos="medulla")
 ```
 Poll a wave (compact roll-up):
 ```
@@ -109,7 +109,7 @@ rm_gates_status()
 ```
 Explain why one repo's gate job failed:
 ```
-rm_gates_explain(repo="epistemic-graph")
+rm_gates_explain(repo="medulla")
 ```
 Find the fleet's 15 slowest hooks:
 ```

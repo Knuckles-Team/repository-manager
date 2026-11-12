@@ -40,7 +40,7 @@ repositories:
 subdirectories:
   agent-packages:
     repositories:
-      - url: https://example.invalid/org/epistemic-graph.git
+      - url: https://example.invalid/org/medulla.git
       - url: https://example.invalid/org/scion-sdk.git
       - url: https://example.invalid/org/arbora.git
     subdirectories:
@@ -54,7 +54,7 @@ subdirectories:
 maintenance:
   phases:
     - {{phase: 1, projects: [pipelines]}}
-    - {{phase: 2, projects: [epistemic-graph]}}
+    - {{phase: 2, projects: [medulla]}}
     - {{phase: 4, projects: [scion-sdk{extra_phase_project}]}}
     - {{phase: 5, projects: [arbora]}}
     - {{phase: 7, bulk_push: true}}
@@ -164,9 +164,7 @@ def test_phase4_runtime_dependency_on_phase5_package_fails(tmp_path: Path) -> No
 
 def test_same_phase_and_earlier_phase_edges_pass(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
-    _pyproject(
-        tmp_path, AU, "scion-sdk", 'dependencies = ["epistemic-graph[full]>=2"]\n'
-    )
+    _pyproject(tmp_path, AU, "scion-sdk", 'dependencies = ["medulla[full]>=2"]\n')
     _pyproject(
         tmp_path,
         "agent-packages/agents/agent-a",
@@ -176,7 +174,7 @@ def test_same_phase_and_earlier_phase_edges_pass(tmp_path: Path) -> None:
     _source(
         tmp_path,
         "agent-packages/agents/agent-a/agent_a/server.py",
-        "import agent_b\nfrom scion_sdk.mcp import serve\nimport epistemic_graph.client\n",
+        "import agent_b\nfrom scion_sdk.mcp import serve\nimport medulla.client\n",
     )
     _pyproject(tmp_path, "agent-packages/agents/agent-b", "agent-b")
     # A `services/` stack is infra, never in scope — even with no phase.
@@ -190,7 +188,7 @@ def test_same_phase_and_earlier_phase_edges_pass(tmp_path: Path) -> None:
     statuses = {r.repository: (r.phase, r.status) for r in report.repositories}
     assert statuses == {
         "pipelines": (1, "no_checkout"),
-        "agent-packages/epistemic-graph": (2, "no_checkout"),
+        "agent-packages/medulla": (2, "no_checkout"),
         AU: (4, "checked"),
         "agent-packages/arbora": (5, "no_checkout"),
         "agent-packages/agents/agent-a": (7, "checked"),

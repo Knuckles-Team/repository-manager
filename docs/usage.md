@@ -216,7 +216,7 @@ The Arbora XDG copy retains its canonical bytes, including private runtime
 values. This package's `workspace.yml` is a separate portable projection: the
 workspace root becomes `${REPOSITORY_MANAGER_WORKSPACE_ROOT}`, private URL origins
 become `${ARBORA_REPO_ORIGIN}`, and private service suffixes become
-`${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}`. The gate rejects embedded URL
+`${MERISTEM_SERVICE_DOMAIN_SUFFIX}`. The gate rejects embedded URL
 credentials, secret fields, and absolute paths outside the declared workspace
 before either destination can be written.
 

@@ -264,7 +264,7 @@ def test_missing_toolchain_is_reported_as_unrunnable_not_as_a_defect(tmp_path):
 
     This is the exact shape the repository-manager MCP pod produced on
     2026-08-21: no Rust toolchain in the container, so every one of
-    epistemic-graph's cargo hooks "Failed" in seconds and the push was refused
+    medulla's cargo hooks "Failed" in seconds and the push was refused
     with a message that read as a quality verdict. Two investigation cycles
     went into looking for a defect that did not exist.
     """

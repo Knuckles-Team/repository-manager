@@ -1,10 +1,10 @@
-# Merge-queue gate declaration for `epistemic-graph` (a RUST repository).
+# Merge-queue gate declaration for `medulla` (a RUST repository).
 #
 # Copy to the repository root as `.mergequeue.yaml`.
 #
 # This file is the proof that the queue in repository_manager/merge_queue.py is
 # genuinely generic: nothing below is Python, pytest, ruff, or scion-sdk,
-# and the queue needs no change to run it. Until this existed, epistemic-graph
+# and the queue needs no change to run it. Until this existed, medulla
 # had NO merge queue at all -- the engine lane had to hand-apply the discipline
 # from memory (verify the MERGED tree with `cargo check --all-features`,
 # fast-forward only, never merge in the canonical checkout). That is exactly the

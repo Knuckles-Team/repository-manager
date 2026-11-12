@@ -15,7 +15,7 @@
 # (`output_max_bytes`, `output_truncate`); they remain leases, not a scheduler or
 # a second native reservation ledger. Runtime configuration supplies the exact
 # canonical host keys and abstract capability roles through
-# `AGENT_UTILITIES_HOST_INVENTORY`; tracked policy never embeds host labels.
+# `MERISTEM_HOST_INVENTORY`; tracked policy never embeds host labels.
 #
 # `evidence` is the real collision this row exists to prevent — every one of
 # these was observed, not hypothesised. Adding a resource is a row here, never a
@@ -26,7 +26,7 @@ resources:
     mechanism: partitioned_paths().cargo_target_dir
     evidence: >-
       A shared CARGO_TARGET_DIR both serialises and CORRUPTS concurrent
-      epistemic-graph worktree builds. The per-lane target dir was a convention
+      medulla worktree builds. The per-lane target dir was a convention
       nothing enforced. It remains worktree-local by default; when
       `AU_LANE_TEMP_ROOT` is configured, `partitioned_paths()` places Cargo
       under that lane's hashed disk-backed root alongside the other partitions.
@@ -242,17 +242,17 @@ resources:
       process-start either sees the whole old file or the whole new one, but
       a mid-edit *edit* is the state that produced both incidents above.
 
-  - name: epistemic-graph-daemon
+  - name: medulla-daemon
     class: lease
     scope: workspace   # engine_resolver's share-running-local/autostart-shared-supervised
                         # precedence deliberately hands ONE local daemon to every
                         # entrypoint on the host, across every repo's worktrees —
                         # not just this repo's lanes.
-    mechanism: hold_lease("epistemic-graph-daemon")
+    mechanism: hold_lease("medulla-daemon")
     evidence: >-
       A lane's 37-minute full-suite run logged 731 failed / 14197 passed / 353
       errors, with 1,234 occurrences of `ConnectionRefusedError: Cannot connect
-      to epistemic-graph service` in its log — while two OTHER lanes' full-suite
+      to medulla service` in its log — while two OTHER lanes' full-suite
       runs and an `--all-files` pre-commit ran concurrently, all four driving the
       SAME single shared local engine daemon (the `GRAPH_SERVICE_ENDPOINTS`
       externally-provided branch of the session engine fixture, which reuses a
