@@ -2,39 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-REQUIRED = ("spec.md", "plan.md", "test-spec.md", "tasks.md", "status.json")
-DELIVERY_STATES = frozenset(
-    {
-        "UNKNOWN",
-        "SPECIFIED",
-        "BUILDING",
-        "BUILT",
-        "LANDED",
-        "CLOSED",
-        "DEFERRED",
-        "REJECTED",
-    }
-)
-GENERATED_STATES = frozenset({"SPECIFIED", "LANDED", "VERIFIED", "RETIRED"})
-ACCEPTANCE_STATES = frozenset({"NOT_AUDITED", "PENDING", "ACCEPTED", "FAILED"})
-EVIDENCE_KINDS = frozenset(
-    {
-        "merged_head",
-        "implementation",
-        "branch",
-        "pr",
-        "test",
-        "consumer",
-        "release",
-        "decision",
-    }
-)
+REQUIRED = ("spec.md", "plan.md", "test-spec.md", "tasks.md")
 FORBIDDEN = (
     re.compile(r"plans/", re.IGNORECASE),
     re.compile(r"\bgitlab\b", re.IGNORECASE),
@@ -80,232 +53,36 @@ def _document_errors(path: Path, content: str) -> list[str]:
     return errors
 
 
-def _evidence_errors(path: Path, entries: object) -> list[str]:
-    if not isinstance(entries, list):
-        return [f"{path}: evidence must be an array"]
-    errors = []
-    for item in entries:
-        if not isinstance(item, dict):
-            errors.append(f"{path}: evidence item must be an object")
-            continue
-        errors.extend(_evidence_item_errors(path, item))
-    return errors
-
-
-def _evidence_item_errors(path: Path, item: dict) -> list[str]:
-    errors = []
-    url = item.get("url", "")
-    commit = item.get("commit", "")
-    if item.get("kind") not in EVIDENCE_KINDS:
-        errors.append(f"{path}: unsupported evidence kind")
-    if not isinstance(url, str) or not url.startswith("https://github.com/"):
-        errors.append(f"{path}: evidence requires a public GitHub URL")
-    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
-        errors.append(f"{path}: evidence requires a full source commit")
-    if item.get("result") not in ("passed", "failed") or not item.get("description"):
-        errors.append(f"{path}: evidence requires a result and description")
-    return errors
-
-
-def _passed_receipt(entries: object, kind: str, commit: str) -> bool:
-    return isinstance(entries, list) and any(
-        isinstance(item, dict)
-        and item.get("kind") == kind
-        and item.get("result") == "passed"
-        and item.get("commit") == commit
-        for item in entries
-    )
-
-
-def _merged_head(entries: object, owner_repo: str) -> str | None:
-    if not isinstance(entries, list):
-        return None
-    for item in entries:
-        if not isinstance(item, dict) or item.get("kind") != "merged_head":
-            continue
-        commit = item.get("commit", "")
-        url = f"https://github.com/Knuckles-Team/{owner_repo}/commit/{commit}"
-        if item.get("result") == "passed" and item.get("url") == url:
-            return commit
-    return None
-
-
-def _receipt_errors(path: Path, data: dict, entries: object) -> list[str]:
-    commit = _merged_head(entries, data.get("owner_repo", ""))
-    errors = []
-    if data.get("delivery_state") in ("LANDED", "CLOSED") and not commit:
-        errors.append(f"{path}: LANDED/CLOSED requires merged-head evidence")
-    if data.get("acceptance_state") == "ACCEPTED" and not (
-        commit and _passed_receipt(entries, "test", commit)
-    ):
-        errors.append(f"{path}: ACCEPTED requires merged-head and test evidence")
-    if data.get("acceptance_state") == "ACCEPTED" and not (
-        commit
-        and (
-            _passed_receipt(entries, "consumer", commit)
-            or _passed_receipt(entries, "release", commit)
-        )
-    ):
-        errors.append(f"{path}: ACCEPTED requires consumer or release evidence")
-    return errors
-
-
-def _status_errors(root: Path, path: Path) -> list[str]:
-    try:
-        data = json.loads((root / path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        return [f"{path}: invalid JSON ({exc})"]
-    if not isinstance(data, dict):
-        return [f"{path}: status must be an object"]
-    validate = {2: _generated_status_errors}.get(
-        data.get("schema_version", 0), _legacy_status_errors
-    )
-    return validate(root, path, data)
-
-
-def _legacy_status_errors(root: Path, path: Path, data: dict) -> list[str]:
-    entries = data.get("evidence")
-    return (
-        _status_field_errors(path, data)
-        + _evidence_errors(path, entries)
-        + _receipt_errors(path, data, entries)
-        + _requirement_errors(root, path, data)
-    )
-
-
-def _generated_identity_errors(path: Path, data: dict) -> list[str]:
-    errors = []
-    if not data.get("spec_id") or data.get("owner_repo") != "repository-manager":
-        errors.append(f"{path}: spec ID and repository owner are required")
-    if data.get("delivery_state") not in GENERATED_STATES:
-        errors.append(f"{path}: invalid generated delivery_state")
-    ids = data.get("requirement_ids")
-    if not isinstance(ids, list) or not _valid_ids(ids) or len(set(ids)) != len(ids):
-        errors.append(f"{path}: unique nonempty requirement_ids are required")
-    return errors
-
-
-def _generated_provenance_errors(label: str, entry: dict) -> list[str]:
-    errors = []
-    for field in ("landed_in", "verified_by"):
-        values = entry.get(field)
-        if not isinstance(values, list) or any(
-            not isinstance(value, str) or not value for value in values
-        ):
-            errors.append(f"{label}: {field} must be an array of nonempty strings")
-    return errors
-
-
-def _generated_entry_errors(path: Path, entry: dict, defined: str) -> list[str]:
-    label = f"{path}: {entry.get('id')}"
-    errors = _generated_provenance_errors(label, entry)
-    if f"`{entry.get('id')}`" not in defined:
-        errors.append(f"{label}: lacks a definition")
-    if not entry.get("title") or entry.get("delivery_state") not in GENERATED_STATES:
-        errors.append(f"{label}: requires a title and valid generated state")
-    return errors
-
-
-def _generated_status_errors(root: Path, path: Path, data: dict) -> list[str]:
-    """Validate v2 structure; the shared spec-status hook checks generated content."""
-    errors = _generated_identity_errors(path, data)
-    entries = data.get("requirements")
-    if not isinstance(entries, list) or any(
-        not isinstance(item, dict) for item in entries
-    ):
-        return errors + [f"{path}: requirements must be an array of objects"]
-    if [item.get("id") for item in entries] != data.get("requirement_ids"):
-        errors.append(f"{path}: requirements must match requirement_ids in order")
-    register = root / path.parent / "requirements.md"
-    defined = register.read_text(encoding="utf-8") if register.is_file() else ""
-    for entry in entries:
-        errors.extend(_generated_entry_errors(path, entry, defined))
-    return errors
-
-
-def _requirement_entry_errors(path: Path, owner: str, entry: dict) -> list[str]:
-    label = f"{path}: {entry.get('id')}"
-    evidence = entry.get("evidence")
-    errors = []
-    if _evidence_errors(path, evidence):
-        errors.append(f"{label}: malformed evidence")
-    state = entry.get("delivery_state")
-    if state not in DELIVERY_STATES or not entry.get("title"):
-        errors.append(f"{label}: requires a title and a valid delivery_state")
-    if state in ("LANDED", "CLOSED") and not _merged_head(evidence, owner):
-        errors.append(f"{label}: LANDED/CLOSED requires merged-head evidence")
-    return errors
-
-
-def _requirement_errors(root: Path, path: Path, data: dict) -> list[str]:
-    """Each requirement ID has one defined entry with its own state and evidence."""
-    entries = data.get("requirements")
-    if entries is None:
-        return []
-    if not isinstance(entries, list) or any(
-        not isinstance(entry, dict) for entry in entries
-    ):
-        return [f"{path}: requirements must be an array of objects"]
-    errors = []
-    if [entry.get("id") for entry in entries] != data.get("requirement_ids"):
-        errors.append(f"{path}: requirements must match requirement_ids in order")
-    register = root / path.parent / "requirements.md"
-    defined = register.read_text(encoding="utf-8") if register.is_file() else ""
-    owner = data.get("owner_repo", "")
-    for entry in entries:
-        if f"`{entry.get('id')}`" not in defined:
-            errors.append(f"{path}: {entry.get('id')} lacks a definition")
-        errors.extend(_requirement_entry_errors(path, owner, entry))
-    return errors
-
-
-def _status_field_errors(path: Path, data: dict) -> list[str]:
-    errors = []
-    ids = data.get("requirement_ids")
-    if (
-        data.get("schema_version") != 1
-        or not data.get("spec_id")
-        or not data.get("owner_repo")
-    ):
-        errors.append(f"{path}: schema_version, spec_id, and owner_repo are required")
-    if not _valid_ids(ids):
-        errors.append(f"{path}: nonempty real requirement_ids are required")
-    if data.get("delivery_state") not in DELIVERY_STATES:
-        errors.append(f"{path}: invalid delivery_state")
-    if data.get("acceptance_state") not in ACCEPTANCE_STATES:
-        errors.append(f"{path}: invalid acceptance_state")
-    return errors
-
-
-def _valid_ids(ids: object) -> bool:
-    return (
-        isinstance(ids, list)
-        and bool(ids)
-        and all(isinstance(item, str) and bool(item) for item in ids)
-    )
-
-
-def _contract_errors(root: Path, paths: set[Path]) -> list[str]:
-    errors = []
-    names = sorted(
+def _spec_names(paths: set[Path]) -> list[str]:
+    return sorted(
         {
             path.parts[1]
             for path in paths
             if len(path.parts) > 2 and path.parts[1] != "_template"
         }
     )
-    for name in names:
-        for filename in REQUIRED:
-            path = Path("specs") / name / filename
-            if path not in paths:
-                errors.append(f"{path}: missing required owner contract")
-                continue
-            if filename == "status.json":
-                errors.extend(_status_errors(root, path))
-            else:
-                errors.extend(
-                    _document_errors(path, (root / path).read_text(encoding="utf-8"))
-                )
+
+
+def _file_errors(root: Path, paths: set[Path], name: str) -> list[str]:
+    errors = []
+    for filename in REQUIRED:
+        path = Path("specs") / name / filename
+        if path not in paths:
+            errors.append(f"{path}: missing required owner contract")
+        else:
+            errors.extend(
+                _document_errors(path, (root / path).read_text(encoding="utf-8"))
+            )
+    return errors
+
+
+def _contract_errors(root: Path, paths: set[Path]) -> list[str]:
+    errors = [e for name in _spec_names(paths) for e in _file_errors(root, paths, name)]
+    errors.extend(
+        f"{path}: status.json is generated; it must not be tracked"
+        for path in sorted(paths)
+        if len(path.parts) == 3 and path.name == "status.json"
+    )
     return errors
 
 
