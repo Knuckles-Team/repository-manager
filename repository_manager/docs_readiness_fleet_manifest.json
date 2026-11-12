@@ -21,10 +21,10 @@
       "agent-packages/agents/onetrust-api"
     ],
     "missing_site_urls": [
-      "agent-packages/meristem",
       "agent-packages/agents/mealie-mcp",
       "agent-packages/agents/microsoft-agent",
-      "agent-packages/agents/vector-mcp"
+      "agent-packages/agents/vector-mcp",
+      "agent-packages/meristem"
     ]
   },
   "waves": [
