@@ -10,6 +10,7 @@ from fastmcp import Context, FastMCP
 from pydantic import Field
 from scion_sdk.mcp.action_dispatch import resolve_action
 from scion_sdk.mcp.concurrency import run_blocking
+from scion_sdk.mcp.destructive import destructive_actions, guard_destructive
 
 from repository_manager.mcp_tools.context import McpToolContext, from_server
 from repository_manager.mcp_tools.contracts import RM_WORKTREE_ACTIONS
@@ -163,6 +164,7 @@ def register_worktree_tools(
     adapter_context = context or from_server()
 
     @mcp.tool(tags={"workspace_management", "project_manager"})
+    @destructive_actions("remove", "reset_branch", "prune")
     async def rm_worktree(
         action: Literal[
             "add",
@@ -231,6 +233,13 @@ def register_worktree_tools(
             description="For 'add'/'bulk_add': also reflink-seed the configured untracked build directories (target, node_modules; virtual environments are path-bound and refused) from the sibling worktree so the new worktree starts warm. Never a full copy: skipped and reported under 'seed' when reflinks are unavailable.",
         ),
         path: str | None = Field(default=None, description="Workspace root override."),
+        confirm: bool = Field(
+            default=False,
+            description=(
+                "Explicit confirmation of a destructive action, for clients that "
+                "cannot be asked to approve it."
+            ),
+        ),
         ctx: Context | None = Field(
             default=None, description="MCP context for progress reporting"
         ),
@@ -242,17 +251,27 @@ def register_worktree_tools(
         leaving the canonical checkout on its default branch so a working-tree
         reset never disturbs in-flight session work.
         """
-        del ctx
         from repository_manager.worktree import WorktreeManager
 
-        git = adapter_context.get_git_instance(path=path)
-        worktree_manager = WorktreeManager(git)
         resolved = resolve_action(
             action, RM_WORKTREE_ACTIONS, service="repository-manager"
         )
         if isinstance(resolved, dict):
             return resolved
         op: str = resolved
+
+        if op == "audit" and prune_merged is True:
+            refused = await guard_destructive(
+                ctx,
+                "audit with prune_merged",
+                {"action": op, "repo": repo, "stale_days": stale_days},
+                confirm=confirm is True,
+            )
+            if refused is not None:
+                return refused
+
+        git = adapter_context.get_git_instance(path=path)
+        worktree_manager = WorktreeManager(git)
 
         no_repo_handler = _NO_REPO_ACTIONS.get(op)
         if no_repo_handler is not None:
