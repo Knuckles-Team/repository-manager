@@ -55,9 +55,9 @@ OKF_MARKER_RE = re.compile(
 )
 
 #: Canonical ecosystem IRI roots.
-CONCEPT_IRI_BASE = "http://knuckles.team/kg/concept"
-PILLAR_IRI_BASE = "http://knuckles.team/kg/pillar"
-SCHEME_IRI_BASE = "http://knuckles.team/kg/scheme"
+CONCEPT_IRI_BASE = "https://knuckles-team.github.io/ontology/concept#"
+PILLAR_IRI_BASE = "https://knuckles-team.github.io/ontology/pillar#"
+SCHEME_IRI_BASE = "https://knuckles-team.github.io/ontology/concept-scheme#"
 
 
 @dataclass(frozen=True)
@@ -123,21 +123,21 @@ class OkfConceptId:
     @property
     def iri(self) -> str:
         """Deterministic, resolvable concept IRI."""
-        return f"{CONCEPT_IRI_BASE}/{self.path}"
+        return f"{CONCEPT_IRI_BASE}{self.path}"
 
     @property
     def domain_iri(self) -> str:
-        return f"{CONCEPT_IRI_BASE}/{self.slug}/{self.pillar}/{self.domain}"
+        return f"{CONCEPT_IRI_BASE}{self.slug}/{self.pillar}/{self.domain}"
 
     @property
     def pillar_iri(self) -> str:
         """Shared pillar IRI — NO slug, so every repo's ``*-KG.*`` federates here."""
-        return f"{PILLAR_IRI_BASE}/{self.pillar}"
+        return f"{PILLAR_IRI_BASE}{self.pillar}"
 
     @property
     def scheme_iri(self) -> str:
         """The owning repo's ``skos:ConceptScheme`` IRI."""
-        return f"{SCHEME_IRI_BASE}/{self.slug}"
+        return f"{SCHEME_IRI_BASE}{self.slug}"
 
 
 def is_okf_id(cid: str) -> bool:
