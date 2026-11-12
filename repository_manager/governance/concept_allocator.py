@@ -486,7 +486,7 @@ def _default_scan_roots(repo_root: Path) -> list[Path]:
     workspace. Deriving the roots
     from the tree keeps the allocator repository-neutral: scion-sdk
     resolves to ``scion_sdk/``, repository-manager to
-    ``repository_manager/``, epistemic-graph to ``crates/`` and its Python
+    ``repository_manager/``, medulla to ``crates/`` and its Python
     package. ``scan_code_markers`` already skips a root that does not exist.
     """
     roots = sorted(

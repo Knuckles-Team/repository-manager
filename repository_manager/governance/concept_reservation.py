@@ -905,7 +905,7 @@ class NativeConceptReservationPort(Protocol):
     """Existing sync engine primitives required by the native adapter.
 
     ``GraphComputeEngine`` exposes the first two methods directly.  The
-    adapter also accepts an epistemic-graph sync client (``engine.nodes``) and
+    adapter also accepts a medulla sync client (``engine.nodes``) and
     the backend's equivalent wrappers, which keeps this seam usable from the
     arbora MCP process without adding a second engine command.
     """
@@ -1108,7 +1108,7 @@ def _next_lifecycle_times(
 
 
 class NativeConceptReservationAuthority:
-    """Durable authority built from epistemic-graph's existing native writes.
+    """Durable authority built from medulla's existing native writes.
 
     One graph node, keyed by :func:`_reservation_node_id`, is the authority for
     one complete concept ID.  ``CreateNodeIfAbsent`` arbitrates the first
@@ -1153,7 +1153,7 @@ class NativeConceptReservationAuthority:
         if callable(candidate):
             return candidate
         raise AuthorityUnavailable(
-            f"epistemic-graph lacks required native primitive {name}"
+            f"medulla lacks required native primitive {name}"
         )
 
     def _call(self, name: str, *args: Any, **kwargs: Any) -> Any:

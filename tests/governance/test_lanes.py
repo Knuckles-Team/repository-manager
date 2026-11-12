@@ -62,10 +62,10 @@ def _isolate_workspace_arbitration_dir(
     """Route "workspace"-scoped leases into an isolated ``tmp_path`` instead of
     the REAL host-wide ``~/.local/state/scion-sdk/arbitration`` directory
     that live lane orchestration on this host actually uses for
-    ``dependency-lock``/``epistemic-graph-daemon``/``workspace-scripts``
+    ``dependency-lock``/``medulla-daemon``/``workspace-scripts``
     (``lanes.workspace_arbitration_dir()`` — see ``lane_resources.yaml``:
     those three names are deliberately host-wide, not per-repo, because the
-    shared venv/uv.lock and the shared local epistemic-graph daemon really are
+    shared venv/uv.lock and the shared local medulla daemon really are
     contended across every worktree of every repo on the host).
 
     Passing ``path=canonical`` to ``hold_lease``/``lease_status`` does NOT
@@ -270,37 +270,37 @@ def test_workspace_scoped_lease_leaves_the_repo_scope(canonical: Path) -> None:
 def test_engine_daemon_lease_is_workspace_scoped_like_the_shared_venv(
     canonical: Path,
 ) -> None:
-    """The shared local epistemic-graph daemon is one host-wide singleton —
+    """The shared local medulla daemon is one host-wide singleton —
     engine_resolver's share-running-local/autostart-shared-supervised
     precedence hands it to every entrypoint on the host, across every repo's
     worktrees, exactly like the shared venv (`dependency-lock`)."""
-    assert lanes.resource_scope("epistemic-graph-daemon") == "workspace"
+    assert lanes.resource_scope("medulla-daemon") == "workspace"
     repo_leases = lanes.lane_scope(canonical).arbitration_dir / "leases"
     with lanes.hold_lease(
-        "epistemic-graph-daemon", operation="pytest full-suite", path=canonical
+        "medulla-daemon", operation="pytest full-suite", path=canonical
     ):
-        assert not (repo_leases / "epistemic-graph-daemon.lease").exists()
+        assert not (repo_leases / "medulla-daemon.lease").exists()
         assert (
             lanes.workspace_arbitration_dir()
             / "leases"
-            / "epistemic-graph-daemon.lease"
+            / "medulla-daemon.lease"
         ).exists()
-    assert lanes.lease_status("epistemic-graph-daemon", canonical) is None
+    assert lanes.lease_status("medulla-daemon", canonical) is None
 
 
 def test_engine_daemon_lease_defers_a_second_lanes_full_suite(canonical: Path) -> None:
     """The exact incident: a second lane's full-suite run must defer rather
-    than pile onto the same shared epistemic-graph daemon."""
+    than pile onto the same shared medulla daemon."""
     lane = _add_worktree(canonical, "lane-eg")
     with lanes.hold_lease(
-        "epistemic-graph-daemon", operation="lane-a full-suite", path=canonical
+        "medulla-daemon", operation="lane-a full-suite", path=canonical
     ):
         with pytest.raises(lanes.LeaseUnavailable, match="defer, do not proceed"):
             with lanes.hold_lease(
-                "epistemic-graph-daemon", operation="lane-b full-suite", path=lane
+                "medulla-daemon", operation="lane-b full-suite", path=lane
             ):
                 pytest.fail("a second lane's full-suite run acquired a held lease")
-    assert lanes.lease_status("epistemic-graph-daemon", canonical) is None
+    assert lanes.lease_status("medulla-daemon", canonical) is None
 
 
 def test_workspace_scripts_lease_is_workspace_scoped(canonical: Path) -> None:
@@ -954,7 +954,7 @@ def test_every_known_collision_resource_is_classified() -> None:
     assert classified["deferred-register"] is lanes.ArbitrationClass.APPEND_ONLY
     assert classified["dependency-lock"] is lanes.ArbitrationClass.LEASE
     assert classified["reconciliation-merge"] is lanes.ArbitrationClass.LEASE
-    assert classified["epistemic-graph-daemon"] is lanes.ArbitrationClass.LEASE
+    assert classified["medulla-daemon"] is lanes.ArbitrationClass.LEASE
     assert classified["workspace-scripts"] is lanes.ArbitrationClass.LEASE
     assert classified["canonical-checkout"] is lanes.ArbitrationClass.READ_ONLY
     assert all(r.evidence.strip() for r in lanes.resource_rules())

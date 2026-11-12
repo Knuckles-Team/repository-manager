@@ -1,8 +1,8 @@
-# Build-broker declaration for `epistemic-graph` (a RUST/pyo3 repository).
+# Build-broker declaration for `medulla` (a RUST/pyo3 repository).
 #
 # Copy to the repository root as `.buildcache.yaml`.
 #
-# This is the DEDUP half of the story `epistemic-graph.mergequeue.yaml` already
+# This is the DEDUP half of the story `medulla.mergequeue.yaml` already
 # tells for GATING: that file's `cargo-check` gate runs in a throwaway
 # `--target-dir target-isolated` per candidate because a shared target dir both
 # serialises and corrupts concurrent builds. This file targets the same
@@ -15,7 +15,7 @@
 # Reuses existing prior art rather than reimplementing it: `command` is exactly
 # `scripts/build_numeric_kernel.py`, which already knows how to invoke maturin
 # with a private, non-shared `--target-dir` (NEVER `CARGO_TARGET_DIR`) and graft
-# the resulting `numeric*.so` into `epistemic_graph/` -- the mounted-tree
+# the resulting `numeric*.so` into `medulla/` -- the mounted-tree
 # deployment path the whole MCP fleet depends on. `check_mounted_kernel.py` is
 # the cheap, no-toolchain verifier for the artifact this build produces; run it
 # after `rm_build artifacts` to confirm what got published.
@@ -51,7 +51,7 @@ specs:
     # broker exists -- the artifact must be BUILT or FETCHED-FROM-CACHE, never
     # committed.
     artifacts:
-      - "epistemic_graph/numeric*.so"
+      - "medulla/numeric*.so"
 
     resource_class: rust-build
     resources:
@@ -62,7 +62,7 @@ specs:
     placement:
       anti_affinity: [rust-build]
     artifact_contract:
-      patterns: ["epistemic_graph/numeric*.so"]
+      patterns: ["medulla/numeric*.so"]
       required: true
       publish: true
       retention: content-addressed

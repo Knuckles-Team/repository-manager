@@ -86,7 +86,7 @@ def _register_host(host_id: str = "R820") -> None:
         disk_mib=500_000,
         process_slots=4,
         inventory_alias=host_id,
-        repository_roots={"epistemic-graph": "/srv/rm-build"},
+        repository_roots={"medulla": "/srv/rm-build"},
         toolchains=["rust-1.95"],
     )
     assert result["ok"] is True
@@ -100,7 +100,7 @@ def test_dispatch_build_stages_and_runs_the_command_on_the_named_host(
     result = rwa.dispatch(
         "dispatch_build",
         host_id="R820",
-        repository_id="epistemic-graph",
+        repository_id="medulla",
         origin="/tmp/some/origin",
         tree_sha=_SHARED_SHA,
         command=("bash", "-c", "echo built"),
@@ -127,7 +127,7 @@ def test_dispatch_build_refuses_an_unregistered_host() -> None:
     result = rwa.dispatch(
         "dispatch_build",
         host_id="unknown-host",
-        repository_id="epistemic-graph",
+        repository_id="medulla",
         origin="/tmp/origin",
         tree_sha=_SHARED_SHA,
         command=("echo", "hi"),
@@ -161,7 +161,7 @@ def test_dispatch_build_refuses_when_the_host_is_draining(
     result = rwa.dispatch(
         "dispatch_build",
         host_id="R820",
-        repository_id="epistemic-graph",
+        repository_id="medulla",
         origin="/tmp/origin",
         tree_sha=_SHARED_SHA,
         command=("echo", "hi"),

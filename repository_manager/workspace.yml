@@ -438,7 +438,7 @@ subdirectories:
       description: Docker Swarm service stack for langfuse.
     - url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/ciso-assistant.git
       description: CISO Assistant GRC platform (Risk, Compliance, Audit, Privacy)
-        — domain ciso.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}.
+        — domain ciso.${MERISTEM_SERVICE_DOMAIN_SUFFIX}.
     - url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/plane.git
       description: Project management and collaborative task/issue tracking dashboard.
     - url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/flux.2.git
@@ -807,123 +807,123 @@ services:
   items:
   - name: keycloak
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/keycloak.git
-    domain: keycloak.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: keycloak.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Local identity and access management system (OIDC/SAML SSO).
   - name: ciso-assistant
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/ciso-assistant.git
-    domain: ciso.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: ciso.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: CISO Assistant GRC platform (Risk, Compliance, Audit, Privacy).
   - name: openbao
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/openbao.git
-    domain: openbao.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: openbao.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Secure secrets engine and root of trust vault.
   - name: twenty
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/twenty.git
-    domain: twenty.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: twenty.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Specialized CRM solution for the customer relationship lifecycle.
   - name: audiobookshelf-mcp
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/audiobookshelf-mcp.git
-    domain: audiobookshelf-mcp.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: audiobookshelf-mcp.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Audiobookshelf media-server MCP server stack.
   - name: firefly-iii-mcp
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/firefly-iii-mcp.git
-    domain: firefly-iii-mcp.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: firefly-iii-mcp.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Firefly III personal-finance MCP server stack.
   - name: paperless-ngx-mcp
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/paperless-ngx-mcp.git
-    domain: paperless-ngx-mcp.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: paperless-ngx-mcp.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Paperless-ngx document-management MCP server stack.
   - name: gramps-mcp
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/gramps-mcp.git
-    domain: gramps-mcp.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: gramps-mcp.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Gramps Web genealogy MCP server stack.
   - name: erpnext
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/erpnext.git
-    domain: erpnext.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: erpnext.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Enterprise Resource Planning and management system.
   - name: plane
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/plane.git
-    domain: plane.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: plane.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Enterprise-grade issue tracking and project management platform.
   - name: lgtm
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/lgtm.git
-    domain: grafana.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: grafana.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Observability stack comprising Prometheus, Grafana, Alertmanager,
       and Loki.
   - name: uptime-kuma
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/uptime-kuma.git
-    domain: uptime.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: uptime.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Continuous self-healing system status and endpoint monitoring tool.
   - name: mattermost
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/mattermost.git
-    domain: mattermost.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: mattermost.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Collaborative chat platform and internal team messaging interface.
   - name: jellyfin
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/jellyfin.git
-    domain: jellyfin.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: jellyfin.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Media player and streaming library provider.
   - name: mealie
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/mealie.git
-    domain: mealie.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: mealie.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Household recipe manager and healthy meal planner.
   - name: nextcloud
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/nextcloud.git
-    domain: nextcloud.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: nextcloud.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Personal calendar, files, and scheduling storage platform.
   - name: postiz
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/postiz.git
-    domain: postiz.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: postiz.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Social media post creator and automated schedulers.
   - name: vaultwarden
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/vaultwarden.git
-    domain: vaultwarden.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: vaultwarden.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Bitwarden-compatible secure password manager backend.
   - name: vaultwarden-mcp
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/vaultwarden-mcp.git
-    domain: vaultwarden-mcp.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: vaultwarden-mcp.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: MCP and A2A interface for the Vaultwarden service.
   - name: wger
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/wger.git
-    domain: wger.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: wger.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Personal training manager and physical fitness registry.
   - name: searxng
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/searxng.git
-    domain: searxng.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: searxng.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Privacy-respecting search engine aggregator.
   - name: gitlab
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/gitlab.git
-    domain: gitlab.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: gitlab.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Ecosystem core GitLab instance hosting all GitOps repositories.
   - name: technitium-dns
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/technitium-dns.git
-    domain: adguard.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: adguard.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Authoritative local DNS server (Option C) managing the arpa zone.
   - name: networks
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/networks.git
-    domain: networks.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: networks.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Core overlay network infrastructure definitions for the Swarm.
   - name: lakehouse-seaweedfs
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/lakehouse-seaweedfs.git
-    domain: lakehouse-s3.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: lakehouse-s3.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: SeaweedFS single-process (master+volume+filer+S3) object store backing
       the Iceberg lakehouse.
   - name: lakekeeper-db
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/lakekeeper-db.git
-    domain: lakekeeper-db.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: lakekeeper-db.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Dedicated Postgres 17 instance for the Lakekeeper Iceberg REST catalog.
   - name: lakekeeper
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/lakekeeper.git
-    domain: lakekeeper.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: lakekeeper.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Lakekeeper Apache Iceberg REST catalog control plane, OIDC-secured
       via Keycloak.
   - name: opensearch
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/opensearch.git
-    domain: opensearch.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: opensearch.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: OpenSearch 2.19.6 search tier (CA-50/DEC-CA-09), security-plugin-enabled
       with Keycloak OIDC + internal-user auth and document-level security.
   - name: trino
     url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/trino.git
-    domain: trino.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    domain: trino.${MERISTEM_SERVICE_DOMAIN_SUFFIX}
     description: Single-node Trino coordinator with the Iceberg REST connector querying
       the Lakekeeper catalog.
   - name: spark

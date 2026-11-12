@@ -29,7 +29,7 @@ cause, confirmed against live server state
   server while it runs. That is the mechanism behind this workspace's other
   already-logged NFS symptoms: a `git merge` that timed out mid-checkout
   leaving files written but HEAD unmoved, a `git commit` that took 10+
-  minutes, `index.lock`/partial-index incidents, and epistemic-graph test
+  minutes, `index.lock`/partial-index incidents, and medulla test
   "deadlocks" root-caused across ~70 attempts to host `I/O` saturation
   (`fdatasync` stuck in `D` state) rather than an actual lock cycle.
 - Remediation taken live against R82X (see the session report for the full

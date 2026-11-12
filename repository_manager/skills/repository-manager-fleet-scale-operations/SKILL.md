@@ -72,7 +72,7 @@ Two corollaries:
 
 ```bash
 # one branch name across every workspace repo (or a named subset)
-rm_worktree_bulk_add(branch="lane/<wave>-<name>", repos="scion-sdk,epistemic-graph")
+rm_worktree_bulk_add(branch="lane/<wave>-<name>", repos="scion-sdk,medulla")
 ```
 
 Then, per repository, adopt the isolation and prove it:
@@ -141,7 +141,7 @@ is safe:
 
 ```bash
 repository-manager --merge-queue run --repo-path /path/to/scion-sdk &
-repository-manager --merge-queue run --repo-path /path/to/epistemic-graph &
+repository-manager --merge-queue run --repo-path /path/to/medulla &
 ```
 
 But **a queue drain is a heavy lane** — it runs the repository's full gate set

@@ -67,7 +67,7 @@ with `--build-spec` / `--build-key` / `--same-node` / `--build-wait-timeout` /
 ## Recipes
 Request a build (dedups or builds; blocks up to `wait_timeout` on an in-flight match):
 ```
-rm_build_request(repo_path="/path/to/epistemic-graph", spec="release")
+rm_build_request(repo_path="/path/to/medulla", spec="release")
 ```
 Check a specific key without building:
 ```

@@ -16,7 +16,7 @@ package, at :mod:`repository_manager.governance.concept_reservation`
 for the full migration account), so the import itself succeeds today. What
 that module does not yet expose is a documented ``build_default_authority()``
 construction entrypoint — :class:`~repository_manager.governance.concept_reservation.NativeConceptReservationAuthority`
-needs a *connected* epistemic-graph engine handle injected into its
+needs a *connected* medulla engine handle injected into its
 constructor, and this package establishes no standard way to reach a live one
 from here. So this still returns ``None`` today, and every caller falls
 through to ``ConceptCoordinationActions``'s own ``resolve_default_authority()``

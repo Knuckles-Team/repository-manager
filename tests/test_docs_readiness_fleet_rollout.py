@@ -123,7 +123,7 @@ def test_packaged_manifest_is_exact_75_and_wave_counts() -> None:
         "agent-packages/agents/onetrust-api",
     )
     assert manifest.source_findings.missing_site_urls == (
-        "agent-packages/agent-utilities",
+        "agent-packages/meristem",
         "agent-packages/agents/mealie-mcp",
         "agent-packages/agents/microsoft-agent",
         "agent-packages/agents/vector-mcp",

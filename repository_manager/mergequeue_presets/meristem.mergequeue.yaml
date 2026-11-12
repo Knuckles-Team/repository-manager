@@ -4,7 +4,7 @@
 #
 # This is the migration target for scion_sdk/governance/merge_queue.py:
 # every gate its fast tier hard-codes, re-expressed as declarative config. Read
-# side by side with epistemic-graph.mergequeue.yaml -- the two repositories share
+# side by side with medulla.mergequeue.yaml -- the two repositories share
 # ZERO gates and one mechanism, which is the whole point of the split.
 #
 # NOT YET IN EFFECT. The au queue is live and actively landing branches; see the
@@ -43,7 +43,7 @@ gates:
     # identities are run directly and accepted only when that exact script exits
     # zero within its own small bound. New genuinely-slow checks still block.
     timeout_recheck_pattern: '^TIMEOUT (?P<item>scripts/security/[^ ]+\.py)$'
-    timeout_recheck_command: ["env", "AGENT_UTILITIES_TESTING=true", ".venv/bin/python", "{item}"]
+    timeout_recheck_command: ["env", "MERISTEM_TESTING=true", ".venv/bin/python", "{item}"]
     timeout_recheck_timeout: 15
 
   # ── the au queue's `targeted-tests` step ─────────────────────────────────

@@ -85,7 +85,7 @@ def register_merge_queue_tools(
         target repository's own ``.mergequeue.yaml`` — a command, a tier, a
         timeout, and how to compare its result against the base ref.
         scion-sdk declares pytest + ruff + its contract scripts;
-        epistemic-graph declares ``cargo check --all-features`` + clippy; a docs
+        medulla declares ``cargo check --all-features`` + clippy; a docs
         repo could declare only a link check. A repository with no declaration is
         REFUSED rather than defaulted, because "declared no gates" and "has no
         queue configured" must not be the same value.

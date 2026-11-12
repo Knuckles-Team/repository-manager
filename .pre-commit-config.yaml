@@ -73,7 +73,7 @@ repos:
   # Tier 0 (CONCEPT:RM-PARSE-GATE). Deliberately FIRST among the local hooks
   # and deliberately cheap: it answers only "does every source file still
   # parse?", in seconds, with no build, environment or network. Five
-  # epistemic-graph branches once merged into a tree where four files did not
+  # medulla branches once merged into a tree where four files did not
   # parse at all — including a Cargo.toml with a duplicate `members` key that
   # cargo refused outright — and nothing caught it until something tried to
   # compile, hours later. Everything below this line is more expensive and none
@@ -133,7 +133,7 @@ repos:
   - id: pytest
     name: pytest
     # Run this repository's tests from its locked environment (scripts/
-    # bootstrap.sh). `native` tests need the compiled epistemic-graph kernel,
+    # bootstrap.sh). `native` tests need the compiled medulla kernel,
     # which the default bootstrap does not build (bootstrap.sh --native does).
     entry: python -m pytest tests -q --tb=short -p no:cacheprovider -n auto -m "not slow and not integration and not native" --timeout=120
     language: system
@@ -146,7 +146,7 @@ repos:
     # and by operators, never by an ordinary commit or push.
     # CONCEPT:RM-DEP-READY -- see repository_manager/dependency_readiness.py
     # for the live instance this closes (a framework package declaring
-    # epistemic-graph>=2.23.2 while PyPI held only 2.23.0).
+    # medulla>=2.23.2 while PyPI held only 2.23.0).
     entry: python -m repository_manager.dependency_readiness .
     language: system
     pass_filenames: false
