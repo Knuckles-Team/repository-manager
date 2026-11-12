@@ -769,7 +769,8 @@ maintenance:
   - name: 'Phase 3: scion-sdk'
     phase: 3
     projects:
-    - scion-sdk wait_minutes: 30
+    - scion-sdk
+    wait_minutes: 30
   - name: 'Phase 4: meristem'
     phase: 4
     projects:
