@@ -2205,7 +2205,7 @@ class Git:
         return md
 
     @staticmethod
-    def generate_markdown_summary(action: str, results: list[GitResult]) -> str:
+    def generate_markdown_summary(operation: str, results: list[GitResult]) -> str:
         """Generates a beautiful markdown summary of bulk operation results."""
         successes = [r for r in results if r.status == "success"]
         failures = [r for r in results if r.status == "error"]
@@ -2214,14 +2214,14 @@ class Git:
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         md = [
-            f"# {action.upper()} Summary",
+            f"# {operation.upper()} Summary",
             f"**Time:** {timestamp}  ",
             f"**Total:** {len(results)} | **Success:** {len(successes)} ✅ | **Failure:** {len(failures)} ❌ | **Skipped:** {len(skips)} ⏭️",
             "",
         ]
 
         if successes:
-            md.extend(Git._summary_success_section(action, successes))
+            md.extend(Git._summary_success_section(operation, successes))
         if failures:
             md.extend(Git._summary_failure_section(failures))
         if skips:

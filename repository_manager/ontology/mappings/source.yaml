@@ -4,8 +4,7 @@ ontology_source: repository
 sync:
 - preset: repository-worktrees
   server: repository-manager-mcp
-  tool: rm_worktree
-  action: list
+  tool: rm_worktree_list
   records_path: worktrees
   id_field: path
   title_field: branch

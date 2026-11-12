@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repository-manager"
-version = "3.5.7"
+version = "3.5.10"
 description = "Manage your git projects"
 readme = "README.md"
 classifiers = [ "Development Status :: 5 - Production/Stable", "License :: Public Domain", "Environment :: Console", "Operating System :: POSIX :: Linux", "Programming Language :: Python :: 3",]
 requires-python = ">=3.12,<3.15"
-dependencies = [ "scion-sdk[mcp]>=0.6.4,<0.7.0", "psutil>=7.2.2", "requests>=2.34.2",]
+dependencies = [ "scion-sdk[mcp]>=0.9.0,<1.0.0", "psutil>=7.2.2", "requests>=2.34.2",]
 [[project.authors]]
 name = "Repository Maintainers"
 email = "maintainers@knuckles.team"
@@ -19,12 +19,12 @@ text = "MIT"
 
 [project.optional-dependencies]
 mcp = [
-    "scion-sdk[mcp]>=0.6.4,<0.7.0"]
+    "scion-sdk[mcp]>=0.9.0,<1.0.0"]
 
 all = [
     "pre-commit>=4.7.0",
     "bump2version>=1.0.1",
-    "scion-sdk[mcp]>=0.6.4,<0.7.0"
+    "scion-sdk[mcp]>=0.9.0,<1.0.0"
 ]
 
 test = [
@@ -55,7 +55,7 @@ repository-manager-install-merge-queue-runner = "repository_manager.merge_queue_
 repository-manager-governance = "repository_manager.governance.cli:main"
 
 [tool.setuptools.package-data]
-repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "docs_readiness_fleet_manifest.json", "skills/**", "ontology/**", "connectors/**", "development/contracts/*.json", "mergequeue_presets/*.yaml", "governance/*.yaml", "buildcache_presets/*.yaml", "systemd/*.service", "systemd/*.timer",]
+repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "docs_readiness_fleet_manifest.json", "skills/**", "prompts/*.json", "ontology/**", "connectors/**", "development/contracts/*.json", "mergequeue_presets/*.yaml", "governance/*.yaml", "buildcache_presets/*.yaml", "systemd/*.service", "systemd/*.timer",]
 
 [tool.uv]
 managed = true
@@ -106,4 +106,4 @@ exempt = ["specs/*", "specs/**/*"]
 
 # The one declared connector identity: the fleet name (SCION-CONNECTOR-CONTROL-R071).
 [project.entry-points."scion_sdk.connector"]
-repository-manager = "repository_manager"
+repository-manager = "repository_manager:connector"
