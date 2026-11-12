@@ -111,9 +111,7 @@ def _workspace(root: Path) -> None:
                 "repositories": [{"url": "https://example.invalid/scion-sdk.git"}],
                 "subdirectories": {
                     "platform": {
-                        "repositories": [
-                            {"url": "https://example.invalid/medulla.git"}
-                        ]
+                        "repositories": [{"url": "https://example.invalid/medulla.git"}]
                     }
                 },
             },

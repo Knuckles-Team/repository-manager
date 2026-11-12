@@ -281,9 +281,7 @@ def test_engine_daemon_lease_is_workspace_scoped_like_the_shared_venv(
     ):
         assert not (repo_leases / "medulla-daemon.lease").exists()
         assert (
-            lanes.workspace_arbitration_dir()
-            / "leases"
-            / "medulla-daemon.lease"
+            lanes.workspace_arbitration_dir() / "leases" / "medulla-daemon.lease"
         ).exists()
     assert lanes.lease_status("medulla-daemon", canonical) is None
 

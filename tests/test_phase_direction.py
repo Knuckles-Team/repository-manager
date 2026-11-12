@@ -164,9 +164,7 @@ def test_phase4_runtime_dependency_on_phase5_package_fails(tmp_path: Path) -> No
 
 def test_same_phase_and_earlier_phase_edges_pass(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
-    _pyproject(
-        tmp_path, AU, "scion-sdk", 'dependencies = ["medulla[full]>=2"]\n'
-    )
+    _pyproject(tmp_path, AU, "scion-sdk", 'dependencies = ["medulla[full]>=2"]\n')
     _pyproject(
         tmp_path,
         "agent-packages/agents/agent-a",

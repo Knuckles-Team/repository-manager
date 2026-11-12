@@ -60,9 +60,7 @@ def _constraint(
 
 
 def test_check_constraint_satisfied():
-    backend = _FakeBackend(
-        {"medulla": ["2.22.0", "2.23.0", "2.23.2", "2.24.0"]}
-    )
+    backend = _FakeBackend({"medulla": ["2.22.0", "2.23.0", "2.23.2", "2.24.0"]})
     result = dr.check_constraint(
         _constraint(), index_urls=["https://pypi.org/simple"], backend=backend
     )
@@ -87,9 +85,7 @@ def test_check_constraint_unsatisfied_names_package_constraint_and_available():
 
 
 def test_check_constraint_index_unreachable_is_distinguished_from_unsatisfied():
-    backend = _FakeBackend(
-        {"medulla": dr.IndexUnreachableError("connection refused")}
-    )
+    backend = _FakeBackend({"medulla": dr.IndexUnreachableError("connection refused")})
     result = dr.check_constraint(
         _constraint(),
         index_urls=["https://pypi.example/simple"],
@@ -221,9 +217,7 @@ dependencies = ["medulla-stubs>=1.0.0"]
 def test_invalid_dependency_metadata_returns_typed_blocking_state(tmp_path, content):
     (tmp_path / "pyproject.toml").write_bytes(content)
 
-    constraints = dr.declared_fleet_constraints(
-        tmp_path, fleet_packages={"medulla"}
-    )
+    constraints = dr.declared_fleet_constraints(tmp_path, fleet_packages={"medulla"})
 
     assert len(constraints) == 1
     invalid = constraints[0]
@@ -417,9 +411,7 @@ dependencies = ["medulla[full]>=2.23.2,<3.0.0"]
 """
     )
     backend = _FakeBackend({"medulla": ["2.22.4", "2.23.0"]})
-    report = dr.check_tree(
-        tmp_path, fleet_packages={"medulla"}, backend=backend
-    )
+    report = dr.check_tree(tmp_path, fleet_packages={"medulla"}, backend=backend)
     assert report.ok is False
     assert len(report.checks) == 1
     assert report.checks[0].status == "unsatisfied"
@@ -434,9 +426,7 @@ dependencies = ["medulla[full]>=2.23.2,<3.0.0"]
 """
     )
     backend = _FakeBackend({"medulla": ["2.23.2", "2.24.0"]})
-    report = dr.check_tree(
-        tmp_path, fleet_packages={"medulla"}, backend=backend
-    )
+    report = dr.check_tree(tmp_path, fleet_packages={"medulla"}, backend=backend)
     assert report.ok is True
     assert report.checks[0].status == "satisfied"
 
@@ -498,9 +488,7 @@ dependencies = ["medulla[full]>=2.23.2,<3.0.0"]
         dr.OVERRIDE_ENV_VAR, "shipping an urgent fix, eg 2.23.2 not yet cut"
     )
 
-    report = dr.check_tree(
-        tmp_path, fleet_packages={"medulla"}, backend=backend
-    )
+    report = dr.check_tree(tmp_path, fleet_packages={"medulla"}, backend=backend)
 
     assert report.ok is True  # the override lets the push proceed
     assert report.overridden is True
@@ -527,9 +515,7 @@ dependencies = ["medulla[full]>=2.23.2,<3.0.0"]
 """
     )
     backend = _FakeBackend({"medulla": ["2.23.0"]})
-    report = dr.check_tree(
-        tmp_path, fleet_packages={"medulla"}, backend=backend
-    )
+    report = dr.check_tree(tmp_path, fleet_packages={"medulla"}, backend=backend)
     assert report.ok is False
     assert report.overridden is False
 

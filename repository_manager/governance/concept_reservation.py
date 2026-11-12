@@ -1152,9 +1152,7 @@ class NativeConceptReservationAuthority:
         candidate = getattr(graph, name, None)
         if callable(candidate):
             return candidate
-        raise AuthorityUnavailable(
-            f"medulla lacks required native primitive {name}"
-        )
+        raise AuthorityUnavailable(f"medulla lacks required native primitive {name}")
 
     def _call(self, name: str, *args: Any, **kwargs: Any) -> Any:
         try:
