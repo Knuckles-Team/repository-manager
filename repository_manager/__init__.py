@@ -4,25 +4,7 @@ import importlib
 import inspect
 from typing import Any
 
-from scion_sdk.connector import Connector
-
 __all__: list[str] = []
-
-
-def _register_connector_tools(context: Any) -> None:
-    """Hand the SDK-built server to the repository-manager tool registration."""
-    from repository_manager.mcp_server import register_connector_tools
-
-    register_connector_tools(context)
-
-
-connector = Connector(
-    instructions=(
-        "Expert tool for managing hierarchical Git workspaces, engineering bulk "
-        "operations, and documentation."
-    ),
-    extra_registrations=(_register_connector_tools,),
-)
 
 CORE_MODULES: list[str] = ["repository_manager.repository_manager"]
 
@@ -105,7 +87,28 @@ def _load_optional_module(module_name: str) -> Any:
     return _loaded_optional_modules.get(module_name)
 
 
+def _build_connector() -> Any:
+    """The connector declaration; built on first use so importing the package needs no SDK."""
+    from scion_sdk.connector import Connector
+
+    def _register(context: Any) -> None:
+        from repository_manager.mcp_server import register_connector_tools
+
+        register_connector_tools(context)
+
+    return Connector(
+        instructions=(
+            "Expert tool for managing hierarchical Git workspaces, engineering bulk "
+            "operations, and documentation."
+        ),
+        extra_registrations=(_register,),
+    )
+
+
 def __getattr__(name: str) -> Any:
+    if name == "connector":
+        value = globals()["connector"] = _build_connector()
+        return value
     # Handle availability flags dynamically without eager imports
     if name == "_MCP_AVAILABLE":
         return _availability_flag(name)
