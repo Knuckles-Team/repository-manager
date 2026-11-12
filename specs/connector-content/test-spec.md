@@ -7,6 +7,7 @@ Proof level: served tests enter through the MCP server built by `create_mcp_serv
 ## Positive
 
 - `tests/test_default_content_surfaces.py::test_default_content_surfaces`. The listings include the packaged skills, ontology and prompts. *(CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R001)*
+- `tests/test_destructive_declaration.py::test_destructive_actions_are_declared_and_take_confirm`. The four destructive tools carry the destructive hint and a `confirm` argument, no `allow_` argument exists, and read tools do not carry the hint. *(CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R005)*
 
 ## Planned
 

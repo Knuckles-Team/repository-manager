@@ -357,18 +357,13 @@ class ConsentPolicy(ContractModel):
     """Explicit operator consent for effects beyond lane-local development."""
 
     allow_push: StrictBool = False
-    allow_destructive_cleanup: StrictBool = False
     risk_acknowledged: StrictBool = False
     risk_marker: OpaqueId | None = None
 
     @model_validator(mode="after")
     def validate_risk(self) -> ConsentPolicy:
-        if (self.allow_push or self.allow_destructive_cleanup) and not (
-            self.risk_acknowledged and self.risk_marker
-        ):
-            raise ValueError(
-                "push or destructive cleanup requires a risk acknowledgement and marker"
-            )
+        if self.allow_push and not (self.risk_acknowledged and self.risk_marker):
+            raise ValueError("push requires a risk acknowledgement and marker")
         if self.risk_marker and not self.risk_acknowledged:
             raise ValueError("risk_marker cannot be supplied without acknowledgement")
         return self

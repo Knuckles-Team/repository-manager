@@ -17,16 +17,13 @@ from typing import Any
 
 from fastmcp import FastMCP
 from scion_sdk.config import setting
+from scion_sdk.mcp.destructive import declared_destructive_actions
 from scion_sdk.mcp.tool_surface import registered_tools
 
 _READ_ONLY = re.compile(
     r"^(list|get|read|check|test|status|show|find|search|describe|discover|inspect|"
     r"info|query|scan|audit|analyze|monitor|detect|verify|view|fetch|tail|metrics|"
     r"progress|stat|diff|compare|calculate|preview)"
-)
-_DESTRUCTIVE = re.compile(
-    r"(remove|delete|cancel|kill|stop|rotate|revoke|reset|purge|drop|wipe|clean|"
-    r"uninstall|erase|terminate|disable|truncate)"
 )
 
 
@@ -42,9 +39,9 @@ def _actions(tool: Any) -> list[str]:
     return seen
 
 
-def _annotations(action: str, declared: Any) -> dict[str, Any]:
-    read_only = bool(_READ_ONLY.match(action)) and not _DESTRUCTIVE.search(action)
-    destructive = bool(_DESTRUCTIVE.search(action))
+def _annotations(action: str, declared: Any, tool_fn: Any = None) -> dict[str, Any]:
+    destructive = action in declared_destructive_actions(tool_fn)
+    read_only = bool(_READ_ONLY.match(action)) and not destructive
     return {
         "title": action.replace("_", " ").title(),
         "readOnlyHint": read_only,
@@ -131,7 +128,7 @@ def _serve_actions(
             description=f"{action.replace('_', ' ').capitalize()} ({name}). "
             + (tool.description or ""),
             tags=set(tool.tags or set()) | {"operation", "granular"},
-            annotations=_annotations(action, tool.annotations),
+            annotations=_annotations(action, tool.annotations, tool.fn),
         )(_wrapper(tool, action))
 
 
