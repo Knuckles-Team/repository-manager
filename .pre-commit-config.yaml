@@ -104,7 +104,7 @@ repos:
     # sys.platform or poisoning fcntl on Linux would falsely reject the SDK's
     # correctly guarded file_lock implementation. Include the directly
     # executed security contract too: pkgutil cannot walk standalone scripts.
-    entry: python scripts/check_import_safety.py --package repository_manager --script scripts/security_contract.py --simulate-windows
+    entry: uv run python scripts/check_import_safety.py --package repository_manager --script scripts/security_contract.py --simulate-windows
     language: system
     pass_filenames: false
     always_run: true
@@ -118,7 +118,7 @@ repos:
   - id: check-cli-help
     name: check cli help
     entry: |-
-      bash -c 'for f in $(find . -type f \( -name "mcp_server.py" -o -name "agent_server.py" \) -not -path "*/\.venv/*" -not -path "./.uv-workspace-siblings/*" -not -path "./build/*" -not -path "*/__pycache__/*"); do mod=$(echo "$f" | sed -e "s/^\.\///" -e "s/\.py$//" -e "s/\//./g"); python -m "$mod" --help >/dev/null || exit 1; done'
+      bash -c 'for f in $(find . -type f \( -name "mcp_server.py" -o -name "agent_server.py" \) -not -path "*/\.venv/*" -not -path "./.uv-workspace-siblings/*" -not -path "./build/*" -not -path "*/__pycache__/*"); do mod=$(echo "$f" | sed -e "s/^\.\///" -e "s/\.py$//" -e "s/\//./g"); uv run python -m "$mod" --help >/dev/null || exit 1; done'
     language: system
     pass_filenames: false
     files: ^(repository_manager/|pyproject\.toml$)
