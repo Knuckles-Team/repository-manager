@@ -8,6 +8,9 @@ from pathlib import Path
 
 import pytest
 
+# The server parses sys.argv when it is built; pytest's own arguments are not server flags.
+sys.argv[1:] = []
+
 
 def _prefer_git_bash_on_windows() -> None:
     """Put Git for Windows' POSIX ``bash`` ahead of the WSL launcher.

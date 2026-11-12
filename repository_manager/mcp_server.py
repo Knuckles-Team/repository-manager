@@ -970,6 +970,23 @@ def _wait_for_jobs_and_run(
 # ---------------------------------------------------------------------------
 
 
+def _register_surface(mcp: Any) -> list[str]:
+    """Register the operation tools and one typed tool per routed action."""
+    registered_tags = register_tool_surface(
+        mcp,
+        client_cls=operations_facade(Git),
+        get_client=lambda: Git(),
+        service="repository-manager",
+    )
+    registered_tags += register_split_action_tools(mcp, list(MCP_TOOL_REGISTRY))
+    return registered_tags
+
+
+def register_connector_tools(context: Any) -> None:
+    """Register every repository-manager tool on the SDK-built server."""
+    _register_surface(context.server)
+
+
 def get_mcp_instance() -> tuple[Any, Any, Any, Any]:
     """Initialize the MCP instance, args, and middlewares."""
     load_config()
@@ -985,13 +1002,7 @@ def get_mcp_instance() -> tuple[Any, Any, Any, Any]:
         ),
     )
 
-    registered_tags = register_tool_surface(
-        mcp,
-        client_cls=operations_facade(Git),
-        get_client=lambda: Git(),
-        service="repository-manager",
-    )
-    registered_tags += register_split_action_tools(mcp, list(MCP_TOOL_REGISTRY))
+    registered_tags = _register_surface(mcp)
 
     for mw in middlewares:
         mcp.add_middleware(mw)

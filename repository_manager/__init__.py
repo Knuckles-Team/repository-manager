@@ -4,7 +4,25 @@ import importlib
 import inspect
 from typing import Any
 
+from scion_sdk.connector import Connector
+
 __all__: list[str] = []
+
+
+def _register_connector_tools(context: Any) -> None:
+    """Hand the SDK-built server to the repository-manager tool registration."""
+    from repository_manager.mcp_server import register_connector_tools
+
+    register_connector_tools(context)
+
+
+connector = Connector(
+    instructions=(
+        "Expert tool for managing hierarchical Git workspaces, engineering bulk "
+        "operations, and documentation."
+    ),
+    extra_registrations=(_register_connector_tools,),
+)
 
 CORE_MODULES: list[str] = ["repository_manager.repository_manager"]
 
