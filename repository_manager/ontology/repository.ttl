@@ -1,7 +1,8 @@
 @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix core: <https://knuckles-team.github.io/ontology/core#> .
 @prefix foaf: <http://xmlns.com/foaf/0.1/> .
 @prefix dc: <http://purl.org/dc/terms/> .
-@prefix : <http://knuckles.team/kg#> .
+@prefix : <https://knuckles-team.github.io/ontology/connector/repository-manager#> .
 @prefix owl: <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
@@ -19,6 +20,7 @@
     rdfs:comment "A version-controlled git repository — a remote enumerated across a GitLab instance / GitHub org (rm_git enumerate) or a local workspace checkout (rm_projects)." .
 
 :Worktree a owl:Class ;
+    rdfs:subClassOf core:Worktree ;
     rdfs:label "Worktree" ;
     rdfs:comment "A linked git worktree of a repository (a checked-out branch on its own path), classified merged / active / stale / dangling (rm_worktree list/audit)." .
 
@@ -43,7 +45,7 @@
 :authoredBy a owl:ObjectProperty ;
     rdfs:label "authored by" ;
     rdfs:comment "Links a repository, worktree, or project to the Person who last authored/owns it." ;
-    rdfs:range :Person .
+    rdfs:range core:Person .
 
 # --- fields (owl:DatatypeProperty) ---
 
@@ -139,12 +141,12 @@
     rdfs:domain :Project ;
     rdfs:range xsd:string .
 
-<http://knuckles.team/kg/repository> a owl:Ontology ;
+<https://knuckles-team.github.io/ontology/connector/repository> a owl:Ontology ;
     rdfs:label "Repository Manager Ontology" ;
     rdfs:comment """Repository-manager source-control model — git repositories, their linked
     worktrees and the local workspace projects the manager installs, validates, bumps and
     pushes, with their worktree/project relationships — federated into the scion-sdk
     knowledge-graph hub.""" .
 
-<http://knuckles.team/kg#GitRepository> rdfs:subClassOf <http://knuckles.team/kg#Repository> .
-<http://knuckles.team/kg#Project> rdfs:subClassOf <http://knuckles.team/kg#SoftwareProject> .
+<https://knuckles-team.github.io/ontology/connector/repository-manager#GitRepository> rdfs:subClassOf <https://knuckles-team.github.io/ontology/core#Repository> .
+<https://knuckles-team.github.io/ontology/connector/repository-manager#Project> rdfs:subClassOf <https://knuckles-team.github.io/ontology/core#SoftwareProject> .
