@@ -88,3 +88,46 @@ class PublicSpecSchemaTests(unittest.TestCase):
                     checker._status_errors(ROOT, path.relative_to(ROOT)), []
                 )
                 self.assertEqual(path.read_bytes(), before)
+
+
+class ComputedStatusTests(unittest.TestCase):
+    """status.json is computed at read time and never tracked, so it is not required."""
+
+    BODIES = {
+        "spec.md": "# Example\n\nRequirement FR-001: the acceptance behaviour is described here.\n",
+        "plan.md": "# Example plan\n\nThe architecture and design of the interface are described here.\n",
+        "test-spec.md": "# Example tests\n\nEach test names the expected proof for its requirement.\n",
+        "tasks.md": "# Example tasks\n\n- [ ] T001 implement the requirement and its bound test.\n",
+    }
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        feature = self.root / "specs" / "example"
+        feature.mkdir(parents=True)
+        for name, body in self.BODIES.items():
+            (feature / name).write_text(body + "Substantive detail. " * 12)
+
+    def paths(self):
+        return set(checker.tracked_specs(self.root))
+
+    def test_a_feature_without_status_json_passes(self):
+        self.assertEqual(checker._contract_errors(self.root, self.paths()), [])
+
+    def test_a_missing_owner_document_is_still_a_finding(self):
+        (self.root / "specs/example/plan.md").unlink()
+        errors = checker._contract_errors(self.root, self.paths())
+        self.assertEqual(
+            errors, ["specs/example/plan.md: missing required owner contract"]
+        )
+
+    def test_a_present_generated_status_is_still_validated(self):
+        (self.root / "specs/example/status.json").write_text("[]")
+        errors = checker._contract_errors(self.root, self.paths())
+        self.assertEqual(
+            errors, ["specs/example/status.json: status must be an object"]
+        )
+
+    def test_the_repository_specs_pass_without_a_tracked_status(self):
+        self.assertEqual(checker.problems(ROOT), [])
