@@ -1233,6 +1233,8 @@ def start(
     ttl_seconds: int = 3600,
     adopt: bool = False,
     operator_id: str = "",
+    reflink: str = "auto",
+    seed_artifacts: bool = False,
 ) -> dict[str, Any]:
     """Open an isolated lane: worktree + partitioned environment + proof.
 
@@ -1271,9 +1273,18 @@ def start(
             adopt=adopt,
             operator_id=operator_id,
             registry=registry,
+            reflink=reflink,
+            seed_artifacts=seed_artifacts,
         )
     else:
-        added = manager.add(repo, branch, base=base, adopt=adopt)
+        added = manager.add(
+            repo,
+            branch,
+            base=base,
+            adopt=adopt,
+            reflink=reflink,
+            seed_artifacts=seed_artifacts,
+        )
     if not added.get("ok", False):
         return {"ok": False, "stage": "worktree", "result": added}
 
@@ -1298,6 +1309,7 @@ def start(
             if registry is not None
             else {}
         ),
+        **{k: added[k] for k in ("checkout", "seed") if k in added},
     }
 
 
@@ -1605,6 +1617,8 @@ def _dispatch_start(kwargs: dict[str, Any]) -> dict[str, Any]:
         ttl_seconds=int(_kw(kwargs, "ttl_seconds", 3600)),
         adopt=bool(kwargs.get("adopt")),
         operator_id=_kw(kwargs, "operator_id", ""),
+        reflink=_kw(kwargs, "reflink", "auto"),
+        seed_artifacts=bool(kwargs.get("seed_artifacts")),
     )
 
 

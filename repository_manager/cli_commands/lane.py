@@ -18,6 +18,8 @@ def run_lane_cli(args: argparse.Namespace) -> int:
         base=args.lane_base,
         workspace=args.workspace,
         force=args.lane_force,
+        reflink=args.lane_reflink,
+        seed_artifacts=args.lane_seed_artifacts,
     )
     if args.lane_shell and "shell" in result:
         print(result["shell"])

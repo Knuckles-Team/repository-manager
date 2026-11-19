@@ -25,6 +25,8 @@ class _NoRepoRequest:
     prune_merged: bool
     branch: str | None
     repos: str | None
+    reflink: str = "auto"
+    seed_artifacts: bool = False
 
 
 @dataclass
@@ -39,6 +41,8 @@ class _RepoBranchRequest:
     force: bool
     delete_branch: bool
     strategy: str
+    reflink: str = "auto"
+    seed_artifacts: bool = False
 
 
 async def _worktree_list(worktree_manager: Any, req: _NoRepoRequest) -> dict[str, Any]:
@@ -66,7 +70,12 @@ async def _worktree_bulk_add(
         return {"ok": False, "error": "action 'bulk_add' requires 'branch'"}
     repo_list = [item.strip() for item in req.repos.split(",")] if req.repos else None
     return await run_blocking(
-        worktree_manager.bulk_add, req.branch, repos=repo_list, base=req.base
+        worktree_manager.bulk_add,
+        req.branch,
+        repos=repo_list,
+        base=req.base,
+        reflink=req.reflink,
+        seed_artifacts=req.seed_artifacts,
     )
 
 
@@ -84,7 +93,13 @@ async def _worktree_add(
     worktree_manager: Any, req: _RepoBranchRequest
 ) -> dict[str, Any]:
     return await run_blocking(
-        worktree_manager.add, req.repo, req.branch, base=req.base, adopt=req.adopt
+        worktree_manager.add,
+        req.repo,
+        req.branch,
+        base=req.base,
+        adopt=req.adopt,
+        reflink=req.reflink,
+        seed_artifacts=req.seed_artifacts,
     )
 
 
@@ -207,6 +222,14 @@ def register_worktree_tools(
             default=None,
             description="For 'bulk_add': comma-separated repo basenames (default: every workspace repo).",
         ),
+        reflink: Literal["auto", "never"] = Field(
+            default="auto",
+            description="For 'add'/'bulk_add': 'auto' populates the worktree by copy-on-write from a same-filesystem sibling worktree when the filesystem supports reflinks, otherwise a plain checkout; 'never' always does a plain checkout. The result's 'checkout' states the path taken and why.",
+        ),
+        seed_artifacts: bool = Field(
+            default=False,
+            description="For 'add'/'bulk_add': also reflink-seed the configured untracked build directories (target, node_modules; virtual environments are path-bound and refused) from the sibling worktree so the new worktree starts warm. Never a full copy: skipped and reported under 'seed' when reflinks are unavailable.",
+        ),
         path: str | None = Field(default=None, description="Workspace root override."),
         ctx: Context | None = Field(
             default=None, description="MCP context for progress reporting"
@@ -240,6 +263,8 @@ def register_worktree_tools(
                 prune_merged=prune_merged,
                 branch=branch,
                 repos=repos,
+                reflink=reflink,
+                seed_artifacts=seed_artifacts,
             )
             return await no_repo_handler(worktree_manager, no_repo_req)
 
@@ -261,5 +286,7 @@ def register_worktree_tools(
             force=force,
             delete_branch=delete_branch,
             strategy=strategy,
+            reflink=reflink,
+            seed_artifacts=seed_artifacts,
         )
         return await repo_branch_handler(worktree_manager, repo_branch_req)

@@ -45,6 +45,7 @@ from scion_sdk.file_lock import lock_exclusive, unlock
 
 from repository_manager import portable_fs as pfs
 from repository_manager import prune_guard, stash_guard
+from repository_manager import reflink as rl
 from repository_manager.canonical_guard import guarded_canonical_mutation
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,8 @@ class _AllocateRequest:
     adopt: bool
     operator_id: str
     now: Any | None
+    reflink: str = "auto"
+    seed_artifacts: bool = False
 
 
 class GitLike(Protocol):
@@ -221,7 +224,13 @@ class WorktreeManager:
 
     # ── actions ───────────────────────────────────────────────────────────
     def add(
-        self, repo: str, branch: str, base: str = "main", adopt: bool = False
+        self,
+        repo: str,
+        branch: str,
+        base: str = "main",
+        adopt: bool = False,
+        reflink: str = "auto",
+        seed_artifacts: bool = False,
     ) -> dict[str, Any]:
         """Create (or reuse) a worktree for ``branch`` of ``repo``.
 
@@ -233,7 +242,16 @@ class WorktreeManager:
         :mod:`repository_manager.stash_guard` (CONCEPT:RM-STASH-GUARD) — a
         private ref, never the shared ``refs/stash`` stack, so a concurrent
         stash push/pop elsewhere in this ``.git`` can never cross with it.
+
+        ``reflink`` (``auto``/``never``) and ``seed_artifacts``
+        (CONCEPT:RM-WORKTREE-REFLINK): with ``auto`` the checkout is populated
+        from a same-device sibling worktree by copy-on-write when the
+        filesystem supports it; ``seed_artifacts`` additionally reflink-seeds
+        the configured untracked build directories. The result states the
+        path taken under ``checkout`` (and ``seed`` when requested).
         """
+        if reflink not in rl.REFLINK_MODES:
+            return {"ok": False, "error": f"reflink must be one of {rl.REFLINK_MODES}"}
         if not repo or not branch:
             return {"ok": False, "error": "repo and branch are required"}
         canonical = self.resolve_repo(repo)
@@ -264,16 +282,12 @@ class WorktreeManager:
         if blocked_result is not None:
             return blocked_result
 
-        res = self._run_worktree_add(canonical, wt, branch, base)
-        if not self._ok(res):
+        create_error, extra = self._create_worktree(
+            canonical, wt, branch, base, reflink, seed_artifacts
+        )
+        if create_error is not None:
             return self._restore_wip_and_return(
-                canonical,
-                stash_ref,
-                {
-                    "ok": False,
-                    "path": wt,
-                    "error": res.error.message if res.error else res.data,
-                },
+                canonical, stash_ref, {"ok": False, "path": wt, "error": create_error}
             )
 
         adopted, out = self._apply_wip_to_worktree(wt, stash_ref)
@@ -286,6 +300,7 @@ class WorktreeManager:
             "created": True,
             "adopted": adopted,
             **out,
+            **extra,
         }
 
     def _capture_add_wip(
@@ -345,17 +360,86 @@ class WorktreeManager:
             self._run(f"git checkout {shlex.quote(base)}", canonical)
         return None
 
-    def _run_worktree_add(self, canonical: str, wt: str, branch: str, base: str) -> Any:
+    def _create_worktree(
+        self,
+        canonical: str,
+        wt: str,
+        branch: str,
+        base: str,
+        mode: str,
+        seed: bool,
+    ) -> tuple[str | None, dict[str, Any]]:
+        """Create the worktree and report the path taken.
+
+        Returns ``(error, report)``; ``error`` is ``None`` on success and the
+        report carries ``checkout`` (and ``seed`` when requested) explicitly.
+        """
+        plan = rl.plan_reflink(
+            canonical, os.path.dirname(wt), branch, base, mode=mode, seed=seed
+        )
+        res = self._run_worktree_add(
+            canonical, wt, branch, base, no_checkout=plan.attempt
+        )
+        if not self._ok(res):
+            return (res.error.message if res.error else res.data), {}
+        checkout: dict[str, Any] = {
+            "path": "plain",
+            "reason": plan.reason,
+            "fallback": False,
+        }
+        if plan.attempt:
+            checkout, error = self._reflink_populate(canonical, wt, plan)
+            if error is not None:
+                return error, {}
+        report: dict[str, Any] = {"checkout": checkout}
+        if seed:
+            report["seed"] = rl.seed_artifacts(
+                plan.seed_path,
+                wt,
+                plan.support or rl.ReflinkSupport(False, plan.reason),
+            )
+        return None, report
+
+    def _reflink_populate(
+        self, canonical: str, wt: str, plan: rl.ReflinkPlan
+    ) -> tuple[dict[str, Any], str | None]:
+        """Populate a ``--no-checkout`` worktree; fall back to a plain checkout."""
+        assert plan.source is not None
+        paths = rl.tracked_files(plan.source.path)
+        failure = "could not list source worktree files" if paths is None else None
+        if failure is None:
+            try:
+                rl.copy_tracked(plan.source.path, wt, paths or ())
+                failure = rl.reconcile(wt, paths or ())
+            except OSError as exc:
+                failure = f"reflink copy failed: {exc}"
+        if failure is None:
+            return {"path": "reflink", "reason": plan.reason, "fallback": False}, None
+        if rl.reset_to_plain(wt):
+            return {
+                "path": "plain",
+                "reason": f"fallback: {failure}",
+                "fallback": True,
+            }, None
+        self._run(
+            f"git worktree remove --force {shlex.quote(wt)}", canonical, quiet=True
+        )
+        return {}, f"worktree checkout failed after reflink fallback: {failure}"
+
+    def _run_worktree_add(
+        self, canonical: str, wt: str, branch: str, base: str, no_checkout: bool = False
+    ) -> Any:
+        flag = "--no-checkout " if no_checkout else ""
         exists = self._run(
             f"git rev-parse --verify --quiet refs/heads/{shlex.quote(branch)}",
             canonical,
             quiet=True,
         )
         if self._ok(exists) and exists.data.strip():
-            cmd = f"git worktree add {shlex.quote(wt)} {shlex.quote(branch)}"
+            cmd = f"git worktree add {flag}{shlex.quote(wt)} {shlex.quote(branch)}"
         else:
             cmd = (
-                f"git worktree add {shlex.quote(wt)} -b {shlex.quote(branch)} "
+                f"git worktree add {flag}{shlex.quote(wt)} -b {shlex.quote(branch)} "
                 f"{shlex.quote(base)}"
             )
         # Concurrent `git worktree add` calls against one repository race inside
@@ -396,6 +480,8 @@ class WorktreeManager:
         operator_id: str = "",
         registry: Any | None = None,
         now: Any | None = None,
+        reflink: str = "auto",
+        seed_artifacts: bool = False,
     ) -> dict[str, Any]:
         """Reserve a durable lane before creating its linked worktree.
 
@@ -431,6 +517,8 @@ class WorktreeManager:
             adopt=adopt,
             operator_id=operator_id,
             now=now,
+            reflink=reflink,
+            seed_artifacts=seed_artifacts,
         )
         record, error = self._allocate_lane_record(authority, req)
         if error is not None:
@@ -569,7 +657,14 @@ class WorktreeManager:
     def _create_allocated_worktree(
         self, authority: Any, record: Any, req: _AllocateRequest
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-        added = self.add(req.repo, req.branch, base=req.base, adopt=req.adopt)
+        added = self.add(
+            req.repo,
+            req.branch,
+            base=req.base,
+            adopt=req.adopt,
+            reflink=req.reflink,
+            seed_artifacts=req.seed_artifacts,
+        )
         if added.get("ok"):
             return added, None
         try:
@@ -1088,11 +1183,21 @@ class WorktreeManager:
         return {"ok": True, "pruned": pruned}
 
     def bulk_add(
-        self, branch: str, repos: list[str] | None = None, base: str = "main"
+        self,
+        branch: str,
+        repos: list[str] | None = None,
+        base: str = "main",
+        reflink: str = "auto",
+        seed_artifacts: bool = False,
     ) -> dict[str, Any]:
         """Create one worktree/branch per repo (a cross-repo session)."""
         targets = repos or [os.path.basename(p) for p in self.git.project_map.values()]
-        results = [self.add(r, branch, base=base) for r in targets]
+        results = [
+            self.add(
+                r, branch, base=base, reflink=reflink, seed_artifacts=seed_artifacts
+            )
+            for r in targets
+        ]
         return {"ok": all(x.get("ok") for x in results), "results": results}
 
     # ── audit (CONCEPT:RM-WORKTREE-AUDIT) ─────────────────────────────────
