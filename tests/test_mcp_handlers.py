@@ -406,7 +406,7 @@ async def test_mcp_rm_git_cancels_queued_job_and_refuses_running_job(monkeypatch
         tools = await mcp.list_tools()
         rm_git = {t.name: t for t in tools}
 
-        refused = await rm_git["rm_git_cancel"].fn(job_id=active["job_id"])
+        refused = await rm_git["rm_git_cancel"].fn(job_id=active["job_id"], confirm=True)
         assert refused == {
             "job_id": active["job_id"],
             "status": "running",
@@ -417,7 +417,7 @@ async def test_mcp_rm_git_cancels_queued_job_and_refuses_running_job(monkeypatch
             ),
         }
 
-        cancelled = await rm_git["rm_git_cancel"].fn(job_id=queued["job_id"])
+        cancelled = await rm_git["rm_git_cancel"].fn(job_id=queued["job_id"], confirm=True)
         assert cancelled == {
             "job_id": queued["job_id"],
             "status": "cancelled",

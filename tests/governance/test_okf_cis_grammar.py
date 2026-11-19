@@ -31,7 +31,7 @@ def test_id_path_iri_roundtrip(cid: str, path: str) -> None:
     assert ch.okf_id_to_path(cid) == path
     assert ch.path_to_okf_id(path) == cid
     assert ch.path_to_okf_id(path + ".md") == cid  # .md suffix tolerated
-    assert parsed.iri == f"{ch.CONCEPT_IRI_BASE}/{path}"
+    assert parsed.iri == f"{ch.CONCEPT_IRI_BASE}{path}"
     assert ch.concept_iri(cid) == parsed.iri
 
 
@@ -39,7 +39,7 @@ def test_shared_pillar_federates_across_repos() -> None:
     # Two repos, same pillar -> the SAME pillar IRI (no slug): cross-repo linking.
     au = ch.parse_okf_id("MERISTEM-KG.ingest.a")
     eg = ch.parse_okf_id("MEDULLA-KG.storage.b")
-    assert au.pillar_iri == eg.pillar_iri == f"{ch.PILLAR_IRI_BASE}/KG"
+    assert au.pillar_iri == eg.pillar_iri == f"{ch.PILLAR_IRI_BASE}KG"
     assert au.scheme_iri != eg.scheme_iri  # but distinct owning schemes
 
 

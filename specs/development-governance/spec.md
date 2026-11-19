@@ -26,7 +26,9 @@ The user is a contributor. The outcome is a real worktree, a gated commit of exa
 2. **Given** a lane with an unrelated untracked file, **When** the contributor commits two reviewed paths, **Then** only those paths are committed and the tree and gate identity are recorded.
 3. **Given** a red gate or a changed tree, **When** the contributor enqueues the commit, **Then** admission is refused.
 
-Independent test: the bound tests of `RM-GOVERNANCE-R025`, `RM-GOVERNANCE-R026` and `RM-GOVERNANCE-R027`.
+4. **Given** a filesystem that supports reflinks and a sibling worktree of the same repository, **When** the contributor adds a worktree, **Then** it is populated by copy-on-write, is identical to a plain checkout, optionally starts with warm build directories, and the result states the path taken; on any other filesystem the plain checkout runs and the result says why.
+
+Independent test: the bound tests of `RM-GOVERNANCE-R025`, `RM-GOVERNANCE-R026`, `RM-GOVERNANCE-R027` and `RM-GOVERNANCE-R034` to `RM-GOVERNANCE-R037`.
 
 ### User Story 2 - Promote through the queue and recover (Priority: P1)
 
@@ -76,6 +78,7 @@ Independent test: the bound tests of `RM-GOVERNANCE-R019` and the planned tests 
 - **FR-010**: Quality gates fail closed and pass together (`RM-GOVERNANCE-R019`, `RM-GOVERNANCE-R022`).
 - **FR-012**: The generated code-enhancement report uses the standard hyphenated name (`RM-GOVERNANCE-R033`).
 - **FR-011**: Heavy gates run on a leased inventory host slot (`RM-GOVERNANCE-R023`).
+- **FR-013**: New worktrees are populated by copy-on-write from a sibling worktree where the filesystem allows it, optionally with warm build directories, and always report the path taken (`RM-GOVERNANCE-R034`, `RM-GOVERNANCE-R035`, `RM-GOVERNANCE-R036`, `RM-GOVERNANCE-R037`).
 
 ## Success Criteria
 

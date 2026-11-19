@@ -17,6 +17,7 @@ from fastmcp.utilities.logging import get_logger
 from pydantic import Field
 from scion_sdk.mcp.action_dispatch import resolve_action
 from scion_sdk.mcp.concurrency import run_blocking
+from scion_sdk.mcp.destructive import destructive_actions
 
 from repository_manager.development.fleet_release_gate import (
     require_legacy_release_route,
@@ -227,6 +228,7 @@ def register_git_operations_tools(
             "git_operations",
         }
     )
+    @destructive_actions("cancel")
     async def rm_git(
         action: str = Field(
             description=(
@@ -270,6 +272,13 @@ def register_git_operations_tools(
         summary: bool = Field(
             default=True,
             description="For action='status': return compact progress by default; false includes full detail.",
+        ),
+        confirm: bool = Field(
+            default=False,
+            description=(
+                "Explicit confirmation of a destructive action, for clients that "
+                "cannot be asked to approve it."
+            ),
         ),
         ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None

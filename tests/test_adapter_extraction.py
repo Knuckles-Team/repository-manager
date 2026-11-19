@@ -187,8 +187,11 @@ EXPECTED_TOOL_NAMES = (
 # repository_manager_<operation> tool per method; no action-routed tool remains.
 # Recomputed for RM-RELEASE-R009: phased bump/push tools retired, rm_rollout_{plan,apply,status,release} added.
 # Recomputed for scion-sdk 0.6.4: tool docstrings name scion-sdk.
+# Recomputed for RM-GOVERNANCE-R037: rm_worktree and rm_lane gain reflink and seed_artifacts.
+# Recomputed for CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R005: destructive actions take confirm and carry the declared hint.
+# Recomputed for the merge of the meristem rename with the connector content tools.
 BASELINE_CATALOG_SHA256 = (
-    "9d74674a2681d604c41204d2d0dc2c4e0c59a80ced35df4a8cce99c6715dde0a"
+    "5ffc1255726ae30d081400702ce4426bf52bb035a9bd403fc12a23c237671dd3"
 )
 
 
