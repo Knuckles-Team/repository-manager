@@ -56,7 +56,7 @@ def register_lane_tools(mcp: FastMCP, *, context: McpToolContext | None = None) 
         ),
         seed_artifacts: bool = Field(
             default=False,
-            description="For 'start': also reflink-seed the configured untracked build directories (target, .venv, node_modules) from the sibling worktree. Needs reflink support; otherwise skipped and reported under 'seed'.",
+            description="For 'start': also reflink-seed the configured untracked build directories (target, node_modules; virtual environments are path-bound and refused) from the sibling worktree. Needs reflink support; otherwise skipped and reported under 'seed'.",
         ),
         env: dict[str, str] | None = Field(
             default=None,

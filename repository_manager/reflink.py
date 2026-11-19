@@ -27,7 +27,11 @@ try:
 except ImportError:  # Windows has no ioctl; the probe then answers "no".
     fcntl = None  # type: ignore[assignment]
 
-DEFAULT_SEED_ARTIFACTS = ("target", ".venv", "node_modules")
+DEFAULT_SEED_ARTIFACTS = ("target", "node_modules")
+# Virtual environments embed the absolute path of the tree that created them
+# (interpreter symlinks, script shebangs), so a copy elsewhere runs the source
+# worktree's interpreter. They are refused, never seeded.
+PATH_BOUND_ARTIFACTS = frozenset({".venv", "venv"})
 SEED_ARTIFACTS_ENV = "REPOSITORY_MANAGER_SEED_ARTIFACTS"
 REFLINK_MODES = ("auto", "never")
 
@@ -325,6 +329,11 @@ def _seed_one(
     source: str, dest: str, name: str, copy: Callable[[str, str], None]
 ) -> dict[str, str]:
     src, dst = os.path.join(source, name), os.path.join(dest, name)
+    if name in PATH_BOUND_ARTIFACTS or os.path.isfile(os.path.join(src, "pyvenv.cfg")):
+        return {
+            "status": "refused",
+            "reason": "virtual environments are path-bound and cannot be seeded",
+        }
     if not os.path.isdir(src) or os.path.islink(src):
         return {"status": "skipped", "reason": "absent in source worktree"}
     if os.path.lexists(dst) or _is_tracked(source, name):

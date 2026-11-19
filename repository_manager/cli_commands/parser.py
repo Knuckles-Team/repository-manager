@@ -262,7 +262,7 @@ Examples:
         action="store_true",
         help=(
             "For --lane start: reflink-seed the configured untracked build "
-            "directories (target, .venv, node_modules) from the sibling worktree."
+            "directories (target, node_modules; virtual environments are refused) from the sibling worktree."
         ),
     )
 

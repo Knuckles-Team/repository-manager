@@ -189,7 +189,7 @@ EXPECTED_TOOL_NAMES = (
 # Recomputed for scion-sdk 0.6.4: tool docstrings name scion-sdk.
 # Recomputed for RM-GOVERNANCE-R037: rm_worktree and rm_lane gain reflink and seed_artifacts.
 BASELINE_CATALOG_SHA256 = (
-    "9a208d4257e46d4cde53597288a35b0d59d34564dcdabdfddef00cb88c3e17ae"
+    "3622301b10843d1940dc6db67b151fbc898222c95136ea9852259d946b19b6c1"
 )
 
 

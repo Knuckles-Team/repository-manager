@@ -330,13 +330,33 @@ def test_seed_artifacts_reflinks_configured_directories(repo, monkeypatch):
     monkeypatch.setattr(rl, "reflink_file", _plain_copy)
     res = repo.wm.add("myrepo", "warm", base="tgt", seed_artifacts=True)
     assert res["seed"]["status"] == "seeded"
-    for rel in ("target/debug/app", "node_modules/pkg/index.js", ".venv/bin/python"):
+    assert set(res["seed"]["artifacts"]) == {"target", "node_modules"}
+    for rel in ("target/debug/app", "node_modules/pkg/index.js"):
         assert open(os.path.join(res["path"], rel)).read() == rel
+    assert not os.path.exists(os.path.join(res["path"], ".venv"))
     assert os.readlink(os.path.join(res["path"], "node_modules", "link")) == "pkg"
-    assert (
-        _git(res["path"], "status", "--porcelain")
-        == "?? .venv/\n?? node_modules/\n?? target/"
+    assert _git(res["path"], "status", "--porcelain") == "?? node_modules/\n?? target/"
+
+
+@pytest.mark.spec("RM-GOVERNANCE-R036")
+@pytest.mark.parametrize("name", [".venv", "venv", "custom-env"])
+def test_a_virtual_environment_is_refused_as_path_bound(repo, monkeypatch, name):
+    _make_artifacts(repo)
+    os.makedirs(os.path.join(repo.path, "custom-env"))
+    with open(os.path.join(repo.path, "custom-env", "pyvenv.cfg"), "w") as f:
+        f.write("home = /usr/bin\n")
+    os.makedirs(os.path.join(repo.path, "venv", "bin"))
+    monkeypatch.setattr(rl, "reflink_file", _plain_copy)
+    monkeypatch.setenv(rl.SEED_ARTIFACTS_ENV, f"target,{name}")
+    res = repo.wm.add(
+        "myrepo", "venv-" + name.strip("."), base="tgt", seed_artifacts=True
     )
+    refused = res["seed"]["artifacts"][name]
+    assert refused["status"] == "refused"
+    assert "path-bound" in refused["reason"]
+    assert res["seed"]["status"] == "partial"
+    assert not os.path.exists(os.path.join(res["path"], name))
+    assert res["seed"]["artifacts"]["target"]["status"] == "seeded"
 
 
 @pytest.mark.spec("RM-GOVERNANCE-R036")
@@ -380,7 +400,7 @@ def test_a_failing_artifact_copy_leaves_no_partial_directory(repo, monkeypatch):
     res = repo.wm.add("myrepo", "flaky", base="tgt", seed_artifacts=True)
     assert res["seed"]["artifacts"]["target"]["status"] == "skipped"
     assert not os.path.exists(os.path.join(res["path"], "target"))
-    assert res["seed"]["artifacts"][".venv"]["status"] == "seeded"
+    assert res["seed"]["artifacts"]["node_modules"]["status"] == "seeded"
 
 
 # ── RM-GOVERNANCE-R037: exposure ─────────────────────────────────────────
@@ -412,3 +432,83 @@ def test_lane_start_and_cli_expose_the_two_parameters(repo, monkeypatch):
     )
     assert run_lane_cli(args) == 0
     assert seen["reflink"] == "never" and seen["seed_artifacts"] is True
+
+
+# ── opt-in: real reflinks, no mocks ──────────────────────────────────────
+REAL_DIR_ENV = "RM_REFLINK_TEST_DIR"
+
+
+def _extents(path):
+    """``(physical_start, shared)`` per extent from ``filefrag -v``."""
+    out = subprocess.run(
+        ["filefrag", "-v", path], capture_output=True, text=True, check=True
+    ).stdout
+    rows = []
+    for line in out.splitlines():
+        cols = line.split(":")
+        if len(cols) > 4 and cols[0].strip().isdigit():
+            rows.append((cols[2].strip().split("..")[0], "shared" in line))
+    return rows
+
+
+@pytest.mark.spec("RM-GOVERNANCE-R035")
+@pytest.mark.skipif(
+    not os.environ.get(REAL_DIR_ENV) or shutil.which("filefrag") is None,
+    reason=f"set {REAL_DIR_ENV} to a directory on a reflink filesystem",
+)
+def test_real_reflinks_are_byte_identical_and_share_extents(tmp_path, monkeypatch):
+    import tempfile
+
+    base_dir = tempfile.mkdtemp(dir=os.environ[REAL_DIR_ENV], prefix="rm-real-")
+    try:
+        ws = os.path.join(base_dir, "workspace")
+        path = os.path.join(ws, "myrepo")
+        os.makedirs(path)
+        _git(path, "init", "-q", "-b", "main")
+        _git(path, "config", "user.email", "t@t.io")
+        _git(path, "config", "user.name", "t")
+        with open(os.path.join(path, "big.bin"), "wb") as f:
+            f.write(os.urandom(64 * 1024 * 1024))
+        with open(os.path.join(path, "a.txt"), "w") as f:
+            f.write("a1\n")
+        _git(path, "add", "--", "big.bin", "a.txt")
+        _git(path, "commit", "-q", "-m", "c1")
+        with open(os.path.join(path, "a.txt"), "w") as f:
+            f.write("a2\n")
+        _git(path, "commit", "-q", "-am", "c2")
+        os.makedirs(os.path.join(path, "target"))
+        with open(os.path.join(path, "target", "obj.bin"), "wb") as f:
+            f.write(os.urandom(32 * 1024 * 1024))
+        monkeypatch.setattr(wt_mod, "WORKTREE_ROOT", os.path.join(base_dir, "wts"))
+        wm = WorktreeManager(FakeGit(ws, {"x": path}))
+
+        assert rl.probe_reflink(os.path.join(base_dir)).supported is True
+        reference = wm.add("myrepo", "ref", base="main", reflink="never")["path"]
+        res = wm.add("myrepo", "cow", base="main", seed_artifacts=True)
+
+        assert res["checkout"]["path"] == "reflink", res
+        assert res["checkout"]["fallback"] is False
+        assert _git(res["path"], "status", "--porcelain") == "?? target/"
+        assert _git(res["path"], "write-tree") == _git(reference, "write-tree")
+        assert {
+            k: v for k, v in _snapshot(res["path"]).items() if k != "target/obj.bin"
+        } == _snapshot(reference)
+        assert res["seed"]["artifacts"]["target"]["status"] == "seeded"
+        for rel, src in (
+            ("big.bin", os.path.join(path, "big.bin")),
+            ("target/obj.bin", os.path.join(path, "target", "obj.bin")),
+        ):
+            dst = os.path.join(res["path"], rel)
+            subprocess.run(["sync", "-f", dst], check=False)
+            with open(src, "rb") as a, open(dst, "rb") as b:
+                assert a.read() == b.read()
+            sx, dx = _extents(src), _extents(dst)
+            assert sx and dx
+            assert [e[0] for e in sx] == [e[0] for e in dx], (rel, sx, dx)
+            assert all(e[1] for e in dx), (rel, "extents not flagged shared", dx)
+        # the plain reference does not share extents with the source
+        assert [e[0] for e in _extents(os.path.join(reference, "big.bin"))] != [
+            e[0] for e in _extents(os.path.join(path, "big.bin"))
+        ]
+    finally:
+        shutil.rmtree(base_dir, ignore_errors=True)

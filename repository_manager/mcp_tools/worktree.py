@@ -228,7 +228,7 @@ def register_worktree_tools(
         ),
         seed_artifacts: bool = Field(
             default=False,
-            description="For 'add'/'bulk_add': also reflink-seed the configured untracked build directories (target, .venv, node_modules) from the sibling worktree so the new worktree starts warm. Never a full copy: skipped and reported under 'seed' when reflinks are unavailable.",
+            description="For 'add'/'bulk_add': also reflink-seed the configured untracked build directories (target, node_modules; virtual environments are path-bound and refused) from the sibling worktree so the new worktree starts warm. Never a full copy: skipped and reported under 'seed' when reflinks are unavailable.",
         ),
         path: str | None = Field(default=None, description="Workspace root override."),
         ctx: Context | None = Field(
