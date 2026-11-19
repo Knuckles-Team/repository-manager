@@ -1,6 +1,8 @@
 """The public spec gate follows the spec standard: status.json is generated and never tracked."""
 
 import importlib.util
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -66,6 +68,42 @@ class PublicSpecContractTests(unittest.TestCase):
         errors = checker._contract_errors(self.root, paths)
         self.assertEqual(
             errors,
+            [
+                "specs/example/status.json: status.json is generated; it must not be tracked"
+            ],
+        )
+
+
+class TrackedSpecsTests(unittest.TestCase):
+    """Only files in the Git index count; a generated status.json on disk is untracked."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        self.git("init", "-q")
+        feature = self.root / "specs" / "example"
+        feature.mkdir(parents=True)
+        for name in ("spec.md", "plan.md", "test-spec.md", "tasks.md"):
+            (feature / name).write_text(CONTENT[name])
+        self.git("add", "--", "specs")
+
+    def git(self, *args):
+        subprocess.run(["git", "-C", str(self.root), *args], check=True, env=self.env)
+
+    def test_a_generated_untracked_status_json_passes(self):
+        (self.root / "specs/example/status.json").write_text(CONTENT["status.json"])
+        self.assertNotIn(
+            Path("specs/example/status.json"), checker.tracked_specs(self.root)
+        )
+        self.assertEqual(checker.problems(self.root), [])
+
+    def test_a_status_json_added_to_the_index_is_reported(self):
+        (self.root / "specs/example/status.json").write_text(CONTENT["status.json"])
+        self.git("add", "-f", "--", "specs/example/status.json")
+        self.assertEqual(
+            checker.problems(self.root),
             [
                 "specs/example/status.json: status.json is generated; it must not be tracked"
             ],

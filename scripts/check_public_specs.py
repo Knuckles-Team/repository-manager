@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -37,9 +39,16 @@ CONTENT_MARKERS = {
 
 
 def tracked_specs(root: Path) -> list[Path]:
-    return [
-        path.relative_to(root) for path in (root / "specs").rglob("*") if path.is_file()
-    ]
+    """Spec files in the Git index; a generated, untracked status.json is not one."""
+    # A hook's ambient GIT_DIR / GIT_INDEX_FILE would point at another repository.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    listed = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z", "--", "specs"],
+        capture_output=True,
+        check=True,
+        env=env,
+    ).stdout.decode()
+    return [Path(name) for name in listed.split("\0") if name]
 
 
 def _document_errors(path: Path, content: str) -> list[str]:
