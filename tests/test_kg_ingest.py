@@ -1,4 +1,4 @@
-"""Native epistemic-graph typed-node ingestion — SDK ingest facade coverage.
+"""Native medulla typed-node ingestion — SDK ingest facade coverage.
 
 Exercises the real ``ingest_entities`` / ``ingest_repositories`` / ``ingest_worktrees`` /
 ``ingest_projects`` seams against a fake ``scion_sdk.ingest`` transport (no engine

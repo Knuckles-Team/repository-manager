@@ -90,7 +90,7 @@ _DURATION_LINE = re.compile(r"^-\s*duration:\s*([\d.]+)\s*s?\s*$", re.IGNORECASE
 # Per-tier wall-clock ceilings. The FAST tier is diff-scoped lint/format work and
 # genuinely should finish in minutes. The HEAVY tier runs a repo's full pytest /
 # cargo / lockfile suite, which for the larger repos (scion-sdk,
-# epistemic-graph) legitimately exceeds ten minutes -- a 600s ceiling there is not
+# medulla) legitimately exceeds ten minutes -- a 600s ceiling there is not
 # a safety net, it is a guaranteed timeout that reports as a gate FAILURE and so
 # is indistinguishable from the gate actually finding a defect.
 _DEFAULT_TIMEOUT_BY_STAGE = {"fast": 600, "heavy": 5400, "manual": 600}
@@ -270,7 +270,7 @@ def _run_pre_commit(
 #: are indistinguishable to every caller.
 #:
 #: Measured 2026-08-21: the repository-manager MCP pod ships git and python but
-#: no Rust toolchain, so all SIX of epistemic-graph's cargo/maturin pre-push
+#: no Rust toolchain, so all SIX of medulla's cargo/maturin pre-push
 #: hooks "failed" in 46 seconds and the push was refused with
 #: "Pre-push gate failed (<six hook names>); push aborted. Fix the gate." That
 #: reads exactly like a quality verdict. It cost two full investigation cycles

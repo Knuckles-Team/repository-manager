@@ -65,7 +65,7 @@ This table is auto-generated from the live server — do not edit by hand.
 
 | MCP Tool | Toggle Env Var | Description |
 |----------|----------------|-------------|
-| `repository_ingest_repositories` | `MISCTOOL` | Natively ingest git repositories into epistemic-graph as typed :GitRepository nodes. |
+| `repository_ingest_repositories` | `MISCTOOL` | Natively ingest git repositories into medulla as typed :GitRepository nodes. |
 | `rm_build_*` | `PROJECT_MANAGEMENTTOOL` | Content-addressed build broker for ANY repository (CONCEPT:RM-TASK-LEDGER). |
 | `rm_concepts_*` | `DEVELOPMENT_SURFACESTOOL` | Concept-id claim coordination against RMDD-16's central authority. |
 | `rm_docs_readiness_*` | `PROJECT_MANAGEMENTTOOL` | Preview/apply/verify artifacts after per-repository readiness setup. |
@@ -169,7 +169,7 @@ When query strings or parameters are provided, an LLM-free **Knowledge Graph res
 
 > **Install the connector-focused `[mcp]` extra.** Examples use `repository-manager[mcp]` to add
 > FastMCP / FastAPI through `scion-sdk`; the required Scion SDK core
-> still carries `epistemic-graph[full]`. The `[agent-runtime]` extra additionally
+> still carries `medulla[full]`. The `[agent-runtime]` extra additionally
 > enables model orchestration.
 
 #### stdio Transport (local IDEs — Cursor, Claude Desktop, VS Code)
@@ -455,7 +455,7 @@ the detailed transport contract.
 | `RM_WORKER_MEM_GB` | `1.5` | assumed RAM per validation worker for auto-sizing |
 | `REPOSITORY_MANAGER_COMMAND` | — | optional executable used by the queue runner |
 | `REPOSITORY_MANAGER_MCP_IMAGE` | — | Set to an image@sha256:<digest>. |
-| `AGENT_UTILITIES_HOST_INVENTORY` | — | Canonical host identities and capability roles for cross-host lane/concept scoping, as a JSON document; unset uses no inventory (every host treated as unknown). See repository_manager/governance/lanes.py's _host_inventory(). |
+| `MERISTEM_HOST_INVENTORY` | — | Canonical host identities and capability roles for cross-host lane/concept scoping, as a JSON document; unset uses no inventory (every host treated as unknown). See repository_manager/governance/lanes.py's _host_inventory(). |
 | `AU_LANE_TEMP_ROOT` | — | Absolute override for the per-lane temp root (pytest basetemp / TMPDIR / pre-commit store / cargo target dir); unset uses the default $HOME/.al/<token> root. See lanes.py's _configured_lane_temp_root(). |
 | `CARGO_TARGET_DIR` | — | Cargo's own target-dir override. lane_guard.py's cargo-target-override check reads this to refuse a shared/global CARGO_TARGET_DIR that would both serialize and corrupt concurrent lane builds; it is not set by this package. |
 
@@ -574,7 +574,7 @@ Pick the extra that matches what the operator want to run:
 
 | Extra | Installs | Use when |
 |-------|----------|----------|
-| `repository-manager[mcp]` | Connector-focused MCP server (`scion-sdk` — FastMCP/FastAPI + `epistemic-graph[full]`) | The operator only run the **MCP server** (smallest install / image) |
+| `repository-manager[mcp]` | Connector-focused MCP server (`scion-sdk` — FastMCP/FastAPI + `medulla[full]`) | The operator only run the **MCP server** (smallest install / image) |
 | `repository-manager[all]` | `mcp` plus `pre-commit` / `bump2version` | Development |
 
 ```bash
@@ -591,7 +591,7 @@ uv pip install "repository-manager[all]"      # or: python -m pip install "repos
 
 | Image tag | Build target | Contents | Entrypoint |
 |-----------|--------------|----------|------------|
-| `example/repository-manager:mcp` | `--target mcp` | `repository-manager[mcp]` — **connector-focused**, includes `epistemic-graph[full]`; no model-orchestration stack | `repository-manager-mcp` |
+| `example/repository-manager:mcp` | `--target mcp` | `repository-manager[mcp]` — **connector-focused**, includes `medulla[full]`; no model-orchestration stack | `repository-manager-mcp` |
 
 ```bash
 docker build --target mcp   -t example/repository-manager:mcp    docker/   # connector-focused MCP server
@@ -599,16 +599,16 @@ docker build --target mcp   -t example/repository-manager:mcp    docker/   # con
 
 `docker/mcp.compose.yml` runs the connector-focused `:mcp` server.
 
-### Knowledge-graph database (`epistemic-graph`)
+### Knowledge-graph database (`medulla`)
 
-The `[mcp]` extra carries the **epistemic-graph** engine through the required
-Scion SDK core dependency (`epistemic-graph[full]`). The `[mcp]` extra keeps
+The `[mcp]` extra carries the **medulla** engine through the required
+Scion SDK core dependency (`medulla[full]`). The `[mcp]` extra keeps
 the server connector-focused. Local
 deployments can use the bundled engine. For production or shared state, run
-**epistemic-graph as a dedicated database service** and configure the runtime to use it.
+**medulla as a dedicated database service** and configure the runtime to use it.
 Deployment recipes (single-node + Raft HA), connection configuration, and architecture
 diagrams are documented in the
-[epistemic-graph deployment guide](https://knuckles-team.github.io/epistemic-graph/deployment/).
+[medulla deployment guide](https://knuckles-team.github.io/medulla/deployment/).
 
 ---
 

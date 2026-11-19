@@ -110,7 +110,7 @@ edges:
   has since migrated into repository-manager itself
   (`repository_manager.governance.concept_reservation`) and imports cleanly, but
   it exposes no documented `build_default_authority()` construction entrypoint
-  yet — the live authority needs a connected epistemic-graph engine handle this
+  yet — the live authority needs a connected medulla engine handle this
   package does not yet establish — so `resolve_default_authority()` still raises
   by design. This is not a bug in repository-manager — it is a real, honest
   refusal preserving the original cause (never a fabricated local allocation).

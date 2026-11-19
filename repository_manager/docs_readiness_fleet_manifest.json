@@ -21,10 +21,10 @@
       "agent-packages/agents/onetrust-api"
     ],
     "missing_site_urls": [
-      "agent-packages/agent-utilities",
       "agent-packages/agents/mealie-mcp",
       "agent-packages/agents/microsoft-agent",
-      "agent-packages/agents/vector-mcp"
+      "agent-packages/agents/vector-mcp",
+      "agent-packages/meristem"
     ]
   },
   "waves": [
@@ -36,7 +36,6 @@
   ],
   "projects": [
     {"identity": "agent-packages/agent-terminal-ui", "wave": 1},
-    {"identity": "agent-packages/agent-utilities", "wave": 1},
     {"identity": "agent-packages/agent-webui", "wave": 1},
     {"identity": "agent-packages/agents/ansible-tower-mcp", "wave": 2},
     {"identity": "agent-packages/agents/archimate-mcp", "wave": 2},
@@ -106,8 +105,9 @@
     {"identity": "agent-packages/agents/uptime-kuma-agent", "wave": 5},
     {"identity": "agent-packages/agents/vector-mcp", "wave": 5},
     {"identity": "agent-packages/agents/wger-agent", "wave": 5},
-    {"identity": "agent-packages/epistemic-graph", "wave": 1},
     {"identity": "agent-packages/geniusbot", "wave": 1},
+    {"identity": "agent-packages/medulla", "wave": 1},
+    {"identity": "agent-packages/meristem", "wave": 1},
     {"identity": "agent-packages/skills/skill-graphs", "wave": 1},
     {"identity": "agent-packages/skills/universal-skills", "wave": 1}
   ]

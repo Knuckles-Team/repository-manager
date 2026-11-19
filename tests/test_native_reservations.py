@@ -658,7 +658,7 @@ def test_from_graph_client_binds_generated_sync_namespace() -> None:
 
 
 def test_actual_generated_sync_wrapper_shape_binds_without_async_bridge() -> None:
-    client_module = pytest.importorskip("epistemic_graph.client")
+    client_module = pytest.importorskip("medulla.client")
     sync_type = getattr(client_module, "SyncEpistemicGraphClient", None)
     if sync_type is None:
         pytest.skip("generated sync client is unavailable")

@@ -286,7 +286,7 @@ def _cargo_runs() -> bool:
 def test_a_rust_repo_lands_through_the_queue_with_a_cargo_gate(tmp_path: Path) -> None:
     """A cargo repo lands through the SAME queue scion-sdk uses with pytest.
 
-    This is the evidence that the capability was mis-homed: epistemic-graph has
+    This is the evidence that the capability was mis-homed: medulla has
     no merge queue at all today, and its lane had to hand-apply the discipline.
     Nothing in :mod:`repository_manager.merge_queue` mentions cargo, rust, or
     Python — the gate is a config row.
@@ -1230,7 +1230,7 @@ def test_the_shipped_presets_parse(tmp_path: Path) -> None:
         config = mq.parse_config(yaml.safe_load(preset.read_text()), source=str(preset))
         assert config.gates, f"{preset.name} declares no gates"
     names = {p.name for p in found}
-    assert "epistemic-graph.mergequeue.yaml" in names, (
+    assert "medulla.mergequeue.yaml" in names, (
         "the Rust preset is the proof of genericity beyond Python"
     )
 
@@ -1339,7 +1339,7 @@ def test_dispatch_routes_every_verb_and_names_the_unknown_ones(
 #
 # Filed against a real incident: `merge_queue_runner.sh`'s outer `timeout`
 # SIGTERM'd `python3 -m repository_manager.merge_queue run` twice in one
-# session (epistemic-graph's declared gates legitimately exceeded the
+# session (medulla's declared gates legitimately exceeded the
 # runner's flat ceiling under host load — see the runner script's own
 # D-W4RCA-1 comment), and both times the candidate (`w3-viz-v1`) was
 # re-enqueued by an operator who read "queue depth 0" as "the candidate

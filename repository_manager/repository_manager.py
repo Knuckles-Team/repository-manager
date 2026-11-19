@@ -486,7 +486,7 @@ DEFAULT_REPOSITORY_MANAGER_DEFAULT_BRANCH = to_boolean(
 )
 
 # D-EGK-2 / D-EGK-1 (see reports/deferred/eg-kernel-0802.md): a canonical-checkout
-# refresh is the operation that can destroy epistemic_graph's compiled numeric
+# refresh is the operation that can destroy medulla's compiled numeric
 # kernel (a gitignored .so nothing else regenerates) and it is the moment right
 # after which the entire *-mcp fleet's live hostPath mounts should be re-verified
 # -- both trees are hostPath-mounted straight into every pod, so "refreshed the
@@ -504,7 +504,7 @@ def _run_post_hydration_mount_checks(workspace_root: str) -> None:
             "D-EGK-2 mounted-kernel check",
             Path(workspace_root)
             / "agent-packages"
-            / "epistemic-graph"
+            / "medulla"
             / "scripts"
             / "check_mounted_kernel.py",
             [],
@@ -1794,7 +1794,7 @@ class Git:
         """Materialize every declared uv sibling from the canonical map.
 
         This is intentionally only the source-view step.  Dependency ordering
-        and the epistemic-graph wheel fast path remain owned by their existing
+        and the medulla wheel fast path remain owned by their existing
         install/launcher flows; this helper only makes their declared paths
         resolve to canonical sibling repositories.
         """

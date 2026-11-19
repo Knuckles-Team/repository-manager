@@ -85,7 +85,7 @@ RESOURCE_OUTPUT_MAX_BYTES = 16 * 1024 * 1024
 RESOURCE_OUTPUT_TRUNCATE = True
 _LANE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _HOST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-HOST_INVENTORY_ENV = "AGENT_UTILITIES_HOST_INVENTORY"
+HOST_INVENTORY_ENV = "MERISTEM_HOST_INVENTORY"
 LANE_TEMP_ROOT_ENV = "AU_LANE_TEMP_ROOT"
 _UNKNOWN_HOST_IDS = frozenset(
     {
@@ -919,7 +919,7 @@ def resolve_host_identity(host_id: str | None = None) -> str:
 
     Host-scoped resources use one workspace arbitration directory per machine.
     The operator supplies the canonical identities and abstract capability roles
-    through ``AGENT_UTILITIES_HOST_INVENTORY``. A missing or unknown,
+    through ``MERISTEM_HOST_INVENTORY``. A missing or unknown,
     or suffixed identity is refused instead of sharing an ``unknown`` bucket.
     Omitting ``host_id`` uses the local hostname, which must be in that runtime
     inventory as an exact key.

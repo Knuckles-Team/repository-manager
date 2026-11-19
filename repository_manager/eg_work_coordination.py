@@ -1,8 +1,8 @@
-"""Thin typed seam onto epistemic-graph's served work-coordination methods.
+"""Thin typed seam onto medulla's served work-coordination methods.
 
 Work items, development-lane state, claim leases and change cursors are
-epistemic-graph records. Repository-manager reaches them only through the EG
-client (``epistemic_graph.client``) that the caller injects: ``client.work_items``
+medulla records. Repository-manager reaches them only through the EG
+client (``medulla.client``) that the caller injects: ``client.work_items``
 (``SubmitWorkItem`` / ``ClaimWorkItem`` / ``GetWorkItem`` / ``ListWorkItems`` /
 ``CancelWorkItem``) and ``client.development_lanes`` (``ReserveDevelopmentLane``
 … ``DevelopmentLaneStatus``). Nothing here stores, plans or decides; a client

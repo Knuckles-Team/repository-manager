@@ -8,7 +8,7 @@ with bisection — has nothing to do with Python, pytest, ruff, or
 ``scion_sdk``. It is git discipline. The *gates* are the only
 project-specific part, and they were the only part hard-coded. So
 ``scion_sdk.governance.merge_queue`` could serve exactly one repository,
-and the proof is empirical: **epistemic-graph has no merge queue at all**, and
+and the proof is empirical: **medulla has no merge queue at all**, and
 the engine lane had to hand-apply the discipline by memory (verify the *merged
 tree* with ``cargo check --all-features``, fast-forward only, never merge in the
 canonical checkout). repository-manager already owns
@@ -22,7 +22,7 @@ run one and compare its result against the base ref. A gate is a row in the
 repository's own ``.mergequeue.yaml`` (see :class:`QueueConfig`): a command, a
 tier, a timeout, and *how to compare* its output against the base
 (:class:`GateSpec.compare`). ``scion-sdk`` declares pytest + ruff + its
-contract scripts; ``epistemic-graph`` declares ``cargo check --all-features`` +
+contract scripts; ``medulla`` declares ``cargo check --all-features`` +
 clippy; a docs repo could declare nothing but a link check. Adding a gate is a
 config row, never a change to this module.
 
@@ -3596,7 +3596,7 @@ def run_queue(
     another runner holds ``reconciliation-merge`` for this repository — deferring
     is the correct outcome and the caller must make it explicit, exactly as every
     other LEASE-class resource here. The lease is repo-scoped, so draining
-    scion-sdk and epistemic-graph concurrently is safe by construction.
+    scion-sdk and medulla concurrently is safe by construction.
     ``lease_ttl_seconds`` is bounded independently from gate worker limits and
     is reported with acquired/deadline/released receipts in the result.
     """

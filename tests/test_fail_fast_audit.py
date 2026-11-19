@@ -18,8 +18,8 @@ from repository_manager.fail_fast_audit import check_fleet, check_repo, dispatch
 # never trip this scanner, since it deliberately carries no fail-fast flag.
 _FLEET_BOILERPLATE_PYTEST_ENTRY = (
     "bash -c 'repo=$(dirname \"$(git rev-parse --path-format=absolute "
-    '--git-common-dir)"); if [ -n "$AGENT_UTILITIES_ROOT" ]; then '
-    'root="$AGENT_UTILITIES_ROOT"; else au_d="$repo"; root=""; while '
+    '--git-common-dir)"); if [ -n "$MERISTEM_ROOT" ]; then '
+    'root="$MERISTEM_ROOT"; else au_d="$repo"; root=""; while '
     '[ "$au_d" != "/" ]; do if [ -d "$au_d/scion-sdk/scripts" ]; then '
     'root="$au_d/scion-sdk"; break; fi; au_d=$(dirname "$au_d"); done; '
     'fi; if [ -d "$root" ] && [ "$repo" != "$root" ]; then mkdir -p '

@@ -17,7 +17,7 @@ version: 1
 slugs:
   # ── core framework + engine + frontends ──────────────────────────────────
   scion-sdk: SCION
-  epistemic-graph: MEDULLA
+  medulla: MEDULLA
   universal-skills: US
   skill-graphs: SG
   agent-webui: OVERSTORY

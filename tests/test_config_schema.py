@@ -311,7 +311,7 @@ def test_duplicate_yaml_keys_and_packaged_presets_are_checked(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize(
-    "filename", ["agent-utilities.mergequeue.yaml", "epistemic-graph.mergequeue.yaml"]
+    "filename", ["meristem.mergequeue.yaml", "medulla.mergequeue.yaml"]
 )
 def test_versioned_merge_presets_preserve_legacy_execution_contract(
     filename: str,
@@ -328,7 +328,8 @@ def test_versioned_merge_presets_preserve_legacy_execution_contract(
         }[gate.pop("stage")]
     with pytest.warns(ConfigCompatibilityWarning) as caught:
         old_config = mq.parse_config(legacy, source=filename)
-    assert len(caught) == 1 + len(legacy["gates"])
-    assert "unversioned legacy declaration" in str(caught[0].message)
-    assert all("tier=" in str(item.message) for item in caught[1:])
+    messages = [str(item.message) for item in caught]
+    assert len(messages) == 1 + len(legacy["gates"])
+    assert "unversioned legacy declaration" in messages[0]
+    assert all("tier=" in message for message in messages[1:])
     assert mq.parse_config(current, source=filename) == old_config

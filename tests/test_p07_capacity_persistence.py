@@ -49,7 +49,7 @@ def _register(host_id: str = "r820") -> dict:
         process_slots=8,
         labels=["gpu"],
         inventory_alias=host_id,
-        repository_roots={"epistemic-graph": "/srv/build/epistemic-graph"},
+        repository_roots={"medulla": "/srv/build/medulla"},
         toolchains=["rust-1.95"],
     )
 

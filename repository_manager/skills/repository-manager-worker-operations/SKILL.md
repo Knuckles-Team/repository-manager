@@ -104,7 +104,7 @@ Register a worker's capacity and authorized roots:
 rm_remote_workers_register_worker(host_id="r82x", cpu_weight=64,
                    memory_mib=253952, disk_mib=327680000, process_slots=8,
                    inventory_alias="example-r82x.arpa",
-                   repository_roots={"epistemic-graph": "/home/app/worktrees/epistemic-graph"},
+                   repository_roots={"medulla": "/home/app/worktrees/medulla"},
                    toolchains=["rust-stable"])
 ```
 Build (without executing) the fixed stage-source command sequence for one commit:

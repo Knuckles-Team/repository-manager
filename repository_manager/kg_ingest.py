@@ -1,4 +1,4 @@
-"""Native epistemic-graph ingestion for repository-management records.
+"""Native medulla ingestion for repository-management records.
 
 All writes use ``scion_sdk.ingest``. Nodes use canonical ``node_type`` and
 edges use canonical ``relationship``; nodes and edges commit in one native transaction.

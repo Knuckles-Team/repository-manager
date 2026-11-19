@@ -12,7 +12,7 @@ scripts/bootstrap.sh
 in `.python-version`, clones the sibling sources `uv.lock` needs at the commits
 in `scripts/siblings.lock`, syncs `.venv` from the lockfile with the `test` and
 `agent` extras, and installs the pre-commit and pre-push git hooks. Pass
-`--native` to also build the epistemic-graph kernel for `pytest -m native`.
+`--native` to also build the medulla kernel for `pytest -m native`.
 Claude Code cloud sessions run it automatically through
 `.claude/hooks/session-start.sh`.
 

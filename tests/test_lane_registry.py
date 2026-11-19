@@ -364,7 +364,7 @@ def test_allocate_refuses_when_registry_factory_fails_no_local_fallback(
         # Simulates a deployment that IS configured to use native lane
         # authority (a composition root that chose to supply this factory at
         # all) but whose transport/engine construction genuinely fails --
-        # e.g. LANE-3's own gap, an epistemic-graph client with no
+        # e.g. LANE-3's own gap, a medulla client with no
         # ``development_lanes`` namespace. Raises the real exception type,
         # unmodified.
         raise NativeLaneAuthorityUnavailable(NativeLaneAuthorityUnavailable.code)

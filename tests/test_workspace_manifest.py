@@ -29,7 +29,7 @@ repositories:
 subdirectories:
   agent-packages:
     repositories:
-      - url: https://example-git.internal.arpa/agent-utilities.git
+      - url: https://example-git.internal.arpa/meristem.git
       - url: https://example-git.internal.arpa/repository-manager.git
 services:
   items:
@@ -42,14 +42,14 @@ profiles:
     selectors: [core]
 selectors:
   core:
-    include: [agent-utilities, repository-manager]
+    include: [meristem, repository-manager]
 """
 MANIFEST = MANIFEST.replace("@@WORKSPACE@@", json.dumps(PRIVATE_WORKSPACE))
 
 
 def _paths(tmp_path: Path) -> tuple[Path, Path, Path]:
     source = tmp_path / "workspace.yml"
-    runtime = tmp_path / "xdg" / "agent-utilities" / "workspace.yml"
+    runtime = tmp_path / "xdg" / "meristem" / "workspace.yml"
     seed = tmp_path / "package" / "workspace.yml"
     source.write_text(MANIFEST, encoding="utf-8")
     return source, runtime, seed
@@ -110,7 +110,7 @@ def test_realistic_manifest_projects_private_values_without_leaking_them(tmp_pat
     assert report.synchronized is True
     assert [item.action for item in report.destinations] == ["updated", "updated"]
     assert report.selected_repositories == (
-        "agent-packages/agent-utilities",
+        "agent-packages/meristem",
         "agent-packages/repository-manager",
     )
     assert runtime.read_bytes() == source.read_bytes()
@@ -121,7 +121,7 @@ def test_realistic_manifest_projects_private_values_without_leaking_them(tmp_pat
     assert "example-git.internal.arpa" not in seed_text
     assert "${REPOSITORY_MANAGER_WORKSPACE_ROOT}" in seed_text
     assert "${ARBORA_REPO_ORIGIN}" in seed_text
-    assert "${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}" in seed_text
+    assert "${MERISTEM_SERVICE_DOMAIN_SUFFIX}" in seed_text
 
 
 def test_manifest_check_and_dry_run_detect_drift_without_writing(tmp_path):
@@ -220,7 +220,7 @@ def test_free_text_private_hosts_are_projected_and_rejected_by_seed_validator():
     assert "example-ciso.arpa" not in portable_text
     assert "10.0.0.42" not in portable_text
     assert "fd00::42" not in portable_text
-    assert "example-ciso.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}" in portable_text
+    assert "example-ciso.${MERISTEM_SERVICE_DOMAIN_SUFFIX}" in portable_text
     with pytest.raises(WorkspaceManifestError, match="machine-local endpoint"):
         workspace_manifest._validate_portable_seed(
             {"description": "Private domain example-ciso.arpa."}
@@ -292,7 +292,7 @@ def test_profile_and_selector_validation_is_visible_to_bootstrap(tmp_path):
     )
 
     assert selected == (
-        "agent-packages/agent-utilities",
+        "agent-packages/meristem",
         "agent-packages/repository-manager",
     )
     assert profiles == ("development",)
@@ -335,7 +335,7 @@ def test_selector_semantics_distinguish_empty_missing_and_ambiguous_references()
     data["selectors"] = {
         "empty": {"include": []},
         "everything_but_root": {"exclude": ["root"]},
-        "nested": {"include": ["agent-packages/agent-utilities"]},
+        "nested": {"include": ["agent-packages/meristem"]},
     }
     data["profiles"] = {"development": {"selectors": ["empty", "nested"]}}
 
@@ -344,14 +344,14 @@ def test_selector_semantics_distinguish_empty_missing_and_ambiguous_references()
     selected, _, _ = select_repositories(data, selectors=("everything_but_root",))
     assert selected == (
         "public",
-        "agent-packages/agent-utilities",
+        "agent-packages/meristem",
         "agent-packages/repository-manager",
     )
 
     data["subdirectories"]["services"] = {
-        "repositories": [{"url": "https://example.invalid/agent-utilities.git"}]
+        "repositories": [{"url": "https://example.invalid/meristem.git"}]
     }
-    data["selectors"]["nested"] = {"include": ["agent-utilities"]}
+    data["selectors"]["nested"] = {"include": ["meristem"]}
     with pytest.raises(WorkspaceManifestError, match="ambiguous repository basename"):
         select_repositories(data, selectors=("nested",))
 

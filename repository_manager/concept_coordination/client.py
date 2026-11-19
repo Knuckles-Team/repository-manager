@@ -5,7 +5,7 @@ consumer of RMDD-16's central authority. This module's only job is to hand
 the action core a :class:`~repository_manager.concept_coordination.port.ConceptAuthorityPort`:
 
 * **The normal path is injection.** RMDD-20's MCP/CLI entrypoint (or a test)
-  constructs the real authority — wired to a live epistemic-graph engine
+  constructs the real authority — wired to a live medulla engine
   handle and this repository's namespace policy, which is RMDD-16/RMDD-23
   scope, not RMDD-17's — and passes it into
   :class:`~repository_manager.concept_coordination.action_core.ConceptCoordinationActions`
@@ -33,7 +33,7 @@ full migration note). So the module genuinely IS importable today, in this
 same package. What it still does not expose is a documented
 ``build_default_authority()`` construction entrypoint:
 :class:`~repository_manager.governance.concept_reservation.NativeConceptReservationAuthority`
-needs a *connected* epistemic-graph engine handle
+needs a *connected* medulla engine handle
 (``NativeConceptReservationPort``) injected into its constructor, and nothing
 in this codebase establishes a standard way to reach a live one from here —
 that remains RMDD-16/RMDD-23 scope, not RMDD-17's ("central allocator
@@ -59,7 +59,7 @@ def resolve_default_authority() -> ConceptAuthorityPort:
     """Attempt to reach RMDD-16's native authority with no injected port.
 
     Always raises :class:`ConceptAuthorityUnavailable`. RMDD-16 owns
-    constructing a *live* authority (it requires a connected epistemic-graph
+    constructing a *live* authority (it requires a connected medulla
     engine handle plus this repository's namespace/range policy) — that
     construction is explicitly out of RMDD-17's scope ("central allocator
     internals" is a listed non-goal in the lane brief). This function
@@ -79,7 +79,7 @@ def resolve_default_authority() -> ConceptAuthorityPort:
         ) from exc
     raise ConceptAuthorityUnavailable(
         f"{AUTHORITY_MODULE} is importable, but RMDD-17 does not construct a "
-        "live authority itself — that requires a connected epistemic-graph "
+        "live authority itself — that requires a connected medulla "
         "engine handle and a namespace policy, which is RMDD-16/RMDD-23 scope. "
         "Inject a ConceptAuthorityPort explicitly (the MCP/CLI entrypoint "
         "RMDD-20 owns is the intended caller)."

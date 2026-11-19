@@ -28,8 +28,8 @@ committed platform binary would ride into wheels for every OS and make
 ``check_wheel_completeness.py`` pass falsely). So a cache hit here publishes
 NAMED ARTIFACTS to a content-addressed store; the target dir that produced
 them is a throwaway implementation detail nobody outside this module touches.
-Reuses, rather than reimplements, the epistemic-graph prior art:
-``epistemic-graph/scripts/build_numeric_kernel.py`` /
+Reuses, rather than reimplements, the medulla prior art:
+``medulla/scripts/build_numeric_kernel.py`` /
 ``check_mounted_kernel.py`` are the reference for what "the produced artifact"
 means for that repo's preset.
 

@@ -189,8 +189,9 @@ EXPECTED_TOOL_NAMES = (
 # Recomputed for scion-sdk 0.6.4: tool docstrings name scion-sdk.
 # Recomputed for RM-GOVERNANCE-R037: rm_worktree and rm_lane gain reflink and seed_artifacts.
 # Recomputed for CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R005: destructive actions take confirm and carry the declared hint.
+# Recomputed for the merge of the meristem rename with the connector content tools.
 BASELINE_CATALOG_SHA256 = (
-    "8d949155ce32b4fbb9f248df52d366ae00b2530d9a69f642248ceea7308eb736"
+    "5ffc1255726ae30d081400702ce4426bf52bb035a9bd403fc12a23c237671dd3"
 )
 
 

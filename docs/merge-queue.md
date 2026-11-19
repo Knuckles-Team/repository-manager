@@ -9,7 +9,7 @@
 `scion_sdk/governance/merge_queue.py` is mature and battle-tested, but it
 can serve exactly one repository: its gates were pytest/ruff/contract-script
 specific by construction. The proof that this was mis-homed is empirical —
-**epistemic-graph has no merge queue at all**, so its lane had to hand-apply the
+**medulla has no merge queue at all**, so its lane had to hand-apply the
 discipline from memory: check the *merged tree* with `cargo check
 --all-features`, fast-forward only, never merge in the canonical checkout.
 
@@ -289,7 +289,7 @@ The lease, the candidate store and the scratch/basetemp partitions all resolve
 through `lane_scope(path)`, which is anchored on that repository's own
 `--git-common-dir`. So two repositories' queues are independent **by
 construction**, not by a `repo` key someone must remember to set, and draining
-scion-sdk and epistemic-graph concurrently is safe. No new arbitration
+scion-sdk and medulla concurrently is safe. No new arbitration
 class was introduced.
 
 ## Migration — the live au queue must not break
@@ -301,7 +301,7 @@ strictly additive and reversible, and each step is independently valuable:
 |---|---|---|
 | 1 ✅ | Ship the generic queue + presets + CLI + MCP here. `scion_sdk.governance.merge_queue` is **untouched**. | none — no au code path changes |
 | 2 ✅ | Land the `PRE_COMMIT_HOME` PARTITION fix in scion-sdk (additive: a new `PartitionedPaths` field, a new `lane_resources.yaml` row, a new `lane env` export). | none — nothing reads the field yet |
-| 3 | Adopt for **epistemic-graph first** — copy `mergequeue_presets/epistemic-graph.mergequeue.yaml` to its root and drive it. eg has **no queue today**, so there is nothing to break, and it is the honest first proof at production scale. | low |
+| 3 | Adopt for **medulla first** — copy `mergequeue_presets/medulla.mergequeue.yaml` to its root and drive it. eg has **no queue today**, so there is nothing to break, and it is the honest first proof at production scale. | low |
 | 4 | Copy `mergequeue_presets/scion-sdk.mergequeue.yaml` into scion-sdk and run **both** queues against it in shadow: `--merge-queue config` and a `--queue-no-prune` drain on a scratch clone, comparing verdicts candidate by candidate. | low — read-mostly |
 | 5 | Cut over: `scion_sdk.governance.merge_queue` becomes a thin shim delegating to `repository_manager.merge_queue` **when importable**, keeping its current implementation as the fallback. Note the dependency direction — repository-manager depends on scion-sdk, so au importing repository-manager must stay optional (that asymmetry is exactly what D-ORC-21 recorded). | medium — do this only after step 4 agrees |
 | 6 | Retire the au implementation once the shim has landed real batches, per *No Legacy* (migrate-and-remove, no deprecation window). | — |
