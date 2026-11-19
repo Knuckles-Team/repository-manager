@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -37,19 +39,28 @@ CONTENT_MARKERS = {
 
 
 def tracked_specs(root: Path) -> list[Path]:
-    return [
-        path.relative_to(root) for path in (root / "specs").rglob("*") if path.is_file()
-    ]
+    """Spec files in the Git index; a generated, untracked status.json is not one."""
+    # A hook's ambient GIT_DIR / GIT_INDEX_FILE would point at another repository.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    listed = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z", "--", "specs"],
+        capture_output=True,
+        check=True,
+        env=env,
+    ).stdout.decode()
+    return [Path(name) for name in listed.split("\0") if name]
 
 
 def _document_errors(path: Path, content: str) -> list[str]:
     errors = []
     if len(content.strip()) < 250:
-        errors.append(f"{path}: add substantive design or proof")
+        errors.append(f"{path.as_posix()}: add substantive design or proof")
     if PLACEHOLDER.search(content):
-        errors.append(f"{path}: unresolved template placeholder")
+        errors.append(f"{path.as_posix()}: unresolved template placeholder")
     if not CONTENT_MARKERS[path.name].search(content):
-        errors.append(f"{path}: missing required behavior, design, test, or tasks")
+        errors.append(
+            f"{path.as_posix()}: missing required behavior, design, test, or tasks"
+        )
     return errors
 
 
@@ -68,7 +79,7 @@ def _file_errors(root: Path, paths: set[Path], name: str) -> list[str]:
     for filename in REQUIRED:
         path = Path("specs") / name / filename
         if path not in paths:
-            errors.append(f"{path}: missing required owner contract")
+            errors.append(f"{path.as_posix()}: missing required owner contract")
         else:
             errors.extend(
                 _document_errors(path, (root / path).read_text(encoding="utf-8"))
@@ -79,7 +90,7 @@ def _file_errors(root: Path, paths: set[Path], name: str) -> list[str]:
 def _contract_errors(root: Path, paths: set[Path]) -> list[str]:
     errors = [e for name in _spec_names(paths) for e in _file_errors(root, paths, name)]
     errors.extend(
-        f"{path}: status.json is generated; it must not be tracked"
+        f"{path.as_posix()}: status.json is generated; it must not be tracked"
         for path in sorted(paths)
         if len(path.parts) == 3 and path.name == "status.json"
     )
@@ -94,13 +105,13 @@ def _link_error(root: Path, path: Path, target: str) -> str | None:
     if parsed.scheme:
         public = parsed.scheme in ("http", "https") and parsed.hostname
         if not public or LOCAL_HOST.search(parsed.hostname or ""):
-            return f"{path}: non-public link {target}"
+            return f"{path.as_posix()}: non-public link {target}"
         return None
     if target.startswith("/"):
-        return f"{path}: absolute local link {target}"
+        return f"{path.as_posix()}: absolute local link {target}"
     candidate = (root / path.parent / unquote(parsed.path)).resolve()
     if not candidate.is_relative_to(root.resolve()) or not candidate.exists():
-        return f"{path}: broken relative link {target}"
+        return f"{path.as_posix()}: broken relative link {target}"
     return None
 
 
@@ -109,7 +120,7 @@ def _reference_errors(root: Path, path: Path) -> list[str]:
     errors: list[str] = []
     if "_template" not in path.parts:
         errors.extend(
-            f"{path}: private or local reference ({pattern.pattern})"
+            f"{path.as_posix()}: private or local reference ({pattern.pattern})"
             for pattern in FORBIDDEN
             if pattern.search(content)
         )
