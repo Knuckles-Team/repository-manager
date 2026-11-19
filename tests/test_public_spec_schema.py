@@ -1,12 +1,9 @@
-"""The public spec gate accepts generated v2 without relaxing legacy receipts."""
+"""The public spec gate follows the spec standard: status.json is generated and never tracked."""
 
-import copy
 import importlib.util
-import json
-from pathlib import Path
 import tempfile
 import unittest
-from typing import Any
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -17,74 +14,63 @@ checker = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(checker)
 
 
-class PublicSpecSchemaTests(unittest.TestCase):
+PAD = "This sentence pads the document past the minimum length the gate expects. " * 4
+CONTENT = {
+    "spec.md": "# Example\n\nThe acceptance requirement is stated here in a complete public document.\n\n"
+    + PAD
+    + "\n",
+    "plan.md": "# Example plan\n\nThe design and architecture are described here.\n\n"
+    + PAD
+    + "\n",
+    "test-spec.md": "# Example tests\n\nThe expected proof of each test is stated here.\n\n"
+    + PAD
+    + "\n",
+    "tasks.md": "# Example tasks\n\n- [ ] T001 Do the work.\n\n" + PAD,
+    "status.json": "{}\n",
+}
+
+
+class PublicSpecContractTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
-        self.path = Path("specs/example/status.json")
-        (self.root / self.path.parent).mkdir(parents=True)
-        (self.root / self.path.parent / "requirements.md").write_text("`RM-EXAMPLE-01`")
-        self.document: dict[str, Any] = {
-            "schema_version": 2,
-            "spec_id": "RM-EXAMPLE",
-            "owner_repo": "repository-manager",
-            "delivery_state": "LANDED",
-            "requirement_ids": ["RM-EXAMPLE-01"],
-            "requirements": [
-                {
-                    "id": "RM-EXAMPLE-01",
-                    "title": "Keep provenance",
-                    "delivery_state": "LANDED",
-                    "landed_in": ["123456789abc"],
-                    "verified_by": [],
-                }
+
+    def spec(self, *names):
+        paths = set()
+        for name in names:
+            path = Path("specs/example") / name
+            (self.root / path.parent).mkdir(parents=True, exist_ok=True)
+            (self.root / path).write_text(CONTENT[name])
+            paths.add(path)
+        return paths
+
+    def test_a_spec_without_status_json_is_complete(self):
+        paths = self.spec("spec.md", "plan.md", "test-spec.md", "tasks.md")
+        self.assertEqual(checker._contract_errors(self.root, paths), [])
+
+    def test_a_missing_authored_file_is_reported(self):
+        paths = self.spec("spec.md", "plan.md", "tasks.md")
+        errors = checker._contract_errors(self.root, paths)
+        self.assertEqual(
+            errors, ["specs/example/test-spec.md: missing required owner contract"]
+        )
+
+    def test_status_json_is_not_a_required_file(self):
+        self.assertNotIn("status.json", checker.REQUIRED)
+
+    def test_a_tracked_status_json_is_reported(self):
+        paths = self.spec(
+            "spec.md", "plan.md", "test-spec.md", "tasks.md", "status.json"
+        )
+        errors = checker._contract_errors(self.root, paths)
+        self.assertEqual(
+            errors,
+            [
+                "specs/example/status.json: status.json is generated; it must not be tracked"
             ],
-        }
+        )
 
-    def errors(self, document):
-        (self.root / self.path).write_text(json.dumps(document))
-        return checker._status_errors(self.root, self.path)
 
-    def test_generated_v2_preserves_ids_states_and_provenance(self):
-        before = copy.deepcopy(self.document)
-        self.assertEqual(self.errors(self.document), [])
-        self.assertEqual(self.document, before)
-        self.assertEqual(json.loads((self.root / self.path).read_text()), before)
-
-    def test_invalid_generated_structure_is_rejected(self):
-        for field, value in [
-            ("owner_repo", "another-repo"),
-            ("delivery_state", "CLOSED"),
-            ("requirement_ids", ["RM-EXAMPLE-01", "RM-EXAMPLE-01"]),
-            ("requirements", ["invalid"]),
-        ]:
-            with self.subTest(field=field):
-                document = copy.deepcopy(self.document)
-                document[field] = value
-                self.assertTrue(self.errors(document))
-
-    def test_malformed_generated_provenance_is_rejected(self):
-        for field in ("landed_in", "verified_by"):
-            with self.subTest(field=field):
-                document = copy.deepcopy(self.document)
-                document["requirements"][0][field] = "not-an-array"
-                self.assertTrue(self.errors(document))
-
-    def test_legacy_evidence_rules_remain_enforced(self):
-        document = copy.deepcopy(self.document)
-        document["schema_version"] = 1
-        errors = self.errors(document)
-        self.assertTrue(any("evidence" in error for error in errors))
-        self.assertTrue(any("acceptance_state" in error for error in errors))
-
-    def test_actual_generated_specs_keep_their_content(self):
-        for path in sorted((ROOT / "specs").glob("*/status.json")):
-            if path.parent.name == "_template":
-                continue
-            with self.subTest(spec=path.parent.name):
-                before = path.read_bytes()
-                self.assertEqual(
-                    checker._status_errors(ROOT, path.relative_to(ROOT)), []
-                )
-                self.assertEqual(path.read_bytes(), before)
+if __name__ == "__main__":
+    unittest.main()
