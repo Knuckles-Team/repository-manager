@@ -32,3 +32,7 @@ One task per leaf row of `requirements.md`, producer first: the single authority
 - [ ] T036 [US4] RM-GOVERNANCE-R023.5 Release on crash
 - [ ] T037 [US4] RM-GOVERNANCE-R023.6 Wire into the gate runner
 - [ ] T038 [US4] RM-GOVERNANCE-R033 The generated code-enhancement report uses the standard hyphenated name
+- [x] T39 [US1] RM-GOVERNANCE-R034 Capability probe for copy-on-write checkouts
+- [x] T40 [US1] RM-GOVERNANCE-R035 Reflink checkout from the closest sibling worktree
+- [x] T41 [US1] RM-GOVERNANCE-R036 Opt-in reflink seeding of build artifacts
+- [x] T42 [US1] RM-GOVERNANCE-R037 Explicit outcome, plain fallback and surface parameters

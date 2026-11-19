@@ -9,7 +9,7 @@ One repository-manager authority owns lane lifecycle, worktree identity, queue a
 ```text
 repository-manager-governance / MCP tools   repository_manager/governance/cli.py, repository_manager/mcp_tools/
   -> LaneRegistry.allocate -> NativeLaneAuthorityAdapter   lane_registry.py:1317, :555
-  -> WorktreeManager.add                                   worktree.py:223
+  -> WorktreeManager.add (reflink checkout when supported) worktree.py:223, reflink.py
   -> safe_commit                                           safe_commit.py:613
   -> merge_queue.enqueue / run_queue                       merge_queue.py:802, :3583
   -> WorktreeManager.audit / prune / remove                worktree.py:1548, :1076, :771
@@ -25,7 +25,7 @@ repository-manager-governance / MCP tools   repository_manager/governance/cli.py
 - **Project Type**: Library with a CLI and an MCP adapter.
 - **Performance Goals**: N/A.
 - **Constraints**: refusals change no state; no `git stash` on a shared repository; no implicit staging of all paths; paths resolve canonically and symlink escapes are rejected before any Git operation.
-- **Scale/Scope**: 37 leaf rows and 1 rollup, 4 user stories, 11 `FR-` labels and 3 `SC-` labels.
+- **Scale/Scope**: 41 leaf rows and 1 rollup, 4 user stories, 12 `FR-` labels and 3 `SC-` labels.
 
 ## Constitution Check
 

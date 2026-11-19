@@ -1020,7 +1020,15 @@ CONTRACTS = (
             ),
             ToolStep(
                 tool="rm_worktree_add",
-                params=("repo", "branch", "base", "into", "adopt"),
+                params=(
+                    "repo",
+                    "branch",
+                    "base",
+                    "into",
+                    "adopt",
+                    "reflink",
+                    "seed_artifacts",
+                ),
                 result=("result",),
                 refusals=(
                     Refusal(

@@ -247,6 +247,25 @@ Examples:
         help="For --lane finish: enqueue despite a blocking preflight check.",
     )
 
+    group_lane.add_argument(
+        "--lane-reflink",
+        choices=["auto", "never"],
+        default="auto",
+        help=(
+            "For --lane start: 'auto' populates the worktree by copy-on-write "
+            "from a same-filesystem sibling worktree when supported, else a "
+            "plain checkout; 'never' always does a plain checkout."
+        ),
+    )
+    group_lane.add_argument(
+        "--lane-seed-artifacts",
+        action="store_true",
+        help=(
+            "For --lane start: reflink-seed the configured untracked build "
+            "directories (target, .venv, node_modules) from the sibling worktree."
+        ),
+    )
+
     group_maintenance = parser.add_argument_group("Maintenance Lifecycle")
     group_maintenance.add_argument(
         "--install",

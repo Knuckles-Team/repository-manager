@@ -50,6 +50,14 @@ def register_lane_tools(mcp: FastMCP, *, context: McpToolContext | None = None) 
             default=False,
             description="For 'finish': enqueue despite a blocking preflight check. Recorded in the result.",
         ),
+        reflink: str = Field(
+            default="auto",
+            description="For 'start': 'auto' populates the worktree by copy-on-write from a same-filesystem sibling worktree when supported; 'never' always does a plain checkout. The result's 'checkout' states the path taken.",
+        ),
+        seed_artifacts: bool = Field(
+            default=False,
+            description="For 'start': also reflink-seed the configured untracked build directories (target, .venv, node_modules) from the sibling worktree. Needs reflink support; otherwise skipped and reported under 'seed'.",
+        ),
         env: dict[str, str] | None = Field(
             default=None,
             description=(
@@ -101,4 +109,6 @@ def register_lane_tools(mcp: FastMCP, *, context: McpToolContext | None = None) 
             base=base,
             force=force,
             env=env,
+            reflink=reflink,
+            seed_artifacts=seed_artifacts,
         )
