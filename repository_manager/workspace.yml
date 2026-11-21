@@ -52,6 +52,8 @@ subdirectories:
           description: Software AG ARIS REST API, MCP Server, and A2A Server.
         - url: https://github.com/Knuckles-Team/jena-mcp.git
           description: Apache Jena MCP Server for Agentic AI!
+        - url: https://github.com/Knuckles-Team/lean-mcp.git
+          description: Lean theorem prover MCP server - proof receipts, declaration extraction and ontology pack.
         - url: https://github.com/Knuckles-Team/lakekeeper-mcp.git
           description: Lakekeeper Iceberg REST catalog MCP server for Agentic AI.
         - url: https://github.com/Knuckles-Team/kafka-mcp.git
@@ -230,6 +232,8 @@ subdirectories:
         - url: https://github.com/Knuckles-Team/world-reference-mcp.git
           description: World-reference data (taxonomy, OBO terms, nutrition, observations,
             Wikidata alignment) MCP Server for Agentic AI!
+        - url: https://github.com/Knuckles-Team/cloudflare-mcp.git
+          description: MCP connector for edge DNS, TLS and email routing.
         - url: https://github.com/Knuckles-Team/craft-suite-api.git
           description: Craft document suite API connector and MCP Server for Agentic
             AI!
@@ -386,6 +390,8 @@ subdirectories:
       description: Model Context Protocol adapter for Microsoft Graph APIs.
     - url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/media-downloader-mcp.git
       description: Model Context Protocol adapter for media downloading APIs.
+    - url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/cloudflare-mcp.git
+      description: Model Context Protocol adapter for edge DNS, TLS and email routing.
     - url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/mealie-mcp.git
       description: Model Context Protocol adapter for Mealie recipe/shopping lists.
     - url: ${ARBORA_REPO_ORIGIN}/homelab/containers/services/keycloak-mcp.git
@@ -576,6 +582,7 @@ selectors:
     - arbora/connectors/archimate-mcp
     - arbora/connectors/aris-mcp
     - arbora/connectors/jena-mcp
+    - arbora/connectors/lean-mcp
     - arbora/connectors/lakekeeper-mcp
     - arbora/connectors/kafka-mcp
     - arbora/connectors/archivebox-api
@@ -645,6 +652,7 @@ selectors:
     - arbora/connectors/wger-agent
     - arbora/connectors/bellwether-mcp
     - arbora/connectors/world-reference-mcp
+    - arbora/connectors/cloudflare-mcp
     - arbora/connectors/craft-suite-api
     - arbora/connectors/immich-api
     - arbora/connectors/adguard-home-agent
@@ -665,6 +673,7 @@ selectors:
     - services/microsoft-mcp
     - services/media-downloader-mcp
     - services/mealie-mcp
+    - services/cloudflare-mcp
     - services/keycloak-mcp
     - services/jellyfin-mcp
     - services/gitlab-mcp
