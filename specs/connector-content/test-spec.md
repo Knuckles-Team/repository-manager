@@ -8,6 +8,7 @@ Proof level: served tests enter through the MCP server built by `create_mcp_serv
 
 - `tests/test_default_content_surfaces.py::test_default_content_surfaces`. The listings include the packaged skills, ontology and prompts. *(CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R001)*
 - `tests/test_destructive_declaration.py::test_destructive_actions_are_declared_and_take_confirm`. The four destructive tools carry the destructive hint and a `confirm` argument, no `allow_` argument exists, read tools do not carry the hint, and the audit tool, which can prune, is not served as read-only. *(CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R005)*
+- `tests/test_ontology_extends_core.py::test_pack_declares_no_core_term`. The packaged Turtle redeclares no core class or property. *(CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R006)*
 
 ## Planned
 

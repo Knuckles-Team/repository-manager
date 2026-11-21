@@ -19,11 +19,6 @@
     rdfs:label "Git Repository" ;
     rdfs:comment "A version-controlled git repository — a remote enumerated across a GitLab instance / GitHub org (rm_git enumerate) or a local workspace checkout (rm_projects)." .
 
-:Worktree a owl:Class ;
-    rdfs:subClassOf core:Worktree ;
-    rdfs:label "Worktree" ;
-    rdfs:comment "A linked git worktree of a repository (a checked-out branch on its own path), classified merged / active / stale / dangling (rm_worktree list/audit)." .
-
 :Project a owl:Class ;
     rdfs:label "Project" ;
     rdfs:comment "A managed workspace project directory — a buildable/testable/pushable unit the manager installs, validates, bumps and pushes (rm_projects / rm_workspace)." .
@@ -33,7 +28,7 @@
 :worktreeOf a owl:ObjectProperty ;
     rdfs:label "worktree of" ;
     rdfs:comment "Links a Worktree to the canonical GitRepository it was created from." ;
-    rdfs:domain :Worktree ;
+    rdfs:domain core:Worktree ;
     rdfs:range :GitRepository .
 
 :projectOfRepository a owl:ObjectProperty ;
@@ -84,34 +79,22 @@
     rdfs:comment "Short/long git SHA at the head of a GitRepository or Worktree." ;
     rdfs:range xsd:string .
 
-:archived a owl:DatatypeProperty ;
-    rdfs:label "archived" ;
-    rdfs:comment "Whether the GitRepository is archived on its host." ;
-    rdfs:domain :GitRepository ;
-    rdfs:range xsd:boolean .
-
-:lastActivityAt a owl:DatatypeProperty ;
-    rdfs:label "last activity at" ;
-    rdfs:comment "ISO timestamp of the last activity/push on a GitRepository." ;
-    rdfs:domain :GitRepository ;
-    rdfs:range xsd:string .
-
 :worktreePath a owl:DatatypeProperty ;
     rdfs:label "worktree path" ;
     rdfs:comment "Filesystem path of a linked Worktree." ;
-    rdfs:domain :Worktree ;
+    rdfs:domain core:Worktree ;
     rdfs:range xsd:string .
 
 :branchName a owl:DatatypeProperty ;
     rdfs:label "branch name" ;
     rdfs:comment "The branch a Worktree has checked out." ;
-    rdfs:domain :Worktree ;
+    rdfs:domain core:Worktree ;
     rdfs:range xsd:string .
 
 :worktreeStatus a owl:DatatypeProperty ;
     rdfs:label "worktree status" ;
     rdfs:comment "Audit classification of a Worktree: merged, active, stale, or dangling." ;
-    rdfs:domain :Worktree ;
+    rdfs:domain core:Worktree ;
     rdfs:range xsd:string .
 
 :dirty a owl:DatatypeProperty ;

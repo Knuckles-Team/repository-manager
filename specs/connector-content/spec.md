@@ -56,6 +56,7 @@ Independent test: the planned test of `CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT
 - **FR-002**: The index tool returns changed files only for a previous state (`CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R002`).
 - **FR-003**: The hydrate tool indexes a revision through the SDK transport (`CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R003`).
 - **FR-004**: Code reads prefer the graph and fall back to a local clone only for an absent repository (`CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R004`).
+- **FR-005**: The packaged ontology extends only the core ontology and redeclares no core term (`CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R006`).
 
 ## Success Criteria
 
