@@ -243,6 +243,10 @@ subdirectories:
         - url: https://github.com/Knuckles-Team/adguard-home-agent.git
           description: AdGuard Home DNS filtering API connector and MCP Server for
             Agentic AI!
+        - url: https://github.com/Knuckles-Team/blender-connector.git
+          description: 'Blender connector: proxies the mcp-for-blender upstream under
+            the blender namespace and serves the packaged Blender skill, prompts and
+            ontology.'
   images:
     description: Container images for the homelab
     repositories:
@@ -656,6 +660,7 @@ selectors:
     - arbora/connectors/craft-suite-api
     - arbora/connectors/immich-api
     - arbora/connectors/adguard-home-agent
+    - arbora/connectors/blender-connector
   service-codebases:
     include:
     - services/gramps
