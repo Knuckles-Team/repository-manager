@@ -2,11 +2,7 @@
 name: repository-manager-development
 skill_type: skill
 description: >-
-  Deliver a small, source-backed repository-manager change from an isolated
-  worktree through focused validation, normal review, and evidence-based
-  publication. Use this skill for repository-manager's own MCP adapter, CLI,
-  packaging, skills, workflows, and development gates; use the narrower
-  lifecycle and release skills for their detailed operations.
+  Deliver a small, source-backed repository-manager change from an isolated worktree through focused validation, normal review, and evidence-based publication. Use this skill for repository-manager's own MCP adapter, CLI, packaging, skills, workflows, and development gates; use the narrower lifecycle and release skills for their detailed operations.
 license: MIT
 tags: [repository-manager, development, mcp, packaging, test, gates]
 metadata:

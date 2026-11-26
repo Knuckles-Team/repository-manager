@@ -2,19 +2,7 @@
 name: repository-manager-gate-execution
 skill_type: skill
 description: >-
-  Run and inspect the two-tier (fast/heavy) pre-commit gate across repos via
-  `rm_gates_<op>`, and validate a fix without re-running the whole wave: `run` to
-  populate the durable gate ledger, `retest` to narrow a re-run to only the
-  hooks the ledger last recorded failing (with automatic full-wave
-  escalation on an all-pass), and `profile` to find the slow hooks. Covers
-  the gate ledger's clear-on-improve/staleness/shippability semantics, the
-  cargo-vs-pytest/go fail-fast-flag asymmetry, and three environment traps
-  that reliably produce false gate verdicts. Use when an agent must run a
-  repo's fast or heavy gate, re-validate only what just failed, explain a
-  failure, or find what is slow. Do NOT use for the merge queue's own
-  differential gate-vs-base comparison (repository-manager-merge-and-reconcile),
-  Python install/build via `rm_projects_<op>` (repository-manager-workspace-validation),
-  or content-addressed build caching (repository-manager-build-coordination).
+  Run and inspect the two-tier (fast/heavy) pre-commit gate across repos via `rm_gates_<op>`, and validate a fix without re-running the whole wave: `run` to populate the durable gate ledger, `retest` to narrow a re-run to only the hooks the ledger last recorded failing (with automatic full-wave escalation on an all-pass), and `profile` to find the slow hooks.
 license: MIT
 tags: [repository-manager, gates, pre-commit, testing, ci, mcp]
 metadata:
@@ -22,6 +10,8 @@ metadata:
   version: '1.0.0'
 ---
 # Repository Manager — Gate Execution
+
+Scope: Run and inspect the two-tier (fast/heavy) pre-commit gate across repos via `rm_gates_<op>`, and validate a fix without re-running the whole wave: `run` to populate the durable gate ledger, `retest` to narrow a re-run to only the hooks the ledger last recorded failing (with automatic full-wave escalation on an all-pass), and `profile` to find the slow hooks. Covers the gate ledger's clear-on-improve/staleness/shippability semantics, the cargo-vs-pytest/go fail-fast-flag asymmetry, and three environment traps that reliably produce false gate verdicts. Use when an agent must run a repo's fast or heavy gate, re-validate only what just failed, explain a failure, or find what is slow. Do NOT use for the merge queue's own differential gate-vs-base comparison (repository-manager-merge-and-reconcile), Python install/build via `rm_projects_<op>` (repository-manager-workspace-validation), or content-addressed build caching (repository-manager-build-coordination).
 
 `rm_gates_*` is the one tool that drives both tiers of the pre-commit gate:
 `stage="fast"` runs a repo's `pre-commit`-stage hooks (formatters/linters, no

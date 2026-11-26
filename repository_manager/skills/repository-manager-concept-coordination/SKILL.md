@@ -2,17 +2,7 @@
 name: repository-manager-concept-coordination
 skill_type: skill
 description: >-
-  Reserve, inspect, release, and materialize a CONCEPT:ID claim, and verify a
-  candidate's or generation's introduced concept markers against those claims, via
-  the repository-manager `rm_concepts_<op>` MCP tool / `--concepts` CLI family. Routes
-  agents away from hand-writing a `CONCEPT:` marker without first reserving its id,
-  which is exactly how two concurrent lanes collide on the same identifier. Use
-  before writing any new `CONCEPT:` marker, or to verify a candidate/generation's
-  markers before it lands. ⚠ On `main` as of this lane, every mutating action
-  refuses honestly with `ConceptAuthorityUnavailable` — read the fail-closed section
-  before assuming this tool allocates anything. Do NOT use for the lane/worktree
-  lifecycle itself (repository-manager-lane-lifecycle) or for landing a branch
-  (repository-manager-merge-and-reconcile).
+  Reserve, inspect, release, and materialize a CONCEPT:ID claim, and verify a candidate's or generation's introduced concept markers against those claims, via the repository-manager `rm_concepts_<op>` MCP tool / `--concepts` CLI family. Use before writing any new `CONCEPT:` marker, or to verify a candidate/generation's markers before it lands.
 license: MIT
 tags: [repository-manager, concepts, reservation, verification, mcp]
 metadata:
@@ -20,6 +10,8 @@ metadata:
   version: '1.0.0'
 ---
 # Repository Manager — Concept Coordination
+
+Scope: Reserve, inspect, release, and materialize a CONCEPT:ID claim, and verify a candidate's or generation's introduced concept markers against those claims, via the repository-manager `rm_concepts_<op>` MCP tool / `--concepts` CLI family. Routes agents away from hand-writing a `CONCEPT:` marker without first reserving its id, which is exactly how two concurrent lanes collide on the same identifier. Use before writing any new `CONCEPT:` marker, or to verify a candidate/generation's markers before it lands. ⚠ On `main` as of this lane, every mutating action refuses honestly with `ConceptAuthorityUnavailable` — read the fail-closed section before assuming this tool allocates anything. Do NOT use for the lane/worktree lifecycle itself (repository-manager-lane-lifecycle) or for landing a branch (repository-manager-merge-and-reconcile).
 
 `rm_concepts_*` is repository-manager's thin, MCP/CLI-neutral consumer of RMDD-16's
 central concept-id claim authority (`scion_sdk.governance.

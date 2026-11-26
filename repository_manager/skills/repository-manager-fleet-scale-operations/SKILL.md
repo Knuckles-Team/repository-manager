@@ -2,15 +2,7 @@
 name: repository-manager-fleet-scale-operations
 skill_type: skill
 description: >-
-  Run development across MANY repositories and many concurrent lanes at once —
-  bulk worktree creation, workspace-wide worktree audits and classification
-  (merged / active / stale / dangling / orphaned), safe mass pruning, draining
-  several repositories' merge queues in parallel, and sizing concurrency against
-  the real binding constraint (disk I/O and swap, not the agent cap). Use when
-  launching or reclaiming a wave of lanes, when worktrees have accumulated, or
-  when deciding how many heavy jobs may run at once. Do NOT use for a single
-  lane's lifecycle (repository-manager-lane-lifecycle) or for landing and
-  reconciling one branch (repository-manager-merge-and-reconcile).
+  Run development across MANY repositories and many concurrent lanes at once — bulk worktree creation, workspace-wide worktree audits and classification (merged / active / stale / dangling / orphaned), safe mass pruning, draining several repositories' merge queues in parallel, and sizing concurrency against the real binding constraint (disk I/O and swap, not the agent cap).
 license: MIT
 tags: [repository-manager, git, worktree, fleet, concurrency, capacity, audit]
 metadata:
@@ -18,6 +10,8 @@ metadata:
   version: '1.0.0'
 ---
 # Repository Manager — Fleet-Scale Operations
+
+Scope: Run development across MANY repositories and many concurrent lanes at once — bulk worktree creation, workspace-wide worktree audits and classification (merged / active / stale / dangling / orphaned), safe mass pruning, draining several repositories' merge queues in parallel, and sizing concurrency against the real binding constraint (disk I/O and swap, not the agent cap). Use when launching or reclaiming a wave of lanes, when worktrees have accumulated, or when deciding how many heavy jobs may run at once. Do NOT use for a single lane's lifecycle (repository-manager-lane-lifecycle) or for landing and reconciling one branch (repository-manager-merge-and-reconcile).
 
 Operating ~234 repositories with dozens of concurrent lanes. The failure modes at
 this scale are different in kind from a single lane's: you do not lose work to a

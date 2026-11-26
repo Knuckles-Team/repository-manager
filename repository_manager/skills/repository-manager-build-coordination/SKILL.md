@@ -2,18 +2,7 @@
 name: repository-manager-build-coordination
 skill_type: skill
 description: >-
-  Content-addressed build/cache coordination for ANY repository via the
-  repository-manager MCP server — dedup-or-build requests, cache-key status,
-  published artifacts, why a key missed cache, and bounded cache reclamation.
-  Routes agents away from a bare, uncoordinated `cargo build`/`uv sync`/`pnpm
-  build` that duplicates work every other lane asking for the same
-  (repo, tree-sha, feature-set, toolchain, target) has already paid for. Use when
-  an agent needs a repository's build artifacts, wants to know whether a build is
-  cached, or must reclaim old cache entries. Do NOT use for the packaging-style
-  `rm_projects_<op>` install/build (repository-manager-workspace-validation), for the
-  merge queue's own gate execution (repository-manager-merge-and-reconcile), or for
-  sizing how many heavy builds may run at once
-  (repository-manager-fleet-scale-operations).
+  Content-addressed build/cache coordination for ANY repository via the repository-manager MCP server — dedup-or-build requests, cache-key status, published artifacts, why a key missed cache, and bounded cache reclamation. Use when an agent needs a repository's build artifacts, wants to know whether a build is cached, or must reclaim old cache entries.
 license: MIT
 tags: [repository-manager, build, cache, artifacts, resource, mcp]
 metadata:
@@ -21,6 +10,8 @@ metadata:
   version: '1.0.0'
 ---
 # Repository Manager — Build Coordination
+
+Scope: Content-addressed build/cache coordination for ANY repository via the repository-manager MCP server — dedup-or-build requests, cache-key status, published artifacts, why a key missed cache, and bounded cache reclamation. Routes agents away from a bare, uncoordinated `cargo build`/`uv sync`/`pnpm build` that duplicates work every other lane asking for the same (repo, tree-sha, feature-set, toolchain, target) has already paid for. Use when an agent needs a repository's build artifacts, wants to know whether a build is cached, or must reclaim old cache entries. Do NOT use for the packaging-style `rm_projects_<op>` install/build (repository-manager-workspace-validation), for the merge queue's own gate execution (repository-manager-merge-and-reconcile), or for sizing how many heavy builds may run at once (repository-manager-fleet-scale-operations).
 
 `rm_build_*` is a content-addressed build broker for **any** repository
 (`CONCEPT:RM-TASK-LEDGER`). The dedup is the entire value: N lanes each asking for
