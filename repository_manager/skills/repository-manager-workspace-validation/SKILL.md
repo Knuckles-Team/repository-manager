@@ -2,14 +2,7 @@
 name: repository-manager-workspace-validation
 skill_type: skill
 description: >-
-  Install, build, and validate the managed projects of a workspace via the
-  repository-manager MCP server — run pre-commit + pytest validation per project
-  and install/build ecosystems. Use when the agent must ensure all projects are
-  valid, fix project errors, or run the validation suite. To raise a dependency
-  floor across the fleet use `rm_rollout` / `repository-manager rollout`
-  (repository-manager-workspace-release). Do NOT use for isolated session worktrees
-  (repository-manager-worktree-orchestration) or bulk clone/pull/push
-  (repository-manager-bulk-git-operations).
+  Install, build, and validate the managed projects of a workspace via the repository-manager MCP server — run pre-commit + pytest validation per project and install/build ecosystems. Use when the agent must ensure all projects are valid, fix project errors, or run the validation suite.
 license: MIT
 tags: [repository-manager, validation, pre-commit, bumpversion, mcp]
 metadata:
@@ -17,6 +10,8 @@ metadata:
   version: '0.1.0'
 ---
 # Repository Manager — Workspace Validation
+
+Scope: Install, build, and validate the managed projects of a workspace via the repository-manager MCP server — run pre-commit + pytest validation per project and install/build ecosystems. Use when the agent must ensure all projects are valid, fix project errors, or run the validation suite. To raise a dependency floor across the fleet use `rm_rollout` / `repository-manager rollout` (repository-manager-workspace-release). Do NOT use for isolated session worktrees (repository-manager-worktree-orchestration) or bulk clone/pull/push (repository-manager-bulk-git-operations).
 
 Install, build and validate the managed **projects** of a workspace over the
 repository-manager MCP server. Validation runs each project's pre-commit hooks and pytest

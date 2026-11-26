@@ -2,17 +2,7 @@
 name: repository-manager-development-lifecycle
 skill_type: skill
 description: >-
-  The default entrypoint for one unit of work — plan, start, work with a live
-  heartbeat, check, submit, watch status, and abort — composed entirely from the
-  repository-manager MCP/CLI surface (rm_lane_*, rm_worktree_*, rm_merge_queue_*, and
-  rm_concepts_*). It never opens a raw shell, runs a direct compiler, hand-merges, or
-  writes an unreserved concept marker; every step routes to the governed action that
-  already exists. Use this FIRST for any repository change an agent will land. Do
-  NOT use for many-repository fan-out (repository-manager-fleet-scale-operations),
-  bulk git across repos (repository-manager-bulk-git-operations), build-cache
-  operation (repository-manager-build-coordination), or remote-worker capacity
-  (repository-manager-worker-operations) — those are named lower down in this
-  skill's routing map.
+  The default entrypoint for one unit of work — plan, start, work with a live heartbeat, check, submit, watch status, and abort — composed entirely from the repository-manager MCP/CLI surface (rm_lane_<op>, rm_worktree_<op>, rm_merge_queue_<op>, and rm_concepts_<op>). Use this FIRST for any repository change an agent will land.
 license: MIT
 tags: [repository-manager, lifecycle, lane, worktree, merge-queue, entrypoint, mcp]
 metadata:
@@ -20,6 +10,8 @@ metadata:
   version: '1.0.0'
 ---
 # Repository Manager — Development Lifecycle
+
+Scope: The default entrypoint for one unit of work — plan, start, work with a live heartbeat, check, submit, watch status, and abort — composed entirely from the repository-manager MCP/CLI surface (rm_lane_<op>, rm_worktree_<op>, rm_merge_queue_<op>, and rm_concepts_<op>). It never opens a raw shell, runs a direct compiler, hand-merges, or writes an unreserved concept marker; every step routes to the governed action that already exists. Use this FIRST for any repository change an agent will land. Do NOT use for many-repository fan-out (repository-manager-fleet-scale-operations), bulk git across repos (repository-manager-bulk-git-operations), build-cache operation (repository-manager-build-coordination), or remote-worker capacity (repository-manager-worker-operations) — those are named lower down in this skill's routing map.
 
 The governed entrypoint for one unit of work: one agent session or one person,
 taking one repository from "nothing started" to "landed", without ever touching a

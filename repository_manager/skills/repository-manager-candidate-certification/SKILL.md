@@ -2,18 +2,7 @@
 name: repository-manager-candidate-certification
 skill_type: skill
 description: >-
-  Understand and verify a branch candidate's and a sealed generation's
-  certification state — the Candidate/Generation lifecycle vocabulary, the
-  validation-stage/evidence model, and the `rm_concepts_verify_candidate` /
-  `verify_generation` marker-collision checks — before trusting a merge-queue
-  outcome as landable. This is the vocabulary and marker-verification layer; the
-  actual batching/differential-gating/bisection mechanics that decide landability
-  live in `rm_merge_queue_*` and are documented in repository-manager-merge-and-
-  reconcile, not duplicated here. Use when an agent must explain why a candidate is
-  in a given state, verify a candidate's or generation's introduced CONCEPT:
-  markers, or reason about a rejected/bisected generation. Do NOT use this skill to
-  actually land a branch (repository-manager-merge-and-reconcile) or to reserve a
-  concept id (repository-manager-concept-coordination).
+  Understand and verify a branch candidate's and a sealed generation's certification state — the Candidate/Generation lifecycle vocabulary, the validation-stage/evidence model, and the `rm_concepts_verify_candidate` / `verify_generation` marker-collision checks — before trusting a merge-queue outcome as landable.
 license: MIT
 tags: [repository-manager, candidate, generation, certification, concepts, mcp]
 metadata:
@@ -21,6 +10,8 @@ metadata:
   version: '1.0.0'
 ---
 # Repository Manager — Candidate Certification
+
+Scope: Understand and verify a branch candidate's and a sealed generation's certification state — the Candidate/Generation lifecycle vocabulary, the validation-stage/evidence model, and the `rm_concepts_verify_candidate` / `verify_generation` marker-collision checks — before trusting a merge-queue outcome as landable. This is the vocabulary and marker-verification layer; the actual batching/differential-gating/bisection mechanics that decide landability live in `rm_merge_queue_<op>` and are documented in repository-manager-merge-and- reconcile, not duplicated here. Use when an agent must explain why a candidate is in a given state, verify a candidate's or generation's introduced CONCEPT: markers, or reason about a rejected/bisected generation. Do NOT use this skill to actually land a branch (repository-manager-merge-and-reconcile) or to reserve a concept id (repository-manager-concept-coordination).
 
 A **candidate** is one immutable branch submission offered for generation
 formation; a **generation** is a sealed, ordered set of candidates with exact

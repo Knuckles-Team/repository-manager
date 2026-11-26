@@ -2,15 +2,12 @@
 name: repository-manager-operations
 skill_type: skill
 description: >-
-  Operate repository-manager through its governed MCP and Arbora capabilities,
-  including its development-lifecycle, lane, worktree, merge-queue, build, workspace
-  validation/release, concept-coordination, and remote-worker-operations workflows
-  (see references/catalog.md for the full, current list). Use when a request
-  requires this provider's read, change, automation, ingestion, troubleshooting, or
-  evidence workflows.
+  Operate repository-manager through its governed MCP and Arbora capabilities, including its development-lifecycle, lane, worktree, merge-queue, build, workspace validation/release, concept-coordination, and remote-worker-operations workflows (see references/catalog.md for the full, current list).
 ---
 
 # Repository Manager Operations
+
+Scope: Operate repository-manager through its governed MCP and Arbora capabilities, including its development-lifecycle, lane, worktree, merge-queue, build, workspace validation/release, concept-coordination, and remote-worker-operations workflows (see references/catalog.md for the full, current list). Use when a request requires this provider's read, change, automation, ingestion, troubleshooting, or evidence workflows.
 
 Use the provider's governed MCP tools through Arbora delegation.
 

@@ -2,17 +2,7 @@
 name: repository-manager-workspace-release
 skill_type: skill
 description: >-
-  Roll a dependency floor across the fleet deterministically and manage the
-  `workspace.yml` manifest — via `rm_rollout` (or `repository-manager rollout`) and
-  `rm_workspace_*`. A rollout selects the workspace.yml group's non-archived repos
-  that depend on the package, plans per repo from main into a resumable ledger,
-  applies each change in a fresh worktree through a pull request with auto-merge,
-  reports merged/failing/pending, and tags `v<version>` only after the PR merged
-  and main's floor is met. Nothing reaches main except through a PR. Use for
-  "roll scion-sdk X to all connectors", "which rollout PRs are failing", "tag the
-  repos whose rollout merged", or scaffolding/saving `workspace.yml`. Do NOT use
-  for per-project validation (repository-manager-workspace-validation) or bulk
-  clone/pull/push (repository-manager-bulk-git-operations).
+  Roll a dependency floor across the fleet deterministically and manage the `workspace.yml` manifest — via `rm_rollout` (or `repository-manager rollout`) and `rm_workspace_<op>`. Nothing reaches main except through a PR. Use for "roll scion-sdk X to all connectors", "which rollout PRs are failing", "tag the repos whose rollout merged", or scaffolding/saving `workspace.yml`.
 license: MIT
 tags: [repository-manager, release, rollout, dependency, workspace, mcp]
 metadata:
@@ -20,6 +10,8 @@ metadata:
   version: '2.0.0'
 ---
 # Repository Manager — Workspace Release (dependency rollout)
+
+Scope: Roll a dependency floor across the fleet deterministically and manage the `workspace.yml` manifest — via `rm_rollout` (or `repository-manager rollout`) and `rm_workspace_<op>`. A rollout selects the workspace.yml group's non-archived repos that depend on the package, plans per repo from main into a resumable ledger, applies each change in a fresh worktree through a pull request with auto-merge, reports merged/failing/pending, and tags `v<version>` only after the PR merged and main's floor is met. Nothing reaches main except through a PR. Use for "roll scion-sdk X to all connectors", "which rollout PRs are failing", "tag the repos whose rollout merged", or scaffolding/saving `workspace.yml`. Do NOT use for per-project validation (repository-manager-workspace-validation) or bulk clone/pull/push (repository-manager-bulk-git-operations).
 
 A fleet release is a **dependency rollout**: raise one dependency's floor in every
 repository that uses it, land it through a pull request per repository, then tag.

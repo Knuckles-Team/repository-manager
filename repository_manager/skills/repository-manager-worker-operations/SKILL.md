@@ -2,18 +2,7 @@
 name: repository-manager-worker-operations
 skill_type: skill
 description: >-
-  Register a remote host's weighted capacity and authorized repository roots,
-  read its profile, run the dispatch-time entitlement recheck, stage/verify an
-  immutable source commit onto it with a fixed clone/fetch/checkout command
-  sequence, stream artifacts/logs back, and reconcile a lost host — via the
-  repository-manager `rm_remote_workers_*` MCP tool / `--remote-workers` CLI family.
-  Routes agents away from a raw SSH/tunnel command or a hand-rolled clone onto a
-  remote host. ⚠ `recheck`/live dispatch refuse honestly without the optional
-  tunnel-manager dependency, and `host_loss_reconcile` always refuses today — read
-  the fail-closed section before assuming either works. Use when placing or staging
-  work on a non-local host. Do NOT use for a purely local build
-  (repository-manager-build-coordination) or for the lane/worktree lifecycle itself
-  (repository-manager-lane-lifecycle).
+  Register a remote host's weighted capacity and authorized repository roots, read its profile, run the dispatch-time entitlement recheck, stage/verify an immutable source commit onto it with a fixed clone/fetch/checkout command sequence, stream artifacts/logs back, and reconcile a lost host — via the repository-manager `rm_remote_workers_<op>` MCP tool / `--remote-workers` CLI family.
 license: MIT
 tags: [repository-manager, remote-worker, capacity, staging, artifacts, mcp]
 metadata:
@@ -21,6 +10,8 @@ metadata:
   version: '1.0.0'
 ---
 # Repository Manager — Worker Operations
+
+Scope: Register a remote host's weighted capacity and authorized repository roots, read its profile, run the dispatch-time entitlement recheck, stage/verify an immutable source commit onto it with a fixed clone/fetch/checkout command sequence, stream artifacts/logs back, and reconcile a lost host — via the repository-manager `rm_remote_workers_<op>` MCP tool / `--remote-workers` CLI family. Routes agents away from a raw SSH/tunnel command or a hand-rolled clone onto a remote host. ⚠ `recheck`/live dispatch refuse honestly without the optional tunnel-manager dependency, and `host_loss_reconcile` always refuses today — read the fail-closed section before assuming either works. Use when placing or staging work on a non-local host. Do NOT use for a purely local build (repository-manager-build-coordination) or for the lane/worktree lifecycle itself (repository-manager-lane-lifecycle).
 
 `rm_remote_workers_*` composes RMDD-15's remote-execution registry/staging/artifact
 package with RMDD-08's `CapacityInventory` weighted resource ledger. It is the

@@ -2,16 +2,7 @@
 name: repository-manager-lane-lifecycle
 skill_type: skill
 description: >-
-  Run one unit of work — one agent session or one person — as an isolated lane
-  in a repository many other lanes are editing at the same time. Covers opening a
-  lane (worktree + partitioned build/test/hook state), staying isolated while
-  working, diagnosing a lane that is behaving impossibly, and closing it out.
-  Use whenever you are about to edit a repository that other agents or humans are
-  also editing, when a test fails in a way that cannot be true, when a build will
-  not go green, or when work has gone missing. Do NOT use for landing a branch
-  and resolving conflicts (repository-manager-merge-and-reconcile) or for
-  workspace-wide sweeps across many repos
-  (repository-manager-fleet-scale-operations).
+  Run one unit of work — one agent session or one person — as an isolated lane in a repository many other lanes are editing at the same time. Use whenever you are about to edit a repository that other agents or humans are also editing, when a test fails in a way that cannot be true, when a build will not go green, or when work has gone missing.
 license: MIT
 tags: [repository-manager, git, worktree, concurrency, isolation, lane]
 metadata:
@@ -19,6 +10,8 @@ metadata:
   version: '1.0.0'
 ---
 # Repository Manager — Lane Lifecycle
+
+Scope: Run one unit of work — one agent session or one person — as an isolated lane in a repository many other lanes are editing at the same time. Covers opening a lane (worktree + partitioned build/test/hook state), staying isolated while working, diagnosing a lane that is behaving impossibly, and closing it out. Use whenever you are about to edit a repository that other agents or humans are also editing, when a test fails in a way that cannot be true, when a build will not go green, or when work has gone missing. Do NOT use for landing a branch and resolving conflicts (repository-manager-merge-and-reconcile) or for workspace-wide sweeps across many repos (repository-manager-fleet-scale-operations).
 
 A **lane** is one worker — one agent session or one person — working one
 repository in one worktree on one branch. Dozens of lanes run concurrently here.

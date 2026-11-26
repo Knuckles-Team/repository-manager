@@ -2,18 +2,7 @@
 name: repository-manager-parallel-lane-orchestration
 skill_type: skill
 description: >-
-  Run a program as one central orchestrator plus many parallel worker agents: brief
-  each lane, land its branch into main locally the moment it arrives, prune the branch
-  and worktree immediately, and push only once the program is complete. Covers the lane
-  briefing contract, land-as-they-arrive merge discipline, provider-before-consumer
-  ordering for cross-repo changes, adjudicating contradictory lane reports, and the
-  verification rules that catch a lane (or the orchestrator) being confidently wrong.
-  Use when dispatching more than one worker agent at a time, when deciding whether a
-  returned lane is safe to land, or when reconciling a workspace back to zero branches
-  and zero worktrees. Do NOT use for the mechanics of a single merge or conflict
-  (repository-manager-merge-and-reconcile), for opening one lane
-  (repository-manager-lane-lifecycle), or for release/publish
-  (repository-manager-workspace-release).
+  Run a program as one central orchestrator plus many parallel worker agents: brief each lane, land its branch into main locally the moment it arrives, prune the branch and worktree immediately, and push only once the program is complete.
 license: MIT
 tags: [repository-manager, orchestration, subagents, merge-queue, worktrees, verification]
 metadata:
@@ -22,6 +11,8 @@ metadata:
 ---
 
 # Parallel lane orchestration
+
+Scope: Run a program as one central orchestrator plus many parallel worker agents: brief each lane, land its branch into main locally the moment it arrives, prune the branch and worktree immediately, and push only once the program is complete. Covers the lane briefing contract, land-as-they-arrive merge discipline, provider-before-consumer ordering for cross-repo changes, adjudicating contradictory lane reports, and the verification rules that catch a lane (or the orchestrator) being confidently wrong. Use when dispatching more than one worker agent at a time, when deciding whether a returned lane is safe to land, or when reconciling a workspace back to zero branches and zero worktrees. Do NOT use for the mechanics of a single merge or conflict (repository-manager-merge-and-reconcile), for opening one lane (repository-manager-lane-lifecycle), or for release/publish (repository-manager-workspace-release).
 
 One orchestrator, many workers. Workers build; the orchestrator decomposes, dispatches,
 adjudicates, lands, and prunes. The orchestrator does not do the building — its scarce

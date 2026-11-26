@@ -2,14 +2,7 @@
 name: repository-manager-worktree-orchestration
 skill_type: skill
 description: >-
-  Concurrent multi-session git worktree orchestration via the repository-manager
-  MCP server — create, list, sync, merge, prune, and audit linked worktrees under
-  a shared workspace. Use when the agent must open an isolated branch worktree for
-  a session, list/audit which worktrees are merged / active / stale / dangling,
-  sync a worktree against its base, merge finished work back, or safely prune
-  merged worktrees. Do NOT use for bulk clone/pull/push across repos
-  (repository-manager-bulk-git-operations) or per-project validation/version bumps
-  (repository-manager-workspace-validation).
+  Concurrent multi-session git worktree orchestration via the repository-manager MCP server — create, list, sync, merge, prune, and audit linked worktrees under a shared workspace. Do NOT use for bulk clone/pull/push across repos (repository-manager-bulk-git-operations) or per-project validation/version bumps (repository-manager-workspace-validation).
 license: MIT
 tags: [repository-manager, git, worktree, workspace, mcp]
 metadata:
@@ -17,6 +10,8 @@ metadata:
   version: '0.1.0'
 ---
 # Repository Manager — Worktree Orchestration
+
+Scope: Concurrent multi-session git worktree orchestration via the repository-manager MCP server — create, list, sync, merge, prune, and audit linked worktrees under a shared workspace. Use when the agent must open an isolated branch worktree for a session, list/audit which worktrees are merged / active / stale / dangling, sync a worktree against its base, merge finished work back, or safely prune merged worktrees. Do NOT use for bulk clone/pull/push across repos (repository-manager-bulk-git-operations) or per-project validation/version bumps (repository-manager-workspace-validation).
 
 Manage git **worktrees** for concurrent multi-session development over the
 repository-manager MCP server. Each session works a repo in its own worktree on its

@@ -2,16 +2,7 @@
 name: repository-manager-merge-and-reconcile
 skill_type: skill
 description: >-
-  Land a branch into a shared base that dozens of other lanes are landing into at
-  the same time, and reconcile it when it conflicts. Covers the serialized merge
-  queue, per-repository gate declarations, differential gating against a base ref
-  that is legitimately red, measuring the MERGED tree rather than the branch tip,
-  the conflict-resolution decision procedure (generated-file / semantic-divergence
-  / base-moved / gate-red), and safe pruning. Use when a branch is ready to land,
-  when a merge conflicts, when a gate is red and you must decide whether that is
-  NEW, or when a queue candidate is rejected. Do NOT use for opening or isolating
-  a lane (repository-manager-lane-lifecycle) or for workspace-wide sweeps
-  (repository-manager-fleet-scale-operations).
+  Land a branch into a shared base that dozens of other lanes are landing into at the same time, and reconcile it when it conflicts. Use when a branch is ready to land, when a merge conflicts, when a gate is red and you must decide whether that is NEW, or when a queue candidate is rejected.
 license: MIT
 tags: [repository-manager, git, merge-queue, conflict-resolution, gates, ci]
 metadata:
@@ -19,6 +10,8 @@ metadata:
   version: '1.0.0'
 ---
 # Repository Manager — Merge & Reconcile
+
+Scope: Land a branch into a shared base that dozens of other lanes are landing into at the same time, and reconcile it when it conflicts. Covers the serialized merge queue, per-repository gate declarations, differential gating against a base ref that is legitimately red, measuring the MERGED tree rather than the branch tip, the conflict-resolution decision procedure (generated-file / semantic-divergence / base-moved / gate-red), and safe pruning. Use when a branch is ready to land, when a merge conflicts, when a gate is red and you must decide whether that is NEW, or when a queue candidate is rejected. Do NOT use for opening or isolating a lane (repository-manager-lane-lifecycle) or for workspace-wide sweeps (repository-manager-fleet-scale-operations).
 
 Landing is the one operation a lane **cannot** do independently, so it goes
 through one serialized queue per repository. This skill is how to use it, and —

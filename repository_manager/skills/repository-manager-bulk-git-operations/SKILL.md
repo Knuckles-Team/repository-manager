@@ -2,15 +2,7 @@
 name: repository-manager-bulk-git-operations
 skill_type: skill
 description: >-
-  Bulk, parallel git operations across a whole workspace of repositories via the
-  repository-manager MCP server — clone, pull, push, add, commit, pre-commit, and
-  enumerate every repo across a GitLab instance / GitHub org into
-  an ingest manifest (which also natively ingests them into the knowledge graph as
-  typed :GitRepository nodes). Raw host git commands are permanently retired and
-  always refused. Use when the agent must operate over many repos at once or
-  discover the full repo inventory. Do NOT use for single-session worktree branches
-  (repository-manager-worktree-orchestration) or per-project install/validate/
-  version bumps (repository-manager-workspace-validation).
+  Bulk, parallel git operations across a whole workspace of repositories via the repository-manager MCP server — clone, pull, push, add, commit, pre-commit, and enumerate every repo across a GitLab instance / GitHub org into an ingest manifest (which also natively ingests them into the knowledge graph as typed :GitRepository nodes). Raw host git commands are permanently retired and always refused.
 license: MIT
 tags: [repository-manager, git, bulk, enumerate, mcp]
 metadata:
@@ -18,6 +10,8 @@ metadata:
   version: '0.1.0'
 ---
 # Repository Manager — Bulk Git Operations
+
+Scope: Bulk, parallel git operations across a whole workspace of repositories via the repository-manager MCP server — clone, pull, push, add, commit, pre-commit, and enumerate every repo across a GitLab instance / GitHub org into an ingest manifest (which also natively ingests them into the knowledge graph as typed :GitRepository nodes). Raw host git commands are permanently retired and always refused. Use when the agent must operate over many repos at once or discover the full repo inventory. Do NOT use for single-session worktree branches (repository-manager-worktree-orchestration) or per-project install/validate/ version bumps (repository-manager-workspace-validation).
 
 Fan-out git operations across every repository in a workspace, plus enterprise-scale
 remote **enumeration**, over the repository-manager MCP server. Long-running actions
