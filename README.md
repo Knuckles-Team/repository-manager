@@ -20,11 +20,9 @@
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/repository-manager)
 ![PyPI - Implementation](https://img.shields.io/pypi/implementation/repository-manager)
 
-*Version: 3.5.6*
-
-> **Documentation** — Installation, deployment, usage across the CLI, API, MCP, and
-> agent interfaces, and the fleet dependency rollout workflow are maintained
-> in the [official documentation](https://knuckles-team.github.io/repository-manager/).
+> **Documentation** — Installation, deployment, and usage across the API, CLI, MCP,
+> and A2A agent interfaces are maintained in the
+> [official documentation](https://knuckles-team.github.io/repository-manager/).
 
 ---
 
@@ -381,6 +379,26 @@ the detailed transport contract.
   `MCP_ALLOWED_HOSTS` in `AgentConfig`.
 <!-- END GENERATED: additional-deployment-options -->
 
+---
+
+## Security & Governance
+
+Built directly upon the enterprise-ready [Scion SDK](https://github.com/Knuckles-Team/scion-sdk) core, standard security parameters are fully supported:
+
+### Access Control & Policy Enforcement
+- **Eunomia Policies:** Fine-grained, policy-driven tool authorization. Supports `none`, local `embedded` (`mcp_policies.json`), or centralized `remote` modes.
+- **OIDC Token Delegation:** Compliant with RFC 8693 token exchange for flowing authenticating user credentials from Web UI / ACP → Agent → MCP.
+- **Scoped Credentials:** Execution context runs restricted to the specific caller identity.
+
+### Runtime Security Grid
+| Feature | Feature | Enablement |
+|---------|---------------|------------|
+| **Tool Guard** | Sensitivity inspection with human-in-the-loop validation | Enabled by default |
+| **Prompt Injection Defense** | Input scanning, repetition monitoring, and recursive loop blocks | Enabled by default |
+| **Context Safety Guard** | Stuck-loop detectors and contextual overflow preemptive alerts | Enabled by default |
+
+---
+
 ## Environment Variables
 
 <!-- ENV-VARS-TABLE:START -->
@@ -550,24 +568,6 @@ The full list is in the [Available MCP Tools](#available-mcp-tools) table above.
 
 ---
 
-## Security & Governance
-
-Built directly upon the enterprise-ready [Scion SDK](https://github.com/Knuckles-Team/scion-sdk) core, standard security parameters are fully supported:
-
-### Access Control & Policy Enforcement
-- **Eunomia Policies:** Fine-grained, policy-driven tool authorization. Supports `none`, local `embedded` (`mcp_policies.json`), or centralized `remote` modes.
-- **OIDC Token Delegation:** Compliant with RFC 8693 token exchange for flowing authenticating user credentials from Web UI / ACP → Agent → MCP.
-- **Scoped Credentials:** Execution context runs restricted to the specific caller identity.
-
-### Runtime Security Grid
-| Feature | Feature | Enablement |
-|---------|---------------|------------|
-| **Tool Guard** | Sensitivity inspection with human-in-the-loop validation | Enabled by default |
-| **Prompt Injection Defense** | Input scanning, repetition monitoring, and recursive loop blocks | Enabled by default |
-| **Context Safety Guard** | Stuck-loop detectors and contextual overflow preemptive alerts | Enabled by default |
-
----
-
 ## Installation
 
 Pick the extra that matches what the operator want to run:
@@ -612,15 +612,6 @@ diagrams are documented in the
 
 ---
 
-## Repository Owners
-
-<img width="100%" height="180em" src="https://github-readme-stats.vercel.app/api?username=example&show_icons=true&hide_border=true&&count_private=true&include_all_commits=true" />
-
-![GitHub followers](https://img.shields.io/github/followers/example)
-![GitHub User's stars](https://img.shields.io/github/stars/example)
-
----
-
 ## Documentation
 
 The complete documentation is published as the
@@ -640,6 +631,15 @@ is the recommended reference for installation, deployment, and day-to-day operat
 
 ---
 
+## Repository Owners
+
+<img width="100%" height="180em" src="https://github-readme-stats.vercel.app/api?username=example&show_icons=true&hide_border=true&&count_private=true&include_all_commits=true" />
+
+![GitHub followers](https://img.shields.io/github/followers/example)
+![GitHub User's stars](https://img.shields.io/github/stars/example)
+
+---
+
 ## Contribute
 
 Contributions are welcome! Please ensure code quality by running local checks before submitting pull requests:
@@ -647,8 +647,6 @@ Contributions are welcome! Please ensure code quality by running local checks be
 - Lint code using `ruff check .`
 - Validate type-safety with `mypy .`
 - Ran test suites using `pytest`
-
-
 
 <!-- GOVERNED-CAPABILITY:START -->
 ## Governed capability contract
