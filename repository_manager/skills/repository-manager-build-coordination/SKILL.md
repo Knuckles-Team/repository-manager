@@ -10,7 +10,7 @@ description: >-
   (repo, tree-sha, feature-set, toolchain, target) has already paid for. Use when
   an agent needs a repository's build artifacts, wants to know whether a build is
   cached, or must reclaim old cache entries. Do NOT use for the packaging-style
-  `rm_projects_*` install/build (repository-manager-workspace-validation), for the
+  `rm_projects_<op>` install/build (repository-manager-workspace-validation), for the
   merge queue's own gate execution (repository-manager-merge-and-reconcile), or for
   sizing how many heavy builds may run at once
   (repository-manager-fleet-scale-operations).

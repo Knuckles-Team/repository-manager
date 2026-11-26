@@ -3,7 +3,7 @@ name: repository-manager-gate-execution
 skill_type: skill
 description: >-
   Run and inspect the two-tier (fast/heavy) pre-commit gate across repos via
-  `rm_gates_*`, and validate a fix without re-running the whole wave: `run` to
+  `rm_gates_<op>`, and validate a fix without re-running the whole wave: `run` to
   populate the durable gate ledger, `retest` to narrow a re-run to only the
   hooks the ledger last recorded failing (with automatic full-wave
   escalation on an all-pass), and `profile` to find the slow hooks. Covers
@@ -13,7 +13,7 @@ description: >-
   repo's fast or heavy gate, re-validate only what just failed, explain a
   failure, or find what is slow. Do NOT use for the merge queue's own
   differential gate-vs-base comparison (repository-manager-merge-and-reconcile),
-  Python install/build via `rm_projects_*` (repository-manager-workspace-validation),
+  Python install/build via `rm_projects_<op>` (repository-manager-workspace-validation),
   or content-addressed build caching (repository-manager-build-coordination).
 license: MIT
 tags: [repository-manager, gates, pre-commit, testing, ci, mcp]

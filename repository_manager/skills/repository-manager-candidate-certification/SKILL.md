@@ -8,7 +8,7 @@ description: >-
   `verify_generation` marker-collision checks — before trusting a merge-queue
   outcome as landable. This is the vocabulary and marker-verification layer; the
   actual batching/differential-gating/bisection mechanics that decide landability
-  live in `rm_merge_queue_*` and are documented in repository-manager-merge-and-
+  live in `rm_merge_queue_<op>` and are documented in repository-manager-merge-and-
   reconcile, not duplicated here. Use when an agent must explain why a candidate is
   in a given state, verify a candidate's or generation's introduced CONCEPT:
   markers, or reason about a rejected/bisected generation. Do NOT use this skill to

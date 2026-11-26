@@ -4,7 +4,7 @@ skill_type: skill
 description: >-
   Reserve, inspect, release, and materialize a CONCEPT:ID claim, and verify a
   candidate's or generation's introduced concept markers against those claims, via
-  the repository-manager `rm_concepts_*` MCP tool / `--concepts` CLI family. Routes
+  the repository-manager `rm_concepts_<op>` MCP tool / `--concepts` CLI family. Routes
   agents away from hand-writing a `CONCEPT:` marker without first reserving its id,
   which is exactly how two concurrent lanes collide on the same identifier. Use
   before writing any new `CONCEPT:` marker, or to verify a candidate/generation's

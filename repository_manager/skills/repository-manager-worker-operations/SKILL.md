@@ -6,7 +6,7 @@ description: >-
   read its profile, run the dispatch-time entitlement recheck, stage/verify an
   immutable source commit onto it with a fixed clone/fetch/checkout command
   sequence, stream artifacts/logs back, and reconcile a lost host — via the
-  repository-manager `rm_remote_workers_*` MCP tool / `--remote-workers` CLI family.
+  repository-manager `rm_remote_workers_<op>` MCP tool / `--remote-workers` CLI family.
   Routes agents away from a raw SSH/tunnel command or a hand-rolled clone onto a
   remote host. ⚠ `recheck`/live dispatch refuse honestly without the optional
   tunnel-manager dependency, and `host_loss_reconcile` always refuses today — read

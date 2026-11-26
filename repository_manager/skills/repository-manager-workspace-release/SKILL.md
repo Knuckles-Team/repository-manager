@@ -4,7 +4,7 @@ skill_type: skill
 description: >-
   Roll a dependency floor across the fleet deterministically and manage the
   `workspace.yml` manifest — via `rm_rollout` (or `repository-manager rollout`) and
-  `rm_workspace_*`. A rollout selects the workspace.yml group's non-archived repos
+  `rm_workspace_<op>`. A rollout selects the workspace.yml group's non-archived repos
   that depend on the package, plans per repo from main into a resumable ledger,
   applies each change in a fresh worktree through a pull request with auto-merge,
   reports merged/failing/pending, and tags `v<version>` only after the PR merged
