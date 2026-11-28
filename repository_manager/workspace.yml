@@ -14,6 +14,9 @@ subdirectories:
     repositories:
     - url: https://github.com/Knuckles-Team/meristem.git
       description: Shared utility functions, base classes, and server common code.
+    - url: https://github.com/Knuckles-Team/arbora-city.git
+      description: 'Arbora City: the city engine, its data-source contract and embeddable
+        page, published as one npm package with a verified asset kit.'
     - url: https://github.com/Knuckles-Team/overstory.git
       description: Standard web UI component library for agents.
     - url: https://github.com/Knuckles-Team/tuig.git
@@ -790,26 +793,31 @@ maintenance:
     projects:
     - meristem
     wait_minutes: 30
-  - name: 'Phase 5: Overstory'
+  - name: 'Phase 5: arbora-city'
     phase: 5
+    projects:
+    - arbora-city
+    wait_minutes: 30
+  - name: 'Phase 6: Overstory'
+    phase: 6
     projects:
     - overstory
     wait_minutes: 30
-  - name: 'Phase 6: arbora'
-    phase: 6
+  - name: 'Phase 7: arbora'
+    phase: 7
     projects:
     - arbora
     wait_minutes: 30
-  - name: 'Phase 7: Core Tools and UIs'
-    phase: 7
+  - name: 'Phase 8: Core Tools and UIs'
+    phase: 8
     projects:
     - universal-skills
     - skill-graphs
     - tuig
     - axil
     wait_minutes: 0
-  - name: 'Phase 8: Agents'
-    phase: 8
+  - name: 'Phase 9: Agents'
+    phase: 9
     bulk_bump: true
     bulk_push: true
 services:
